@@ -5,6 +5,7 @@ from sklearn.preprocessing import StandardScaler
 from torchvision import transforms
 import cv2
 import os
+import time
 import numpy as np
 import torch.optim as optim
 import torch.nn as nn
@@ -306,11 +307,15 @@ for epoch in range(num_epochs):
 
     print(f"Epoch [{epoch + 1}/{num_epochs}], Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
 
+    # Generate a timestamp-based filename
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    model_filename = f"unet_model_{timestamp}.pth"
+
     # Early stopping logic
     if avg_val_loss < best_val_loss:
         best_val_loss = avg_val_loss
         counter = 0
-        torch.save(unet_model.state_dict(), 'best_unet_model.pth')
+        torch.save(unet_model.state_dict(), model_filename)
     else:
         counter += 1
         if counter >= patience:
@@ -318,7 +323,7 @@ for epoch in range(num_epochs):
             break
 
 # Save the final model
-torch.save(unet_model.state_dict(), 'best_unet_model.pth')
+torch.save(unet_model.state_dict(), model_filename)
 
 # # Extract bottleneck features for SVM classification
 # def extract_features_and_labels(model, dataloader, device):
