@@ -160,3 +160,6 @@ cython_debug/
 #.idea/
 /Test strips
 /urine
+/New Urine Datasets
+augmentmore.py
+*.pth

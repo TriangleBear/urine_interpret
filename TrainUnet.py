@@ -16,8 +16,8 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 import joblib
 
 # Define the paths to your image and mask folders
-image_folder = r'D:\Programming\Urine_Test_Strips\urine\train\images'  # Replace with the actual path to the images
-mask_folder = r'D:\Programming\Urine_Test_Strips\urine\train\labels'   # Replace with the actual path to the masks
+image_folder = r'D:\Programming\urine_interpret\New Urine Datasets\train\images'  # Replace with the actual path to the images
+mask_folder = r'D:\Programming\urine_interpret\New Urine Datasets\train\labels'   # Replace with the actual path to the masks
 
 class UNet(nn.Module):
     def __init__(self, in_channels, out_channels=21):
@@ -93,7 +93,7 @@ class UNetWithFeatures(UNet):
         # Flatten bottleneck features for classification
         return bottleneck.view(bottleneck.size(0), -1)
 
-num_classes = 10  # Adjust based on actual output classes
+num_classes = 21  # Adjust based on actual output classes
 
 def create_mask_from_yolo(txt_path, image_size=(256, 256)):
     """
