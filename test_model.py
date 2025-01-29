@@ -9,16 +9,27 @@ import cv2
 import matplotlib.pyplot as plt
 
 class_map = {
-    0: 'Bilirubin',
-    1: 'Blood',
-    2: 'Glucose',
-    3: 'Ketone',
-    4: 'Leukocytes',
-    5: 'Nitrite',
-    6: 'Protein',
-    7: 'Sp.Gravity',
-    8: 'Urobilinogen',
-    9: 'pH'
+    0: '0',
+    1: '1',
+    2: '2',
+    3: '3',
+    4: '4',
+    5: '5',
+    6: '6',
+    7: '7',
+    8: '8',
+    9: '9',
+    10: 'Bilirubin',
+    11: 'Blood',
+    12: 'Glucose',
+    13: 'Ketone',
+    14: 'Leukocytes',
+    15: 'Nitrite',
+    16: 'Protein',
+    17: 'Sp.Gravity',
+    18: 'Urobilinogen',
+    19: 'object',
+    20: 'pH'
 }
 
 class UNet(nn.Module):
