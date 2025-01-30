@@ -9,28 +9,18 @@ import cv2
 import matplotlib.pyplot as plt
 
 class_map = {
-    0: '0',
-    1: '1',
-    2: '2',
-    3: '3',
-    4: '4',
-    5: '5',
-    6: '6',
-    7: '7',
-    8: '8',
-    9: '9',
-    10: 'Bilirubin',
-    11: 'Blood',
-    12: 'Glucose',
-    13: 'Ketone',
-    14: 'Leukocytes',
-    15: 'Nitrite',
-    16: 'Protein',
-    17: 'Sp.Gravity',
-    18: 'Urobilinogen',
-    19: 'object',
-    20: 'pH'
+    0: 'Bilirubin',
+    1: 'Blood',
+    2: 'Glucose',
+    3: 'Ketone',
+    4: 'Leukocytes',
+    5: 'Nitrite',
+    6: 'Protein',
+    7: 'SpGravity',
+    8: 'Urobilinogen',
+    9: 'pH'
 }
+
 
 class UNet(nn.Module):
     def __init__(self, in_channels, out_channels=21):
@@ -95,7 +85,7 @@ class UNet(nn.Module):
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = UNet(in_channels=3, out_channels=1)  
 
-checkpoint = torch.load('best_unet_model.pth', map_location=device)
+checkpoint = torch.load('unet_model_20250130-125836.pth', map_location=device)
 
 # Check if it's a full model or just the state_dict
 if 'state_dict' in checkpoint:
@@ -167,7 +157,7 @@ def scale_and_clip_boxes(boxes, orig_shape, pred_shape):
     return scaled_boxes
 
 # Updated bounding box creation with dynamic threshold
-def create_bounding_boxes(predictions, dynamic=True, default_threshold=0.5, percentile=95):
+def create_bounding_boxes(predictions, dynamic=True, default_threshold=0.7, percentile=95):
     bounding_boxes = []
     class_ids = []
     for i in range(predictions.shape[0]):
@@ -187,7 +177,7 @@ def create_bounding_boxes(predictions, dynamic=True, default_threshold=0.5, perc
     return bounding_boxes, class_ids
 
 # Draw and show bounding boxes
-def draw_and_show_bounding_boxes(image_path, boxes, class_ids, class_map, min_area_ratio=0.001, threshold=0.5):
+def draw_and_show_bounding_boxes(image_path, boxes, class_ids, class_map, min_area_ratio=0.001, threshold=0.7):
     image = cv2.imread(image_path)
     orig_h, orig_w = image.shape[:2]
     scale_x = orig_w / 256
@@ -220,7 +210,7 @@ def visualize_predictions_with_thresholds(predictions, thresholds=[0.2, 0.3, 0.5
         plt.show()
 
 # Replace this with your actual test folder path
-test_folder_path = r'D:\Programming\Urine_Test_Strips\urine\test\images'
+test_folder_path = r'C:\Users\Bear\Downloads\test strips'
 
 test_data = load_images_from_folder(test_folder_path)
 test_data = torch.cat(test_data).to(device)
