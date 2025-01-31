@@ -16,6 +16,7 @@ from tqdm import tqdm
 from PIL import Image
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 import joblib
+import random
 
 torch.backends.cudnn.benchmark = True # Enable cuDNN benchmark for performance
 torch.backends.cudnn.enabled = True # Enable cuDNN for performance
@@ -82,13 +83,70 @@ class UNet(nn.Module):
 
         return self.output(up1)
 
+class RandomFlip:
+    def __init__(self, horizontal=True, vertical=False):
+        self.horizontal = horizontal
+        self.vertical = vertical
+
+    def __call__(self, sample):
+        image, mask = sample['image'], sample['mask']
+        
+        if self.horizontal and random.random() > 0.5:
+            image = transforms.functional.hflip(image)
+            mask = transforms.functional.hflip(mask)
+        
+        if self.vertical and random.random() > 0.5:
+            image = transforms.functional.vflip(image)
+            mask = transforms.functional.vflip(mask)
+        
+        return {'image': image, 'mask': mask}
+
+
+class RandomRotation:
+    def __init__(self, degrees):
+        self.degrees = degrees
+
+    def __call__(self, sample):
+        image, mask = sample['image'], sample['mask']
+        angle = random.uniform(-self.degrees, self.degrees)
+        image = transforms.functional.rotate(image, angle)
+        mask = transforms.functional.rotate(mask, angle)
+        return {'image': image, 'mask': mask}
+
+
+class RandomAffine:
+    def __init__(self, translate=(0.1, 0.1)):
+        self.translate = translate
+
+    def __call__(self, sample):
+        image, mask = sample['image'], sample['mask']
+        params = transforms.RandomAffine.get_params(
+            degrees=0, translate=self.translate, scale=None, shear=None, img_size=image.size
+        )
+        image = transforms.functional.affine(image, angle=0, translate=params[0], scale=1, shear=0)
+        mask = transforms.functional.affine(mask, angle=0, translate=params[0], scale=1, shear=0)
+        return {'image': image, 'mask': mask}
+
+# Compose all the transformations
+class RandomTransformations:
+    def __init__(self):
+        self.transform = transforms.Compose([
+            RandomFlip(horizontal=True, vertical=True),
+            RandomRotation(degrees=10),  # Rotate by up to 10 degrees
+            RandomAffine(translate=(0.1, 0.1)),  # Small translations
+        ])
+
+    def __call__(self, sample):
+        return self.transform(sample)
+
 # Dataset class
 class UrineStripDataset(Dataset):
-    def __init__(self, image_folder, mask_folder):
+    def __init__(self, image_folder, mask_folder, transform=None):
         self.image_folder = image_folder
         self.mask_folder = mask_folder
         self.image_files = sorted(os.listdir(image_folder))
         self.txt_files = sorted(os.listdir(mask_folder))
+        self.transform = transform  # Optional transform to apply to both image and mask
 
         if len(self.image_files) != len(self.txt_files):
             raise ValueError("Mismatch between number of images and masks")
@@ -108,18 +166,45 @@ class UrineStripDataset(Dataset):
             raise ValueError(f"Image at {image_path} could not be loaded")
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        image = cv2.resize(image, (128, 128))  # Try (128,128) or (256,256)
+        # Resize image (if needed)
+        image = cv2.resize(image, (128, 128))
 
-        # Convert to tensor (no augmentation)
+        # Convert to tensor
         image = transforms.ToTensor()(image)
 
-        # Load mask and convert to tensor
+        # Load mask and create from YOLO format
         mask = self.create_mask_from_yolo(txt_path)
-        mask = cv2.resize(mask, (128, 128), interpolation=cv2.INTER_NEAREST)  # Resize mask
+        mask = cv2.resize(mask, (128, 128), interpolation=cv2.INTER_NEAREST)
         mask = torch.tensor(mask, dtype=torch.long)  # Convert to tensor
+
+        if self.transform:
+            # Apply any augmentations (ensure mask also gets transformed)
+            sample = {'image': image, 'mask': mask}
+            sample = self.transform(sample)
+            image, mask = sample['image'], sample['mask']
 
         return image, mask
 
+    def create_mask_from_yolo(self, txt_path, image_size=(256, 256)):
+        mask = np.zeros(image_size, dtype=np.uint8)
+        with open(txt_path, 'r') as file:
+            lines = file.readlines()
+        for line in lines:
+            parts = line.strip().split()
+            class_id, center_x, center_y, bbox_width, bbox_height = map(float, parts[:5])
+            center_x = int(center_x * image_size[1])
+            center_y = int(center_y * image_size[0])
+            bbox_width = int(bbox_width * image_size[1])
+            bbox_height = int(bbox_height * image_size[0])
+
+            xmin = max(0, center_x - bbox_width // 2)
+            ymin = max(0, center_y - bbox_height // 2)
+            xmax = min(image_size[1], center_x + bbox_width // 2)
+            ymax = min(image_size[0], center_y + bbox_height // 2)
+
+            mask[ymin:ymax, xmin:xmax] = int(class_id)
+
+        return mask
 
     def create_mask_from_yolo(self, txt_path, image_size=(256, 256)):
         mask = np.zeros(image_size, dtype=np.uint8)
@@ -148,9 +233,9 @@ train_size = int(0.8 * len(dataset))
 val_size = len(dataset) - train_size
 train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)  # Reduce batch size for stability
+train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)  # Reduce batch size for stability
 val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
-
+    
 # Initialize the model
 num_classes = 10  # Adjust based on your use case
 unet_model = UNet(in_channels=3, out_channels=num_classes)
@@ -164,13 +249,17 @@ optimizer = torch.optim.Adam(unet_model.parameters(), lr=0.001, weight_decay=1e-
 # Mixed precision setup
 scaler = GradScaler()
 
+# Loss function and optimizer
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(unet_model.parameters(), lr=0.001, weight_decay=1e-4)
+
 # Define Early Stopping Parameters
-patience = 15  # Stop if validation loss doesn't improve for 10 epochs
+patience = 20  # Stop if validation loss doesn't improve for 10 epochs
 best_val_loss = float('inf')  # Initialize best validation loss
 early_stop_counter = 0  # Track epochs without improvement
 
 # Training Loop with Early Stopping
-num_epochs = 100
+num_epochs = 50
 torch.cuda.empty_cache()  # Clear cache to prevent memory issues
 
 for epoch in range(num_epochs):
@@ -182,35 +271,43 @@ for epoch in range(num_epochs):
         images.requires_grad_(True)
         optimizer.zero_grad()
 
-        # Mixed precision training
-        with autocast(device_type='cuda', dtype=torch.float16):
-            outputs = unet_model(images)
-            loss = criterion(outputs, masks)
+        # Training without mixed precision
+        outputs = unet_model(images)
+        loss = criterion(outputs, masks)
 
         if torch.isnan(loss) or torch.isinf(loss):
             print("NaN or Inf detected in loss! Exiting training.")
             break
 
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
+        loss.backward()
+        optimizer.step()
 
         running_loss += loss.item()
 
     # Validation
     unet_model.eval()
     val_loss = 0.0
+    correct_predictions = 0
+    total_pixels = 0
+
     with torch.no_grad():
         for images, masks in tqdm(val_loader):
             images, masks = images.to(device), masks.to(device)
-            with autocast('cuda'):
-                outputs = unet_model(images)
-                loss = criterion(outputs, masks)
+            outputs = unet_model(images)
+            loss = criterion(outputs, masks)
+            
+            # Calculate accuracy
+            predicted = torch.argmax(outputs, dim=1)
+            correct_predictions += (predicted == masks).sum().item()
+            total_pixels += masks.numel()  # Total number of pixels in the mask
+
             val_loss += loss.item()
 
     avg_train_loss = running_loss / len(train_loader)
     avg_val_loss = val_loss / len(val_loader)
-    print(f"Epoch [{epoch + 1}/{num_epochs}], Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+    accuracy = 100 * correct_predictions / total_pixels  # Percentage of correct predictions
+
+    print(f"Epoch [{epoch + 1}/{num_epochs}], Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, Val Accuracy: {accuracy:.2f}%")
 
     # Early Stopping Logic
     if avg_val_loss < best_val_loss:
@@ -229,6 +326,7 @@ for epoch in range(num_epochs):
 
 # Save the model
 torch.save(unet_model.state_dict(), model_filename)
+
 
 # # Extract bottleneck features for SVM classification
 # def extract_features_and_labels(model, dataloader, device):

@@ -8,18 +8,20 @@ import os
 import cv2
 import matplotlib.pyplot as plt
 
-class_map = {
-    0: 'Bilirubin',
-    1: 'Blood',
-    2: 'Glucose',
-    3: 'Ketone',
-    4: 'Leukocytes',
-    5: 'Nitrite',
-    6: 'Protein',
-    7: 'SpGravity',
-    8: 'Urobilinogen',
-    9: 'pH'
-}
+# class_map = {
+#     0: 'Bilirubin',
+#     1: 'Blood',
+#     2: 'Glucose',
+#     3: 'Ketone',
+#     4: 'Leukocytes',
+#     5: 'Nitrite',
+#     6: 'Protein',
+#     7: 'SpGravity',
+#     8: 'Urobilinogen',
+#     9: 'pH'
+# }
+
+
 
 
 class UNet(nn.Module):
@@ -83,9 +85,9 @@ class UNet(nn.Module):
         
 # Load the model
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = UNet(in_channels=3, out_channels=1)  
+model = UNet(in_channels=3, out_channels=10)  
 
-checkpoint = torch.load('unet_model_20250131-075126.pth', map_location=device, weights_only=True)
+checkpoint = torch.load('unet_model_20250131-131157.pth', map_location=device, weights_only=True)
 
 # Check if it's a full model or just the state_dict
 if 'state_dict' in checkpoint:
@@ -157,7 +159,7 @@ def scale_and_clip_boxes(boxes, orig_shape, pred_shape):
     return scaled_boxes
 
 # Updated bounding box creation with dynamic threshold
-def create_bounding_boxes(predictions, dynamic=True, default_threshold=0.5, percentile=95):
+def create_bounding_boxes(predictions, dynamic=True, default_threshold=0.7, percentile=95):
     bounding_boxes = []
     class_ids = []
     for i in range(predictions.shape[0]):
@@ -176,8 +178,8 @@ def create_bounding_boxes(predictions, dynamic=True, default_threshold=0.5, perc
         class_ids.append([i] * len(boxes))  # Assuming class ID is the same for all boxes in this prediction
     return bounding_boxes, class_ids
 
-# Draw and show bounding boxes
-def draw_and_show_bounding_boxes(image_path, boxes, class_ids, class_map, min_area_ratio=0.001, threshold=0.5):
+# Draw and show bounding boxes without class names
+def draw_and_show_bounding_boxes(image_path, boxes, class_ids, min_area_ratio=0.001, threshold=0.7):
     image = cv2.imread(image_path)
     orig_h, orig_w = image.shape[:2]
     scale_x = orig_w / 256
@@ -187,14 +189,13 @@ def draw_and_show_bounding_boxes(image_path, boxes, class_ids, class_map, min_ar
         for (x, y, w, h), class_id in zip(box_list, class_list):
             if w * h > min_area_ratio * orig_w * orig_h:
                 x1, y1, x2, y2 = int(x * scale_x), int(y * scale_y), int((x + w) * scale_x), int((y + h) * scale_y)
-                print(f"Drawing box: ({x1}, {y1}), ({x2}, {y2}) for class {class_map[class_id]}")
-                cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                class_name = class_map[class_id]
-                cv2.putText(image, class_name, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+                print(f"Drawing box: ({x1}, {y1}), ({x2}, {y2})")
+                cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)  # Only draw the box
 
     cv2.imshow("Bounding Boxes", image)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
+
 
 # Visualization adjustments
 def visualize_predictions_with_thresholds(predictions, thresholds=[0.2, 0.3, 0.5, 0.7]):
@@ -240,6 +241,6 @@ for image_path in os.listdir(test_folder_path):
             prediction = torch.sigmoid(model(image))
         
         bounding_boxes, class_ids = create_bounding_boxes(prediction)
-        draw_and_show_bounding_boxes(full_image_path, bounding_boxes, class_ids, class_map)
+        draw_and_show_bounding_boxes(full_image_path, bounding_boxes, class_ids)
 
 print("Bounding boxes created and images displayed.")
