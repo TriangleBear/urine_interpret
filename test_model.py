@@ -23,7 +23,7 @@ class_map = {
 
 
 class UNet(nn.Module):
-    def __init__(self, in_channels, out_channels=21):
+    def __init__(self, in_channels, out_channels=10):
         super(UNet, self).__init__()
 
         # Encoder path
@@ -85,7 +85,7 @@ class UNet(nn.Module):
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = UNet(in_channels=3, out_channels=1)  
 
-checkpoint = torch.load('unet_model_20250130-125836.pth', map_location=device)
+checkpoint = torch.load('unet_model_20250131-075126.pth', map_location=device, weights_only=True)
 
 # Check if it's a full model or just the state_dict
 if 'state_dict' in checkpoint:
@@ -157,7 +157,7 @@ def scale_and_clip_boxes(boxes, orig_shape, pred_shape):
     return scaled_boxes
 
 # Updated bounding box creation with dynamic threshold
-def create_bounding_boxes(predictions, dynamic=True, default_threshold=0.7, percentile=95):
+def create_bounding_boxes(predictions, dynamic=True, default_threshold=0.5, percentile=95):
     bounding_boxes = []
     class_ids = []
     for i in range(predictions.shape[0]):
@@ -177,7 +177,7 @@ def create_bounding_boxes(predictions, dynamic=True, default_threshold=0.7, perc
     return bounding_boxes, class_ids
 
 # Draw and show bounding boxes
-def draw_and_show_bounding_boxes(image_path, boxes, class_ids, class_map, min_area_ratio=0.001, threshold=0.7):
+def draw_and_show_bounding_boxes(image_path, boxes, class_ids, class_map, min_area_ratio=0.001, threshold=0.5):
     image = cv2.imread(image_path)
     orig_h, orig_w = image.shape[:2]
     scale_x = orig_w / 256
@@ -210,7 +210,7 @@ def visualize_predictions_with_thresholds(predictions, thresholds=[0.2, 0.3, 0.5
         plt.show()
 
 # Replace this with your actual test folder path
-test_folder_path = r'C:\Users\Bear\Downloads\test strips'
+test_folder_path = r'D:\Programming\urine_interpret\urine\test\images'
 
 test_data = load_images_from_folder(test_folder_path)
 test_data = torch.cat(test_data).to(device)
