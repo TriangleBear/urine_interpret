@@ -17,30 +17,31 @@ from PIL import Image
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 import joblib
 
-torch.backends.cudnn.benchmark = True
-torch.backends.cudnn.enabled = True
+torch.backends.cudnn.benchmark = True # Enable cuDNN benchmark for performance
+torch.backends.cudnn.enabled = True # Enable cuDNN for performance
 
 # Define the paths to your image and mask folders
-image_folder = r'D:\Programming\urine_interpret\Own\train\images'  # Replace with the actual path to the images
-mask_folder = r'D:\Programming\urine_interpret\Own\train\labels'   # Replace with the actual path to the masks
+image_folder = r'D:\Programming\urine_interpret\urine\train\images'  # Replace with the actual path to the images
+mask_folder = r'D:\Programming\urine_interpret\urine\train\labels'   # Replace with the actual path to the masks
 
+# Define the model filename with a timestamp
 timestamp = time.strftime("%Y%m%d-%H%M%S")
 model_filename = f"unet_model_{timestamp}.pth"
 
 # Define the U-Net model class
 class UNet(nn.Module):
-    def __init__(self, in_channels, out_channels=21):
+    def __init__(self, in_channels, out_channels=10):
         super(UNet, self).__init__()
 
         # Encoder path
         self.enc1 = nn.Conv2d(in_channels, 32, kernel_size=3, padding=1)
-        self.enc2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.enc3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+        self.enc2 = nn.Conv2d(32, 64, kernel_size=3, padding=1) 
+        self.enc3 = nn.Conv2d(64, 128, kernel_size=3, padding=1) 
         self.enc4 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
 
         # Bottleneck layer
         self.bottleneck = nn.Conv2d(256, 512, kernel_size=3, padding=1)
-        self.dropout = nn.Dropout(p=0.2)
+        self.dropout = nn.Dropout(p=0.5)
 
         # Decoder path
         self.upconv3 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
@@ -56,25 +57,25 @@ class UNet(nn.Module):
         self.output = nn.Conv2d(64, out_channels, kernel_size=1)
 
     def forward(self, x):
-        enc1 = checkpoint.checkpoint(self.enc1, x)
-        enc2 = checkpoint.checkpoint(self.enc2, enc1)
-        enc3 = checkpoint.checkpoint(self.enc3, enc2)
-        enc4 = checkpoint.checkpoint(self.enc4, enc3)
+        enc1 = checkpoint.checkpoint(self.enc1, x, use_reentrant=False)
+        enc2 = checkpoint.checkpoint(self.enc2, enc1, use_reentrant=False)
+        enc3 = checkpoint.checkpoint(self.enc3, enc2, use_reentrant=False)
+        enc4 = checkpoint.checkpoint(self.enc4, enc3, use_reentrant=False)
 
-        bottleneck = checkpoint.checkpoint(self.bottleneck, enc4)
+        bottleneck = checkpoint.checkpoint(self.bottleneck, enc4, use_reentrant=False)
         bottleneck = self.dropout(bottleneck)
 
-        up3 = checkpoint.checkpoint(self.upconv3, bottleneck)
+        up3 = checkpoint.checkpoint(self.upconv3, bottleneck, use_reentrant=False)
         up3 = F.interpolate(up3, size=enc4.size()[2:], mode='bilinear', align_corners=True)
         up3 = torch.cat([up3, enc4], dim=1)
         up3 = self.conv_up3(up3)
 
-        up2 = checkpoint.checkpoint(self.upconv2, up3)
+        up2 = checkpoint.checkpoint(self.upconv2, up3, use_reentrant=False)
         up2 = F.interpolate(up2, size=enc3.size()[2:], mode='bilinear', align_corners=True)
         up2 = torch.cat([up2, enc3], dim=1)
         up2 = self.conv_up2(up2)
 
-        up1 = checkpoint.checkpoint(self.upconv1, up2)
+        up1 = checkpoint.checkpoint(self.upconv1, up2, use_reentrant=False)
         up1 = F.interpolate(up1, size=enc2.size()[2:], mode='bilinear', align_corners=True)
         up1 = torch.cat([up1, enc2], dim=1)
         up1 = self.conv_up1(up1)
@@ -147,7 +148,7 @@ train_size = int(0.8 * len(dataset))
 val_size = len(dataset) - train_size
 train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-train_loader = DataLoader(train_dataset, batch_size=2, shuffle=True)  # Reduce batch size for stability
+train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)  # Reduce batch size for stability
 val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
 
 # Initialize the model
@@ -158,24 +159,31 @@ unet_model.to(device)
 
 # Loss function and optimizer
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(unet_model.parameters(), lr=1e-4)
+optimizer = torch.optim.Adam(unet_model.parameters(), lr=0.001, weight_decay=1e-4)
 
 # Mixed precision setup
 scaler = GradScaler()
 
-# Training loop
+# Define Early Stopping Parameters
+patience = 15  # Stop if validation loss doesn't improve for 10 epochs
+best_val_loss = float('inf')  # Initialize best validation loss
+early_stop_counter = 0  # Track epochs without improvement
+
+# Training Loop with Early Stopping
 num_epochs = 100
 torch.cuda.empty_cache()  # Clear cache to prevent memory issues
+
 for epoch in range(num_epochs):
     unet_model.train()
     running_loss = 0.0
+    
     for images, masks in tqdm(train_loader):
         images, masks = images.to(device), masks.to(device)
-
+        images.requires_grad_(True)
         optimizer.zero_grad()
 
-        # Mixed precision
-        with autocast(device_type='cuda', dtype=torch.float16):  # Use mixed precision
+        # Mixed precision training
+        with autocast(device_type='cuda', dtype=torch.float16):
             outputs = unet_model(images)
             loss = criterion(outputs, masks)
 
@@ -183,10 +191,9 @@ for epoch in range(num_epochs):
             print("NaN or Inf detected in loss! Exiting training.")
             break
 
-        optimizer.zero_grad()  # Reset gradients
-        scaler.scale(loss).backward()  # Backpropagate loss
-        scaler.step(optimizer)  # Update model weights
-        scaler.update()  # Adjust scale for next iteration
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
         running_loss += loss.item()
 
@@ -204,6 +211,21 @@ for epoch in range(num_epochs):
     avg_train_loss = running_loss / len(train_loader)
     avg_val_loss = val_loss / len(val_loader)
     print(f"Epoch [{epoch + 1}/{num_epochs}], Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+
+    # Early Stopping Logic
+    if avg_val_loss < best_val_loss:
+        best_val_loss = avg_val_loss
+        early_stop_counter = 0  # Reset counter
+        torch.save(unet_model.state_dict(), model_filename)  # Save best model
+        print("✅ Model improved and saved!")
+    else:
+        early_stop_counter += 1
+        print(f"⚠️ No improvement in validation loss for {early_stop_counter}/{patience} epochs")
+
+    # Stop training if no improvement for 'patience' epochs
+    if early_stop_counter >= patience:
+        print("⛔ Early stopping triggered! Training stopped.")
+        break
 
 # Save the model
 torch.save(unet_model.state_dict(), model_filename)
