@@ -18,12 +18,12 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 import joblib
 import random
 
-torch.backends.cudnn.benchmark = True # Enable cuDNN benchmark for performance
-torch.backends.cudnn.enabled = True # Enable cuDNN for performance
+torch.backends.cudnn.benchmark = True  # Enable cuDNN benchmark for performance
+torch.backends.cudnn.enabled = True  # Enable cuDNN for performance
 
 # Define the paths to your image and mask folders
-image_folder = r'D:\Programming\urine_interpret\urine\train\images'  # Replace with the actual path to the images
-mask_folder = r'D:\Programming\urine_interpret\urine\train\labels'   # Replace with the actual path to the masks
+image_folder = r'D:\Programming\urine_interpret\almost 1k dataset\train\images'
+mask_folder = r'D:\Programming\urine_interpret\almost 1k dataset\train\labels'
 
 # Define the model filename with a timestamp
 timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -36,8 +36,8 @@ class UNet(nn.Module):
 
         # Encoder path
         self.enc1 = nn.Conv2d(in_channels, 32, kernel_size=3, padding=1)
-        self.enc2 = nn.Conv2d(32, 64, kernel_size=3, padding=1) 
-        self.enc3 = nn.Conv2d(64, 128, kernel_size=3, padding=1) 
+        self.enc2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.enc3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
         self.enc4 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
 
         # Bottleneck layer
@@ -58,14 +58,17 @@ class UNet(nn.Module):
         self.output = nn.Conv2d(64, out_channels, kernel_size=1)
 
     def forward(self, x):
+        # Encoder
         enc1 = checkpoint.checkpoint(self.enc1, x, use_reentrant=False)
         enc2 = checkpoint.checkpoint(self.enc2, enc1, use_reentrant=False)
         enc3 = checkpoint.checkpoint(self.enc3, enc2, use_reentrant=False)
         enc4 = checkpoint.checkpoint(self.enc4, enc3, use_reentrant=False)
 
+        # Bottleneck
         bottleneck = checkpoint.checkpoint(self.bottleneck, enc4, use_reentrant=False)
         bottleneck = self.dropout(bottleneck)
 
+        # Decoder
         up3 = checkpoint.checkpoint(self.upconv3, bottleneck, use_reentrant=False)
         up3 = F.interpolate(up3, size=enc4.size()[2:], mode='bilinear', align_corners=True)
         up3 = torch.cat([up3, enc4], dim=1)
@@ -81,8 +84,10 @@ class UNet(nn.Module):
         up1 = torch.cat([up1, enc2], dim=1)
         up1 = self.conv_up1(up1)
 
+        # Output
         return self.output(up1)
 
+# Data augmentation classes
 class RandomFlip:
     def __init__(self, horizontal=True, vertical=False):
         self.horizontal = horizontal
@@ -101,7 +106,6 @@ class RandomFlip:
         
         return {'image': image, 'mask': mask}
 
-
 class RandomRotation:
     def __init__(self, degrees):
         self.degrees = degrees
@@ -109,10 +113,20 @@ class RandomRotation:
     def __call__(self, sample):
         image, mask = sample['image'], sample['mask']
         angle = random.uniform(-self.degrees, self.degrees)
+        
+        # Rotate image
         image = transforms.functional.rotate(image, angle)
-        mask = transforms.functional.rotate(mask, angle)
-        return {'image': image, 'mask': mask}
 
+        # Add a channel dimension to the mask
+        mask = mask.unsqueeze(0)  # Shape: [1, H, W]
+        
+        # Rotate mask
+        mask = transforms.functional.rotate(mask, angle)
+        
+        # Remove the channel dimension
+        mask = mask.squeeze(0)  # Shape: [H, W]
+
+        return {'image': image, 'mask': mask}
 
 class RandomAffine:
     def __init__(self, translate=(0.1, 0.1)):
@@ -120,14 +134,43 @@ class RandomAffine:
 
     def __call__(self, sample):
         image, mask = sample['image'], sample['mask']
+        
+        # Get parameters for affine transformation
         params = transforms.RandomAffine.get_params(
-            degrees=0, translate=self.translate, scale=None, shear=None, img_size=image.size
+            degrees=[-10, 10],  # Random rotation between -10 and 10 degrees
+            translate=self.translate,  # Random translation
+            scale_ranges=None,  # No scaling
+            shears=None,  # No shearing
+            img_size=image.size()[1:]  # Image size (height, width)
         )
-        image = transforms.functional.affine(image, angle=0, translate=params[0], scale=1, shear=0)
-        mask = transforms.functional.affine(mask, angle=0, translate=params[0], scale=1, shear=0)
+        
+        # Apply affine transformation to image
+        image = transforms.functional.affine(
+            image, 
+            angle=params[0],  # Rotation angle
+            translate=params[1],  # Translation
+            scale=params[2],  # Scale
+            shear=params[3]  # Shear
+        )
+
+        # Add a channel dimension to the mask
+        mask = mask.unsqueeze(0)  # Shape: [1, H, W]
+        
+        # Apply affine transformation to mask
+        mask = transforms.functional.affine(
+            mask, 
+            angle=params[0],  # Rotation angle
+            translate=params[1],  # Translation
+            scale=params[2],  # Scale
+            shear=params[3]  # Shear
+        )
+        
+        # Remove the channel dimension
+        mask = mask.squeeze(0)  # Shape: [H, W]
+
         return {'image': image, 'mask': mask}
 
-# Compose all the transformations
+
 class RandomTransformations:
     def __init__(self):
         self.transform = transforms.Compose([
@@ -139,14 +182,13 @@ class RandomTransformations:
     def __call__(self, sample):
         return self.transform(sample)
 
-# Dataset class
 class UrineStripDataset(Dataset):
     def __init__(self, image_folder, mask_folder, transform=None):
         self.image_folder = image_folder
         self.mask_folder = mask_folder
         self.image_files = sorted(os.listdir(image_folder))
         self.txt_files = sorted(os.listdir(mask_folder))
-        self.transform = transform  # Optional transform to apply to both image and mask
+        self.transform = transform
 
         if len(self.image_files) != len(self.txt_files):
             raise ValueError("Mismatch between number of images and masks")
@@ -160,25 +202,20 @@ class UrineStripDataset(Dataset):
         image_path = os.path.join(self.image_folder, image_file)
         txt_path = os.path.join(self.mask_folder, txt_file)
 
-        # Load image using OpenCV (BGR format) and convert to RGB
+        # Load image
         image = cv2.imread(image_path)
         if image is None:
             raise ValueError(f"Image at {image_path} could not be loaded")
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-        # Resize image (if needed)
         image = cv2.resize(image, (128, 128))
-
-        # Convert to tensor
         image = transforms.ToTensor()(image)
 
-        # Load mask and create from YOLO format
+        # Load mask
         mask = self.create_mask_from_yolo(txt_path)
         mask = cv2.resize(mask, (128, 128), interpolation=cv2.INTER_NEAREST)
-        mask = torch.tensor(mask, dtype=torch.long)  # Convert to tensor
+        mask = torch.tensor(mask, dtype=torch.long)
 
         if self.transform:
-            # Apply any augmentations (ensure mask also gets transformed)
             sample = {'image': image, 'mask': mask}
             sample = self.transform(sample)
             image, mask = sample['image'], sample['mask']
@@ -206,45 +243,20 @@ class UrineStripDataset(Dataset):
 
         return mask
 
-    def create_mask_from_yolo(self, txt_path, image_size=(256, 256)):
-        mask = np.zeros(image_size, dtype=np.uint8)
-        with open(txt_path, 'r') as file:
-            lines = file.readlines()
-        for line in lines:
-            parts = line.strip().split()
-            class_id, center_x, center_y, bbox_width, bbox_height = map(float, parts[:5])
-            center_x = int(center_x * image_size[1])
-            center_y = int(center_y * image_size[0])
-            bbox_width = int(bbox_width * image_size[1])
-            bbox_height = int(bbox_height * image_size[0])
-
-            xmin = max(0, center_x - bbox_width // 2)
-            ymin = max(0, center_y - bbox_height // 2)
-            xmax = min(image_size[1], center_x + bbox_width // 2)
-            ymax = min(image_size[0], center_y + bbox_height // 2)
-
-            mask[ymin:ymax, xmin:xmax] = int(class_id)
-
-        return mask
-
 # Split the dataset
-dataset = UrineStripDataset(image_folder, mask_folder)
+dataset = UrineStripDataset(image_folder, mask_folder, transform=RandomTransformations())
 train_size = int(0.8 * len(dataset))
 val_size = len(dataset) - train_size
 train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)  # Reduce batch size for stability
-val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
-    
+train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
+
 # Initialize the model
-num_classes = 10  # Adjust based on your use case
+num_classes = 10
 unet_model = UNet(in_channels=3, out_channels=num_classes)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 unet_model.to(device)
-
-# Loss function and optimizer
-criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(unet_model.parameters(), lr=0.001, weight_decay=1e-4)
 
 # Mixed precision setup
 scaler = GradScaler()
@@ -253,32 +265,28 @@ scaler = GradScaler()
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(unet_model.parameters(), lr=0.001, weight_decay=1e-4)
 
-# Define Early Stopping Parameters
-patience = 20  # Stop if validation loss doesn't improve for 10 epochs
-best_val_loss = float('inf')  # Initialize best validation loss
-early_stop_counter = 0  # Track epochs without improvement
+# Early stopping parameters
+patience = 20
+best_val_loss = float('inf')
+early_stop_counter = 0
 
-# Training Loop with Early Stopping
-num_epochs = 50
-torch.cuda.empty_cache()  # Clear cache to prevent memory issues
+# Training loop
+num_epochs = 100
+torch.cuda.empty_cache()
 
 for epoch in range(num_epochs):
     unet_model.train()
     running_loss = 0.0
-    
+
     for images, masks in tqdm(train_loader):
         images, masks = images.to(device), masks.to(device)
-        images.requires_grad_(True)
         optimizer.zero_grad()
 
-        # Training without mixed precision
+        # Forward pass
         outputs = unet_model(images)
         loss = criterion(outputs, masks)
 
-        if torch.isnan(loss) or torch.isinf(loss):
-            print("NaN or Inf detected in loss! Exiting training.")
-            break
-
+        # Backward pass
         loss.backward()
         optimizer.step()
 
@@ -291,78 +299,37 @@ for epoch in range(num_epochs):
     total_pixels = 0
 
     with torch.no_grad():
-        for images, masks in tqdm(val_loader):
+        for images, masks in val_loader:
             images, masks = images.to(device), masks.to(device)
             outputs = unet_model(images)
             loss = criterion(outputs, masks)
-            
+
             # Calculate accuracy
             predicted = torch.argmax(outputs, dim=1)
             correct_predictions += (predicted == masks).sum().item()
-            total_pixels += masks.numel()  # Total number of pixels in the mask
+            total_pixels += masks.numel()
 
             val_loss += loss.item()
 
     avg_train_loss = running_loss / len(train_loader)
     avg_val_loss = val_loss / len(val_loader)
-    accuracy = 100 * correct_predictions / total_pixels  # Percentage of correct predictions
+    accuracy = 100 * correct_predictions / total_pixels
 
     print(f"Epoch [{epoch + 1}/{num_epochs}], Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, Val Accuracy: {accuracy:.2f}%")
 
-    # Early Stopping Logic
+    # Early stopping logic
     if avg_val_loss < best_val_loss:
         best_val_loss = avg_val_loss
-        early_stop_counter = 0  # Reset counter
-        torch.save(unet_model.state_dict(), model_filename)  # Save best model
+        early_stop_counter = 0
+        torch.save(unet_model.state_dict(), model_filename)
         print("✅ Model improved and saved!")
     else:
         early_stop_counter += 1
         print(f"⚠️ No improvement in validation loss for {early_stop_counter}/{patience} epochs")
 
-    # Stop training if no improvement for 'patience' epochs
     if early_stop_counter >= patience:
         print("⛔ Early stopping triggered! Training stopped.")
         break
 
-# Save the model
+# Save the final model
 torch.save(unet_model.state_dict(), model_filename)
-
-
-# # Extract bottleneck features for SVM classification
-# def extract_features_and_labels(model, dataloader, device):
-#     model.eval()
-#     features = []
-#     labels = []
-
-#     with torch.no_grad():
-#         for images, masks in tqdm(dataloader, desc="Extracting Features"):
-#             images = images.to(device)
-
-#             # Extract bottleneck features
-#             bottleneck_features = model.extract_features(images)
-#             features.append(bottleneck_features.cpu().numpy())
-
-#             # Flatten masks and append corresponding labels incrementally
-#             for mask in masks:
-#                 labels.append(mask.cpu().numpy().flatten())  # Ensure alignment
-
-#     return np.array(features), np.array(labels)
-
-# # Extract features from the training dataset
-# train_features, train_labels = extract_features_and_labels(unet_model, train_loader, device)
-
-# # Standardize features for SVM
-# scaler = StandardScaler()
-# train_features_scaled = scaler.fit_transform(train_features)
-
-# # Train an SVM classifier
-# svm_classifier = SVC(kernel='rbf', random_state=42)
-# svm_classifier.fit(train_features_scaled, train_labels.flatten())
-
-# # Save the scaler and SVM model
-# joblib.dump(scaler, 'scaler.pkl')
-# joblib.dump(svm_classifier, 'svm_classifier.pkl')
-
-# print("SVM model and scaler saved.")
-
-# # Now you can use the `svm_classifier` for prediction on new samples.
