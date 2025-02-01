@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 10
+names: ['Bilirubin', 'Blood', 'Glucose', 'Ketone', 'Leukocytes', 'Nitrite', 'Protein', 'SpGravity', 'Urobilinogen', 'pH']
+
+roboflow:
+  workspace: urine-test-strips-qq9jx
+  project: urine-test-7e5bh
+  version: 1
+  license: CC BY 4.0
+  url: https://app.roboflow.com/urine-test-strips-qq9jx/urine-test-7e5bh/1
