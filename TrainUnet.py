@@ -35,13 +35,13 @@ class UNet(nn.Module):
         super(UNet, self).__init__()
 
         # Encoder path
-        self.enc1 = nn.Conv2d(in_channels, 32, kernel_size=3, padding=1)
-        self.enc2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.enc3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
-        self.enc4 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
+        self.enc1 = nn.Conv2d(in_channels, 32, kernel_size=3, padding=1, bias=False)
+        self.enc2 = nn.Conv2d(32, 64, kernel_size=3, padding=1, bias=False)
+        self.enc3 = nn.Conv2d(64, 128, kernel_size=3, padding=1, bias=False)
+        self.enc4 = nn.Conv2d(128, 256, kernel_size=3, padding=1, bias=False)
 
         # Bottleneck layer
-        self.bottleneck = nn.Conv2d(256, 512, kernel_size=3, padding=1)
+        self.bottleneck = nn.Conv2d(256, 512, kernel_size=3, padding=1, bias=False)
         self.dropout = nn.Dropout(p=0.5)
 
         # Decoder path
@@ -50,12 +50,12 @@ class UNet(nn.Module):
         self.upconv1 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
 
         # Additional Conv2d layers
-        self.conv_up3 = nn.Conv2d(512, 256, kernel_size=3, padding=1)
-        self.conv_up2 = nn.Conv2d(256, 128, kernel_size=3, padding=1)
-        self.conv_up1 = nn.Conv2d(128, 64, kernel_size=3, padding=1)
+        self.conv_up3 = nn.Conv2d(512, 256, kernel_size=3, padding=1, bias=False)
+        self.conv_up2 = nn.Conv2d(256, 128, kernel_size=3, padding=1, bias=False)
+        self.conv_up1 = nn.Conv2d(128, 64, kernel_size=3, padding=1, bias=False)
 
         # Output layer
-        self.output = nn.Conv2d(64, out_channels, kernel_size=1)
+        self.output = nn.Conv2d(64, out_channels, kernel_size=1, bias=False)
 
     def forward(self, x):
         # Encoder
@@ -243,93 +243,104 @@ class UrineStripDataset(Dataset):
 
         return mask
 
-# Split the dataset
-dataset = UrineStripDataset(image_folder, mask_folder, transform=RandomTransformations())
-train_size = int(0.8 * len(dataset))
-val_size = len(dataset) - train_size
-train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+def main():
+    # Split the dataset
+    dataset = UrineStripDataset(image_folder, mask_folder, transform=RandomTransformations())
+    train_size = int(0.8 * len(dataset))
+    val_size = len(dataset) - train_size
+    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=4, pin_memory=True)
 
-# Initialize the model
-num_classes = 10
-unet_model = UNet(in_channels=3, out_channels=num_classes)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-unet_model.to(device)
+    # Initialize the model
+    num_classes = 10
+    unet_model = UNet(in_channels=3, out_channels=num_classes)
+    unet_model = torch.compile(unet_model)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    unet_model.to(device)
 
-# Mixed precision setup
-scaler = GradScaler()
+    # Mixed precision setup
+    scaler = GradScaler()
 
-# Loss function and optimizer
-criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(unet_model.parameters(), lr=0.001, weight_decay=1e-4)
+    # Loss function and optimizer
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(unet_model.parameters(), lr=0.001, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
 
-# Early stopping parameters
-patience = 20
-best_val_loss = float('inf')
-early_stop_counter = 0
+    # Early stopping parameters
+    patience = 20
+    best_val_loss = float('inf')
+    early_stop_counter = 0
 
-# Training loop
-num_epochs = 100
-torch.cuda.empty_cache()
+    # Training loop
+    num_epochs = 100
+    torch.cuda.empty_cache()
 
-for epoch in range(num_epochs):
-    unet_model.train()
-    running_loss = 0.0
+    for epoch in range(num_epochs):
+        unet_model.train()
+        running_loss = 0.0
 
-    for images, masks in tqdm(train_loader):
-        images, masks = images.to(device), masks.to(device)
-        optimizer.zero_grad()
-
-        # Forward pass
-        outputs = unet_model(images)
-        loss = criterion(outputs, masks)
-
-        # Backward pass
-        loss.backward()
-        optimizer.step()
-
-        running_loss += loss.item()
-
-    # Validation
-    unet_model.eval()
-    val_loss = 0.0
-    correct_predictions = 0
-    total_pixels = 0
-
-    with torch.no_grad():
-        for images, masks in val_loader:
+        for images, masks in tqdm(train_loader):
             images, masks = images.to(device), masks.to(device)
-            outputs = unet_model(images)
-            loss = criterion(outputs, masks)
+            optimizer.zero_grad()
 
-            # Calculate accuracy
-            predicted = torch.argmax(outputs, dim=1)
-            correct_predictions += (predicted == masks).sum().item()
-            total_pixels += masks.numel()
+            # Forward pass
+            with autocast(device_type="cuda"):
+                outputs = unet_model(images)    
+                loss = criterion(outputs, masks)
 
-            val_loss += loss.item()
+            # Backward pass
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
-    avg_train_loss = running_loss / len(train_loader)
-    avg_val_loss = val_loss / len(val_loader)
-    accuracy = 100 * correct_predictions / total_pixels
+            running_loss += loss.item()
 
-    print(f"Epoch [{epoch + 1}/{num_epochs}], Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, Val Accuracy: {accuracy:.2f}%")
+        # Validation
+        unet_model.eval()
+        val_loss = 0.0
+        correct_predictions = 0
+        total_pixels = 0
 
-    # Early stopping logic
-    if avg_val_loss < best_val_loss:
-        best_val_loss = avg_val_loss
-        early_stop_counter = 0
-        torch.save(unet_model.state_dict(), model_filename)
-        print("✅ Model improved and saved!")
-    else:
-        early_stop_counter += 1
-        print(f"⚠️ No improvement in validation loss for {early_stop_counter}/{patience} epochs")
+        with torch.no_grad():
+            torch.cuda.memory_reserved(device)
+            for images, masks in val_loader:
+                images, masks = images.to(device), masks.to(device)
+                outputs = unet_model(images)
+                loss = criterion(outputs, masks)
 
-    if early_stop_counter >= patience:
-        print("⛔ Early stopping triggered! Training stopped.")
-        break
+                # Calculate accuracy
+                predicted = torch.argmax(outputs, dim=1)
+                correct_predictions += (predicted == masks).sum().item()
+                total_pixels += masks.numel()
 
-# Save the final model
-torch.save(unet_model.state_dict(), model_filename)
+                val_loss += loss.item()
+
+        avg_train_loss = running_loss / len(train_loader)
+        avg_val_loss = val_loss / len(val_loader)
+        accuracy = 100 * correct_predictions / total_pixels
+
+        print(f"Epoch [{epoch + 1}/{num_epochs}], Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, Val Accuracy: {accuracy:.2f}%")
+        scheduler.step()
+
+        # Early stopping logic
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            early_stop_counter = 0
+            torch.save(unet_model.state_dict(), model_filename)
+            print("✅ Model improved and saved!")
+        else:
+            early_stop_counter += 1
+            print(f"⚠️ No improvement in validation loss for {early_stop_counter}/{patience} epochs")
+
+        if early_stop_counter >= patience:
+            print("⛔ Early stopping triggered! Training stopped.")
+            break
+
+    # Save the final model
+    torch.save(unet_model.state_dict(), model_filename)
+
+
+if __name__ == '__main__':
+    main()

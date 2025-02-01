@@ -87,7 +87,7 @@ class UNet(nn.Module):
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = UNet(in_channels=3, out_channels=10)  
 
-checkpoint = torch.load('unet_model_20250131-131157.pth', map_location=device, weights_only=True)
+checkpoint = torch.load('unet_model_20250201-110007.pth', map_location=device, weights_only=True)
 
 # Check if it's a full model or just the state_dict
 if 'state_dict' in checkpoint:
@@ -159,7 +159,7 @@ def scale_and_clip_boxes(boxes, orig_shape, pred_shape):
     return scaled_boxes
 
 # Updated bounding box creation with dynamic threshold
-def create_bounding_boxes(predictions, dynamic=True, default_threshold=0.7, percentile=95):
+def create_bounding_boxes(predictions, dynamic=True, default_threshold=0.5, percentile=95):
     bounding_boxes = []
     class_ids = []
     for i in range(predictions.shape[0]):
@@ -179,7 +179,7 @@ def create_bounding_boxes(predictions, dynamic=True, default_threshold=0.7, perc
     return bounding_boxes, class_ids
 
 # Draw and show bounding boxes without class names
-def draw_and_show_bounding_boxes(image_path, boxes, class_ids, min_area_ratio=0.001, threshold=0.7):
+def draw_and_show_bounding_boxes(image_path, boxes, class_ids, min_area_ratio=0.001, threshold=0.5):
     image = cv2.imread(image_path)
     orig_h, orig_w = image.shape[:2]
     scale_x = orig_w / 256
