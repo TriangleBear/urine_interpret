@@ -25,8 +25,8 @@ torch.backends.cudnn.benchmark = True  # Enable cuDNN benchmark for performance
 torch.backends.cudnn.enabled = True  # Enable cuDNN for performance
 
 # Define the paths to your image and mask folders
-image_folder = r'D:\Programming\urine_interpret\almost 1k dataset\train\images'
-mask_folder = r'D:\Programming\urine_interpret\almost 1k dataset\train\labels'
+image_folder = r"almost 1k dataset/train/images"
+mask_folder = r"almost 1k dataset/train/labels"
 
 # Define the model filename with a timestamp
 timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -242,7 +242,7 @@ class UrineStripDataset(Dataset):
             xmax = min(image_size[1], center_x + bbox_width // 2)
             ymax = min(image_size[0], center_y + bbox_height // 2)
 
-            mask[ymin:ymax, xmin:xmax] = int(class_id) + 1
+            mask[ymin:ymax, xmin:xmax] = int(class_id)
 
         return mask
 
@@ -291,8 +291,8 @@ def main():
             images, masks = images.to(device), masks.to(device)
             optimizer.zero_grad()
 
-            # Forward pass
-            with autocast(device_type="cuda"), torch.no_grad():
+            # Forward pass (remove torch.no_grad())
+            with autocast(device_type="cuda"):  # Remove torch.no_grad() here
                 outputs = unet_model(images)    
                 loss = criterion(outputs, masks)
 
@@ -304,7 +304,7 @@ def main():
 
             running_loss += loss.item()
 
-        # Validation
+        # Validation (keep torch.no_grad() here)
         unet_model.eval()
         val_loss = 0.0
         correct_predictions = 0
@@ -344,9 +344,6 @@ def main():
         if early_stop_counter >= patience:
             print("⛔ Early stopping triggered! Training stopped.")
             break
-
-    # Save the final model
-    torch.save(unet_model.state_dict(), model_filename)
 
 
 if __name__ == '__main__':
