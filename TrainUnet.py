@@ -10,6 +10,7 @@ import numpy as np
 import torch.optim as optim
 import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
+import torch._dynamo
 from torch.amp import autocast, GradScaler
 import torch.nn.functional as F
 from tqdm import tqdm
@@ -17,6 +18,8 @@ from PIL import Image
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 import joblib
 import random
+
+torch._dynamo.config.suppress_errors = True
 
 torch.backends.cudnn.benchmark = True  # Enable cuDNN benchmark for performance
 torch.backends.cudnn.enabled = True  # Enable cuDNN for performance
@@ -213,7 +216,7 @@ class UrineStripDataset(Dataset):
         # Load mask
         mask = self.create_mask_from_yolo(txt_path)
         mask = cv2.resize(mask, (128, 128), interpolation=cv2.INTER_NEAREST)
-        mask = torch.tensor(mask, dtype=torch.long)
+        mask = torch.tensor(mask, dtype=torch.long).squeeze(0)
 
         if self.transform:
             sample = {'image': image, 'mask': mask}
@@ -239,7 +242,7 @@ class UrineStripDataset(Dataset):
             xmax = min(image_size[1], center_x + bbox_width // 2)
             ymax = min(image_size[0], center_y + bbox_height // 2)
 
-            mask[ymin:ymax, xmin:xmax] = int(class_id)
+            mask[ymin:ymax, xmin:xmax] = int(class_id) + 1
 
         return mask
 
@@ -277,7 +280,10 @@ def main():
     num_epochs = 100
     torch.cuda.empty_cache()
 
+    torch.autograd.set_detect_anomaly(True)
+
     for epoch in range(num_epochs):
+        torch.cuda.empty_cache()
         unet_model.train()
         running_loss = 0.0
 
@@ -286,7 +292,7 @@ def main():
             optimizer.zero_grad()
 
             # Forward pass
-            with autocast(device_type="cuda"):
+            with autocast(device_type="cuda"), torch.no_grad():
                 outputs = unet_model(images)    
                 loss = criterion(outputs, masks)
 
@@ -294,6 +300,7 @@ def main():
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
+            optimizer.zero_grad()  # Ensure gradients are cleared
 
             running_loss += loss.item()
 
@@ -311,7 +318,7 @@ def main():
                 loss = criterion(outputs, masks)
 
                 # Calculate accuracy
-                predicted = torch.argmax(outputs, dim=1)
+                predicted = torch.argmax(F.softmax(outputs, dim=1), dim=1).detach()
                 correct_predictions += (predicted == masks).sum().item()
                 total_pixels += masks.numel()
 
@@ -328,7 +335,7 @@ def main():
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             early_stop_counter = 0
-            torch.save(unet_model.state_dict(), model_filename)
+            torch.save({'state_dict': unet_model.state_dict()}, model_filename)
             print("✅ Model improved and saved!")
         else:
             early_stop_counter += 1
