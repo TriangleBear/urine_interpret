@@ -17,9 +17,7 @@ import matplotlib.pyplot as plt  # For plotting
 
 torch._dynamo.config.suppress_errors = True
 
-# Check if CUDA is available and set the device accordingly
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
 
 torch.backends.cudnn.benchmark = True  # Enable cuDNN benchmark for performance
 torch.backends.cudnn.enabled = True  # Enable cuDNN for performance
@@ -418,4 +416,7 @@ def main():
     plt.show()
 
 if __name__ == '__main__':
+    # Check if CUDA is available and set the device accordingly
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
     main()
