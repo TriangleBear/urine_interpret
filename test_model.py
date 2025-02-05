@@ -80,7 +80,7 @@ class UNet(nn.Module):
         # Output layer
         output = self.output(up1)
 
-        return output
+        return output   
 
 # Load the model
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
