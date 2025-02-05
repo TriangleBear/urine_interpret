@@ -21,6 +21,10 @@ import random
 
 torch._dynamo.config.suppress_errors = True
 
+# Check if CUDA is available and set the device accordingly
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
 torch.backends.cudnn.benchmark = True  # Enable cuDNN benchmark for performance
 torch.backends.cudnn.enabled = True  # Enable cuDNN for performance
 
@@ -34,18 +38,37 @@ model_filename = f"unet_model_{timestamp}.pth"
 
 # Define the U-Net model class
 class UNet(nn.Module):
-    def __init__(self, in_channels, out_channels=10):
+    def __init__(self, in_channels, out_channels=10, dropout_prob=0.5):
         super(UNet, self).__init__()
 
         # Encoder path
-        self.enc1 = nn.Conv2d(in_channels, 32, kernel_size=3, padding=1, bias=False)
-        self.enc2 = nn.Conv2d(32, 64, kernel_size=3, padding=1, bias=False)
-        self.enc3 = nn.Conv2d(64, 128, kernel_size=3, padding=1, bias=False)
-        self.enc4 = nn.Conv2d(128, 256, kernel_size=3, padding=1, bias=False)
+        self.enc1 = nn.Sequential(
+            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_prob)
+        )
+        self.enc2 = nn.Sequential(
+            nn.Conv2d(32, 64, kernel_size=3, padding=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_prob)
+        )
+        self.enc3 = nn.Sequential(
+            nn.Conv2d(64, 128, kernel_size=3, padding=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_prob)
+        )
+        self.enc4 = nn.Sequential(
+            nn.Conv2d(128, 256, kernel_size=3, padding=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_prob)
+        )
 
         # Bottleneck layer
-        self.bottleneck = nn.Conv2d(256, 512, kernel_size=3, padding=1, bias=False)
-        self.dropout = nn.Dropout(p=0.5)
+        self.bottleneck = nn.Sequential(
+            nn.Conv2d(256, 512, kernel_size=3, padding=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_prob)
+        )
 
         # Decoder path
         self.upconv3 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
@@ -53,9 +76,21 @@ class UNet(nn.Module):
         self.upconv1 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
 
         # Additional Conv2d layers
-        self.conv_up3 = nn.Conv2d(512, 256, kernel_size=3, padding=1, bias=False)
-        self.conv_up2 = nn.Conv2d(256, 128, kernel_size=3, padding=1, bias=False)
-        self.conv_up1 = nn.Conv2d(128, 64, kernel_size=3, padding=1, bias=False)
+        self.conv_up3 = nn.Sequential(
+            nn.Conv2d(512, 256, kernel_size=3, padding=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_prob)
+        )
+        self.conv_up2 = nn.Sequential(
+            nn.Conv2d(256, 128, kernel_size=3, padding=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_prob)
+        )
+        self.conv_up1 = nn.Sequential(
+            nn.Conv2d(128, 64, kernel_size=3, padding=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_prob)
+        )
 
         # Output layer
         self.output = nn.Conv2d(64, out_channels, kernel_size=1, bias=False)
@@ -69,7 +104,6 @@ class UNet(nn.Module):
 
         # Bottleneck
         bottleneck = checkpoint.checkpoint(self.bottleneck, enc4, use_reentrant=False)
-        bottleneck = self.dropout(bottleneck)
 
         # Decoder
         up3 = checkpoint.checkpoint(self.upconv3, bottleneck, use_reentrant=False)
@@ -180,6 +214,8 @@ class RandomTransformations:
             RandomFlip(horizontal=True, vertical=True),
             RandomRotation(degrees=10),  # Rotate by up to 10 degrees
             RandomAffine(translate=(0.1, 0.1)),  # Small translations
+            transforms.ToTensor(),  # Convert image to tensor
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # Normalize
         ])
 
     def __call__(self, sample):
@@ -233,6 +269,7 @@ class UrineStripDataset(Dataset):
 
         return image, mask
 
+
     def create_mask_from_yolo(self, txt_path, image_size=(256, 256)):
         mask = np.zeros(image_size, dtype=np.uint8)
         with open(txt_path, 'r') as file:
@@ -276,7 +313,7 @@ def main():
 
     # Loss function and optimizer
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(unet_model.parameters(), lr=0.0001, weight_decay=1e-4)
+    optimizer = torch.optim.Adam(unet_model.parameters(), lr=0.0001, weight_decay=1e-6)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
 
     # Early stopping parameters
@@ -295,7 +332,7 @@ def main():
         unet_model.train()
         running_loss = 0.0
 
-        for images, masks in tqdm(train_loader):
+        for images, masks in tqdm(train_loader, desc='Training Epoch', leave=False):
             images, masks = images.to(device), masks.to(device)
             optimizer.zero_grad()
 
@@ -331,7 +368,7 @@ def main():
 
         with torch.no_grad():
             torch.cuda.memory_reserved(device)
-            for images, masks in val_loader:
+            for images, masks in tqdm(val_loader, desc="Validation", leave=False):
                 images, masks = images.to(device), masks.to(device)
                 outputs = unet_model(images)
                 loss = criterion(outputs, masks)
@@ -363,6 +400,30 @@ def main():
         if early_stop_counter >= patience:
             print("⛔ Early stopping triggered! Training stopped.")
             break
+
+    torch.save({'state_dict': unet_model.state_dict()}, model_filename)
+
+        # Plot the training and validation loss and accuracy
+    epochs = range(1, len(train_losses) + 1)
+    plt.figure(figsize=(12, 4))
+
+    plt.subplot(1, 2, 1)
+    plt.plot(epochs, train_losses, label='Train Loss')
+    plt.plot(epochs, val_losses, label='Validation Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.title('Training and Validation Loss')
+
+    plt.subplot(1, 2, 2)
+    plt.plot(epochs, val_accuracies, label='Validation Accuracy')
+    plt.xlabel('Epochs')
+    plt.ylabel('Accuracy (%)')
+    plt.legend()
+    plt.title('Validation Accuracy')
+
+    plt.tight_layout()
+    plt.show()
 
 
 if __name__ == '__main__':
