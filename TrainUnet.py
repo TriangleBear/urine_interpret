@@ -207,13 +207,14 @@ class RandomAffine:
 
         return {'image': image, 'mask': mask}
 
-
 class RandomTransformations:
     def __init__(self):
         self.transform = transforms.Compose([
             RandomFlip(horizontal=True, vertical=True),
             RandomRotation(degrees=10),  # Rotate by up to 10 degrees
             RandomAffine(translate=(0.1, 0.1)),  # Small translations
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),  # Color jitter
+            transforms.RandomGrayscale(p=0.1),  # Randomly convert images to grayscale
             transforms.ToTensor(),  # Convert image to tensor
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # Normalize
         ])
@@ -298,8 +299,8 @@ def main():
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-    train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=4, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=4, pin_memory=True)
 
     # Initialize the model
     num_classes = 10
@@ -314,12 +315,17 @@ def main():
     # Loss function and optimizer
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(unet_model.parameters(), lr=0.0001, weight_decay=1e-6)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
 
     # Early stopping parameters
     patience = 20
     best_val_loss = float('inf')
     early_stop_counter = 0
+
+    # Lists to store loss and accuracy values
+    train_losses = []
+    val_losses = []
+    val_accuracies = []
 
     # Training loop
     num_epochs = 100
@@ -360,6 +366,9 @@ def main():
 
             running_loss += loss.item()
 
+        avg_train_loss = running_loss / len(train_loader)
+        train_losses.append(avg_train_loss)
+
         # Validation (keep torch.no_grad() here)
         unet_model.eval()
         val_loss = 0.0
@@ -372,26 +381,26 @@ def main():
                 images, masks = images.to(device), masks.to(device)
                 outputs = unet_model(images)
                 loss = criterion(outputs, masks)
-
-                # Calculate accuracy
-                predicted = torch.argmax(F.softmax(outputs, dim=1), dim=1).detach()
-                correct_predictions += (predicted == masks).sum().item()
-                total_pixels += masks.numel()
-
                 val_loss += loss.item()
 
-        avg_train_loss = running_loss / len(train_loader)
+                # Calculate accuracy
+                preds = torch.argmax(outputs, dim=1)
+                correct_predictions += (preds == masks).sum().item()
+                total_pixels += masks.numel()
+
         avg_val_loss = val_loss / len(val_loader)
+        val_losses.append(avg_val_loss)
         accuracy = 100 * correct_predictions / total_pixels
+        val_accuracies.append(accuracy)
 
         print(f"Epoch [{epoch + 1}/{num_epochs}], Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, Val Accuracy: {accuracy:.2f}%")
-        scheduler.step()
+        scheduler.step(avg_val_loss)
 
         # Early stopping logic
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             early_stop_counter = 0
-            torch.save({'state_dict': unet_model.state_dict()}, model_filename)
+            torch.save(unet_model.state_dict(), model_filename)
             print("✅ Model improved and saved!")
         else:
             early_stop_counter += 1
@@ -401,9 +410,10 @@ def main():
             print("⛔ Early stopping triggered! Training stopped.")
             break
 
-    torch.save({'state_dict': unet_model.state_dict()}, model_filename)
+    # Save the final model
+    torch.save(unet_model.state_dict(), model_filename)
 
-        # Plot the training and validation loss and accuracy
+    # Plot the training and validation loss and accuracy
     epochs = range(1, len(train_losses) + 1)
     plt.figure(figsize=(12, 4))
 
