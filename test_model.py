@@ -9,84 +9,97 @@ import cv2
 import matplotlib.pyplot as plt
 
 class UNet(nn.Module):
-    def __init__(self, in_channels, out_channels=10):
+    def __init__(self, in_channels, out_channels=10, dropout_prob=0.5):
         super(UNet, self).__init__()
 
         # Encoder path
         self.enc1 = nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_prob)
         )
         self.enc2 = nn.Sequential(
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(32, 64, kernel_size=3, padding=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_prob)
         )
         self.enc3 = nn.Sequential(
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(64, 128, kernel_size=3, padding=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_prob)
         )
         self.enc4 = nn.Sequential(
-            nn.Conv2d(128, 256, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(128, 256, kernel_size=3, padding=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_prob)
         )
 
         # Bottleneck layer
         self.bottleneck = nn.Sequential(
-            nn.Conv2d(256, 512, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(256, 512, kernel_size=3, padding=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_prob)
         )
-        self.dropout = nn.Dropout(p=0.2)
 
         # Decoder path
         self.upconv3 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
         self.upconv2 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
         self.upconv1 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
 
-        # Additional Conv2d layers after concatenation to reduce channels
-        self.conv_up3 = nn.Conv2d(512, 256, kernel_size=3, padding=1)
-        self.conv_up2 = nn.Conv2d(256, 128, kernel_size=3, padding=1)
-        self.conv_up1 = nn.Conv2d(128, 64, kernel_size=3, padding=1)
+        # Additional Conv2d layers
+        self.conv_up3 = nn.Sequential(
+            nn.Conv2d(512, 256, kernel_size=3, padding=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_prob)
+        )
+        self.conv_up2 = nn.Sequential(
+            nn.Conv2d(256, 128, kernel_size=3, padding=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_prob)
+        )
+        self.conv_up1 = nn.Sequential(
+            nn.Conv2d(128, 64, kernel_size=3, padding=1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_prob)
+        )
 
         # Output layer
-        self.output = nn.Conv2d(64, out_channels, kernel_size=1)
+        self.output = nn.Conv2d(64, out_channels, kernel_size=1, bias=False)
 
     def forward(self, x):
-        # Encoder path
-        enc1 = self.enc1(x)
-        enc2 = self.enc2(enc1)
-        enc3 = self.enc3(enc2)
-        enc4 = self.enc4(enc3)
+        # Encoder
+        enc1 = checkpoint.checkpoint(self.enc1, x, use_reentrant=False)
+        enc2 = checkpoint.checkpoint(self.enc2, enc1, use_reentrant=False)
+        enc3 = checkpoint.checkpoint(self.enc3, enc2, use_reentrant=False)
+        enc4 = checkpoint.checkpoint(self.enc4, enc3, use_reentrant=False)
 
-        # Bottleneck layer
-        bottleneck = self.bottleneck(enc4)
-        bottleneck = self.dropout(bottleneck)
+        # Bottleneck
+        bottleneck = checkpoint.checkpoint(self.bottleneck, enc4, use_reentrant=False)
 
-        # Decoder path
-        up3 = self.upconv3(bottleneck)
+        # Decoder
+        up3 = checkpoint.checkpoint(self.upconv3, bottleneck, use_reentrant=False)
         up3 = F.interpolate(up3, size=enc4.size()[2:], mode='bilinear', align_corners=True)
         up3 = torch.cat([up3, enc4], dim=1)
         up3 = self.conv_up3(up3)
 
-        up2 = self.upconv2(up3)
+        up2 = checkpoint.checkpoint(self.upconv2, up3, use_reentrant=False)
         up2 = F.interpolate(up2, size=enc3.size()[2:], mode='bilinear', align_corners=True)
         up2 = torch.cat([up2, enc3], dim=1)
         up2 = self.conv_up2(up2)
 
-        up1 = self.upconv1(up2)
+        up1 = checkpoint.checkpoint(self.upconv1, up2, use_reentrant=False)
         up1 = F.interpolate(up1, size=enc2.size()[2:], mode='bilinear', align_corners=True)
         up1 = torch.cat([up1, enc2], dim=1)
         up1 = self.conv_up1(up1)
-
-        # Output layer
-        output = self.output(up1)
-
-        return output   
+    
+        # Output
+        return self.output(up1)
 
 # Load the model
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = UNet(in_channels=3, out_channels=10)
 
-checkpoint = torch.load('models/unet_model_20250204-045312.pth', map_location=device)
+checkpoint = torch.load('models/unet_model_20250201-132802.pth', map_location=device)
 
 # Check if it's a full model or just the state_dict
 if 'state_dict' in checkpoint:
@@ -161,7 +174,7 @@ def create_bounding_boxes(predictions, dynamic=True, default_threshold=0.5, perc
     return bounding_boxes, class_ids
 
 # Draw and show bounding boxes without class names
-def draw_and_show_bounding_boxes(image_path, boxes, class_ids, min_area_ratio=0.001, threshold=0.5):
+def draw_and_show_bounding_boxes(image_path, boxes, class_ids, min_area_ratio=0.001, threshold=0.3):
     image = cv2.imread(image_path)
     orig_h, orig_w = image.shape[:2]
     scale_x = orig_w / 256
