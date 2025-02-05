@@ -1,9 +1,6 @@
 import torch
 from torch.utils.data import DataLoader, Dataset, random_split
-from sklearn.svm import SVC
-from sklearn.preprocessing import StandardScaler
 from torchvision import transforms
-import cv2
 import os
 import time
 import numpy as np
@@ -15,9 +12,8 @@ from torch.amp import autocast, GradScaler
 import torch.nn.functional as F
 from tqdm import tqdm
 from PIL import Image
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-import joblib
 import random
+import matplotlib.pyplot as plt  # For plotting
 
 torch._dynamo.config.suppress_errors = True
 
@@ -28,15 +24,25 @@ print(f"Using device: {device}")
 torch.backends.cudnn.benchmark = True  # Enable cuDNN benchmark for performance
 torch.backends.cudnn.enabled = True  # Enable cuDNN for performance
 
-# Define the paths to your image and mask folders
-image_folder = r"almost 1k dataset/train/images"
-mask_folder = r"almost 1k dataset/train/labels"
-
 # Define the model filename with a timestamp
 timestamp = time.strftime("%Y%m%d-%H%M%S")
 model_filename = f"unet_model_{timestamp}.pth"
 
+# -------------------------------
+# Custom helper function for masks
+# -------------------------------
+def mask_to_tensor(mask):
+    """
+    Converts a PIL mask image to a 2D torch tensor of type long.
+    This ensures the mask is of shape (H, W) rather than (1, H, W),
+    which is required for nn.CrossEntropyLoss.
+    """
+    mask = np.array(mask, dtype=np.int64)
+    return torch.from_numpy(mask)
+
+# -------------------------------
 # Define the U-Net model class
+# -------------------------------
 class UNet(nn.Module):
     def __init__(self, in_channels, out_channels=10, dropout_prob=0.5):
         super(UNet, self).__init__()
@@ -124,7 +130,9 @@ class UNet(nn.Module):
         # Output
         return self.output(up1)
 
+# -------------------------------
 # Data augmentation classes
+# -------------------------------
 class RandomFlip:
     def __init__(self, horizontal=True, vertical=False):
         self.horizontal = horizontal
@@ -132,15 +140,12 @@ class RandomFlip:
 
     def __call__(self, sample):
         image, mask = sample['image'], sample['mask']
-        
         if self.horizontal and random.random() > 0.5:
             image = transforms.functional.hflip(image)
             mask = transforms.functional.hflip(mask)
-        
         if self.vertical and random.random() > 0.5:
             image = transforms.functional.vflip(image)
             mask = transforms.functional.vflip(mask)
-        
         return {'image': image, 'mask': mask}
 
 class RandomRotation:
@@ -150,19 +155,8 @@ class RandomRotation:
     def __call__(self, sample):
         image, mask = sample['image'], sample['mask']
         angle = random.uniform(-self.degrees, self.degrees)
-        
-        # Rotate image
         image = transforms.functional.rotate(image, angle)
-
-        # Add a channel dimension to the mask
-        mask = mask.unsqueeze(0)  # Shape: [1, H, W]
-        
-        # Rotate mask
         mask = transforms.functional.rotate(mask, angle)
-        
-        # Remove the channel dimension
-        mask = mask.squeeze(0)  # Shape: [H, W]
-
         return {'image': image, 'mask': mask}
 
 class RandomAffine:
@@ -171,57 +165,54 @@ class RandomAffine:
 
     def __call__(self, sample):
         image, mask = sample['image'], sample['mask']
-        
-        # Get parameters for affine transformation
         params = transforms.RandomAffine.get_params(
-            degrees=[-10, 10],  # Random rotation between -10 and 10 degrees
-            translate=self.translate,  # Random translation
-            scale_ranges=None,  # No scaling
-            shears=None,  # No shearing
-            img_size=image.size()[1:]  # Image size (height, width)
+            degrees=[-10, 10],
+            translate=self.translate,
+            scale_ranges=None,
+            shears=None,
+            img_size=image.size
         )
-        
-        # Apply affine transformation to image
-        image = transforms.functional.affine(
-            image, 
-            angle=params[0],  # Rotation angle
-            translate=params[1],  # Translation
-            scale=params[2],  # Scale
-            shear=params[3]  # Shear
-        )
-
-        # Add a channel dimension to the mask
-        mask = mask.unsqueeze(0)  # Shape: [1, H, W]
-        
-        # Apply affine transformation to mask
-        mask = transforms.functional.affine(
-            mask, 
-            angle=params[0],  # Rotation angle
-            translate=params[1],  # Translation
-            scale=params[2],  # Scale
-            shear=params[3]  # Shear
-        )
-        
-        # Remove the channel dimension
-        mask = mask.squeeze(0)  # Shape: [H, W]
-
+        image = transforms.functional.affine(image, angle=params[0], translate=params[1], scale=params[2], shear=params[3])
+        mask = transforms.functional.affine(mask, angle=params[0], translate=params[1], scale=params[2], shear=params[3])
         return {'image': image, 'mask': mask}
 
+# -------------------------------
+# Define the joint and separate transformations.
+# -------------------------------
 class RandomTransformations:
     def __init__(self):
-        self.transform = transforms.Compose([
+        # These transforms need to be applied jointly.
+        self.joint_transform = transforms.Compose([
             RandomFlip(horizontal=True, vertical=True),
-            RandomRotation(degrees=10),  # Rotate by up to 10 degrees
-            RandomAffine(translate=(0.1, 0.1)),  # Small translations
-            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),  # Color jitter
-            transforms.RandomGrayscale(p=0.1),  # Randomly convert images to grayscale
-            transforms.ToTensor(),  # Convert image to tensor
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # Normalize
+            RandomRotation(degrees=10),
+            RandomAffine(translate=(0.1, 0.1))
+        ])
+        
+        # Image-only transforms.
+        self.image_transform = transforms.Compose([
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
+            transforms.RandomGrayscale(p=0.1),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+        
+        # Mask-only transforms: use the custom function to get a 2D tensor.
+        self.mask_transform = transforms.Compose([
+            mask_to_tensor
         ])
 
     def __call__(self, sample):
-        return self.transform(sample)
+        # Apply joint spatial transforms.
+        sample = self.joint_transform(sample)
+        
+        # Then apply separate transforms to image and mask.
+        image = self.image_transform(sample['image'])
+        mask = self.mask_transform(sample['mask'])
+        return {'image': image, 'mask': mask}
 
+# -------------------------------
+# Define your dataset.
+# -------------------------------
 class UrineStripDataset(Dataset):
     def __init__(self, image_folder, mask_folder, transform=None):
         self.image_folder = image_folder
@@ -243,25 +234,12 @@ class UrineStripDataset(Dataset):
         txt_path = os.path.join(self.mask_folder, txt_file)
 
         # Load image
-        image = cv2.imread(image_path)
-        if image is None:
-            raise ValueError(f"Image at {image_path} could not be loaded")
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        image = cv2.resize(image, (128, 128))
-        image = transforms.ToTensor()(image)
-
-        # Check for NaN or inf in image
-        if torch.isnan(image).any() or torch.isinf(image).any():
-            raise ValueError(f"Image at {image_path} contains NaN or inf values")
+        image = Image.open(image_path).convert("RGB")
+        image = image.resize((128, 128))
 
         # Load mask
         mask = self.create_mask_from_yolo(txt_path)
-        mask = cv2.resize(mask, (128, 128), interpolation=cv2.INTER_NEAREST)
-        mask = torch.tensor(mask, dtype=torch.long).squeeze(0)
-
-        # Check for NaN or inf in mask
-        if torch.isnan(mask).any() or torch.isinf(mask).any():
-            raise ValueError(f"Mask at {txt_path} contains NaN or inf values")
+        mask = Image.fromarray(mask).resize((128, 128), Image.NEAREST)
 
         if self.transform:
             sample = {'image': image, 'mask': mask}
@@ -269,7 +247,6 @@ class UrineStripDataset(Dataset):
             image, mask = sample['image'], sample['mask']
 
         return image, mask
-
 
     def create_mask_from_yolo(self, txt_path, image_size=(256, 256)):
         mask = np.zeros(image_size, dtype=np.uint8)
@@ -292,7 +269,14 @@ class UrineStripDataset(Dataset):
 
         return mask
 
+# -------------------------------
+# Main training loop
+# -------------------------------
 def main():
+    # Define the paths to your image and mask folders
+    image_folder = r"almost 1k dataset/train/images"
+    mask_folder = r"almost 1k dataset/train/labels"
+
     # Split the dataset
     dataset = UrineStripDataset(image_folder, mask_folder, transform=RandomTransformations())
     train_size = int(0.8 * len(dataset))
@@ -305,8 +289,7 @@ def main():
     # Initialize the model
     num_classes = 10
     unet_model = UNet(in_channels=3, out_channels=num_classes)
-    unet_model = torch.compile(unet_model)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # unet_model = torch.compile(unet_model)
     unet_model.to(device)
 
     # Mixed precision setup
@@ -315,7 +298,7 @@ def main():
     # Loss function and optimizer
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(unet_model.parameters(), lr=0.0001, weight_decay=1e-6)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     # Early stopping parameters
     patience = 20
@@ -376,7 +359,6 @@ def main():
         total_pixels = 0
 
         with torch.no_grad():
-            torch.cuda.memory_reserved(device)
             for images, masks in tqdm(val_loader, desc="Validation", leave=False):
                 images, masks = images.to(device), masks.to(device)
                 outputs = unet_model(images)
@@ -434,7 +416,6 @@ def main():
 
     plt.tight_layout()
     plt.show()
-
 
 if __name__ == '__main__':
     main()
