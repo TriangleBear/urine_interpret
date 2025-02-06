@@ -281,13 +281,12 @@ def main():
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, num_workers=4, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=4, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=4, pin_memory=True)
 
     # Initialize the model
     num_classes = 10
     unet_model = UNet(in_channels=3, out_channels=num_classes)
-    # unet_model = torch.compile(unet_model)
     unet_model.to(device)
 
     # Mixed precision setup
@@ -295,11 +294,11 @@ def main():
 
     # Loss function and optimizer
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(unet_model.parameters(), lr=0.0001, weight_decay=1e-6)
+    optimizer = torch.optim.Adam(unet_model.parameters(), lr=0.0002, weight_decay=1e-6)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     # Early stopping parameters
-    patience = 20
+    patience = 10
     best_val_loss = float('inf')
     early_stop_counter = 0
 
@@ -310,6 +309,7 @@ def main():
 
     # Training loop
     num_epochs = 100
+    validation_interval = 2  # Validate every 2 epochs
     torch.cuda.empty_cache()
 
     torch.autograd.set_detect_anomaly(True)
@@ -323,7 +323,7 @@ def main():
             images, masks = images.to(device), masks.to(device)
             optimizer.zero_grad()
 
-            # Forward pass
+            # Forward pass with mixed precision
             with autocast(device_type="cuda"):
                 outputs = unet_model(images)
                 
@@ -349,64 +349,66 @@ def main():
 
         avg_train_loss = running_loss / len(train_loader)
         train_losses.append(avg_train_loss)
+        print(f"Epoch [{epoch + 1}/{num_epochs}], Train Loss: {avg_train_loss:.4f}")
 
-        # Validation (keep torch.no_grad() here)
-        unet_model.eval()
-        val_loss = 0.0
-        correct_predictions = 0
-        total_pixels = 0
+        # Only run validation every few epochs
+        if (epoch + 1) % validation_interval == 0 or epoch == num_epochs - 1:
+            unet_model.eval()
+            val_loss = 0.0
+            correct_predictions = 0
+            total_pixels = 0
 
-        with torch.no_grad():
-            for images, masks in tqdm(val_loader, desc="Validation", leave=False):
-                images, masks = images.to(device), masks.to(device)
-                outputs = unet_model(images)
-                loss = criterion(outputs, masks)
-                val_loss += loss.item()
+            with torch.no_grad():
+                for images, masks in tqdm(val_loader, desc="Validation", leave=False):
+                    images, masks = images.to(device), masks.to(device)
+                    outputs = unet_model(images)
+                    loss = criterion(outputs, masks)
+                    val_loss += loss.item()
 
-                # Calculate accuracy
-                preds = torch.argmax(outputs, dim=1)
-                correct_predictions += (preds == masks).sum().item()
-                total_pixels += masks.numel()
+                    # Calculate accuracy
+                    preds = torch.argmax(outputs, dim=1)
+                    correct_predictions += (preds == masks).sum().item()
+                    total_pixels += masks.numel()
 
-        avg_val_loss = val_loss / len(val_loader)
-        val_losses.append(avg_val_loss)
-        accuracy = 100 * correct_predictions / total_pixels
-        val_accuracies.append(accuracy)
+            avg_val_loss = val_loss / len(val_loader)
+            val_losses.append(avg_val_loss)
+            accuracy = 100 * correct_predictions / total_pixels
+            val_accuracies.append(accuracy)
 
-        print(f"Epoch [{epoch + 1}/{num_epochs}], Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, Val Accuracy: {accuracy:.2f}%")
-        scheduler.step(avg_val_loss)
+            print(f"Epoch [{epoch + 1}/{num_epochs}], Val Loss: {avg_val_loss:.4f}, Val Accuracy: {accuracy:.2f}%")
+            scheduler.step(avg_val_loss)
 
-        # Early stopping logic
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
-            early_stop_counter = 0
-            torch.save(unet_model.state_dict(), model_filename)
-            print("✅ Model improved and saved!")
-        else:
-            early_stop_counter += 1
-            print(f"⚠️ No improvement in validation loss for {early_stop_counter}/{patience} epochs")
+            # Early stopping logic
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                early_stop_counter = 0
+                torch.save(unet_model.state_dict(), model_filename)
+                print("✅ Model improved and saved!")
+            else:
+                early_stop_counter += 1
+                print(f"⚠️ No improvement in validation loss for {early_stop_counter}/{patience} epochs")
 
-        if early_stop_counter >= patience:
-            print("⛔ Early stopping triggered! Training stopped.")
-            break
+            if early_stop_counter >= patience:
+                print("⛔ Early stopping triggered! Training stopped.")
+                break
 
     # Save the final model
     torch.save(unet_model.state_dict(), model_filename)
 
     # Plot the training and validation loss and accuracy
-    epochs = range(1, len(train_losses) + 1)
+    epochs_range = range(1, len(train_losses) + 1)
     plt.figure(figsize=(12, 4))
 
     plt.subplot(1, 2, 1)
-    plt.plot(epochs, train_losses, label='Train Loss')
-    plt.plot(epochs, val_losses, label='Validation Loss')
+    plt.plot(epochs_range, train_losses, label='Train Loss')
+    plt.plot(epochs_range, val_losses, label='Validation Loss')
     plt.xlabel('Epochs')
     plt.ylabel('Loss')
     plt.legend()
     plt.title('Training and Validation Loss')
 
     plt.subplot(1, 2, 2)
-    plt.plot(epochs, val_accuracies, label='Validation Accuracy')
+    plt.plot(epochs_range, val_accuracies, label='Validation Accuracy')
     plt.xlabel('Epochs')
     plt.ylabel('Accuracy (%)')
     plt.legend()
