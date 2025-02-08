@@ -7,7 +7,7 @@ names: ['Bilirubin', 'Blood', 'Glucose', 'Ketone', 'Leukocytes', 'Nitrite', 'Pro
 
 roboflow:
   workspace: urine-test-strips-qq9jx
-  project: urine-test-7e5bh
-  version: 1
-  license: CC BY 4.0
-  url: https://app.roboflow.com/urine-test-strips-qq9jx/urine-test-7e5bh/1
+  project: urine-test-strips-main
+  version: 6
+  license: Private
+  url: https://app.roboflow.com/urine-test-strips-qq9jx/urine-test-strips-main/6
