@@ -254,8 +254,8 @@ class UrineStripDataset(Dataset):
 # Main training loop
 # -------------------------------
 def main():
-    image_folder = r"almost 1k dataset/train/images"
-    mask_folder = r"almost 1k dataset/train/labels"
+    image_folder = r"3k plus/train/images"
+    mask_folder = r"3k plus/train/labels"
 
     # Create two datasets with different transforms:
     full_dataset = UrineStripDataset(image_folder, mask_folder, transform=None)
