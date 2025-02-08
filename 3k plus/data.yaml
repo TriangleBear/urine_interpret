@@ -1,0 +1,15 @@
+train: train/images
+val: valid/images
+test: test/images
+
+names: 
+  0: Bilirubin
+  1: Blood
+  2: Glucose
+  3: Ketone
+  4: Leukocytes
+  5: Nitrite
+  6: Protein
+  7: SpGravity
+  8: Urobilinogen
+  9: pH
