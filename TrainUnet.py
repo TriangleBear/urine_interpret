@@ -372,9 +372,9 @@ def main():
     )
 
     # DataLoaders with persistent workers:
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True,
+    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True,
                               num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False,
+    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False,
                             num_workers=4)
 
     # Initialize the model and send to device
