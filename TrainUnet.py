@@ -34,10 +34,26 @@ def mask_to_tensor(mask):
     return torch.from_numpy(mask)
 
 # -------------------------------
+# Dice loss function (new)
+# -------------------------------
+def dice_loss(outputs, targets, smooth=1e-6):
+    """
+    Computes the Dice loss.
+    outputs: tensor of shape [B, C, H, W] (raw logits)
+    targets: tensor of shape [B, H, W] with class indices
+    """
+    outputs = F.softmax(outputs, dim=1)  # Convert logits to probabilities
+    targets_one_hot = F.one_hot(targets, num_classes=outputs.shape[1]).permute(0, 3, 1, 2).float()
+    intersection = (outputs * targets_one_hot).sum(dim=(2,3))
+    union = outputs.sum(dim=(2,3)) + targets_one_hot.sum(dim=(2,3))
+    loss = 1 - (2 * intersection + smooth) / (union + smooth)
+    return loss.mean()
+
+# -------------------------------
 # Define the U-Net model class
 # -------------------------------
 class UNet(nn.Module):
-    def __init__(self, in_channels, out_channels=10, dropout_prob=0.5):
+    def __init__(self, in_channels, out_channels=10, dropout_prob=0.5):  # Consider reducing dropout_prob if needed.
         super(UNet, self).__init__()
         # Encoder path
         self.enc1 = nn.Sequential(
@@ -110,7 +126,7 @@ class UNet(nn.Module):
         return self.output(up1)
 
 # -------------------------------
-# Data augmentation classes
+# Data augmentation classes (unchanged)
 # -------------------------------
 class RandomFlip:
     def __init__(self, horizontal=True, vertical=False):
@@ -158,7 +174,6 @@ class RandomAffine:
 # -------------------------------
 # Define separate transformations for training and validation.
 # -------------------------------
-# Training uses heavy augmentation:
 class RandomTrainTransformations:
     def __init__(self):
         self.joint_transform = transforms.Compose([
@@ -181,7 +196,6 @@ class RandomTrainTransformations:
         mask = self.mask_transform(sample['mask'])
         return {'image': image, 'mask': mask}
 
-# Validation uses only basic transforms:
 class SimpleValTransformations:
     def __init__(self):
         self.image_transform = transforms.Compose([
@@ -196,7 +210,6 @@ class SimpleValTransformations:
         ])
 
     def __call__(self, sample):
-        # For validation, we typically don't need joint spatial augmentation.
         image = self.image_transform(sample['image'])
         mask = self.mask_transform(sample['mask'])
         return {'image': image, 'mask': mask}
@@ -283,6 +296,10 @@ def main():
     unet_model = UNet(in_channels=3, out_channels=num_classes)
     unet_model.to(device)
 
+    # Use PyTorch 2.0 compilation (if CUDA available) for speedup
+    if device.type == "cuda":
+        unet_model = torch.compile(unet_model)
+
     scaler = GradScaler()
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(unet_model.parameters(), lr=0.0002, weight_decay=1e-6)
@@ -299,35 +316,31 @@ def main():
     num_epochs = 100
     validation_interval = 2  # Validate every 2 epochs
 
-    # Disable anomaly detection for production runs (uncomment if debugging)
-    # torch.autograd.set_detect_anomaly(True)
-
     for epoch in range(num_epochs):
-        # (Optional) Remove or reduce frequent calls to empty_cache:
-        # torch.cuda.empty_cache()
-
         unet_model.train()
         running_loss = 0.0
 
         for images, masks in tqdm(train_loader, desc='Training Epoch', leave=False):
-            images, masks = images.to(device), masks.to(device)
-            optimizer.zero_grad()
+            images = images.to(device, non_blocking=True)
+            masks = masks.to(device, non_blocking=True)
+            optimizer.zero_grad(set_to_none=True)
             with autocast(device_type="cuda"):
                 outputs = unet_model(images)
-                loss = criterion(outputs, masks)
+                # Compute combined loss: cross-entropy + dice loss
+                loss_ce = criterion(outputs, masks)
+                loss_dice = dice_loss(outputs, masks)
+                loss = loss_ce + loss_dice
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(unet_model.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
-            optimizer.zero_grad()
             running_loss += loss.item()
 
         avg_train_loss = running_loss / len(train_loader)
         train_losses.append(avg_train_loss)
         print(f"Epoch [{epoch + 1}/{num_epochs}], Train Loss: {avg_train_loss:.4f}")
 
-        # Validation: runs every epoch in this example
         unet_model.eval()
         val_loss = 0.0
         correct_predictions = 0
@@ -335,7 +348,8 @@ def main():
 
         with torch.no_grad():
             for images, masks in tqdm(val_loader, desc="Validation", leave=False):
-                images, masks = images.to(device), masks.to(device)
+                images = images.to(device, non_blocking=True)
+                masks = masks.to(device, non_blocking=True)
                 outputs = unet_model(images)
                 loss = criterion(outputs, masks)
                 val_loss += loss.item()
