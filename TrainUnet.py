@@ -15,6 +15,12 @@ from PIL import Image
 import random
 import matplotlib.pyplot as plt  # For plotting
 
+# Additional imports for SVM and image processing
+import cv2
+from skimage import color
+from sklearn.svm import SVC
+from sklearn.model_selection import GridSearchCV
+
 torch._dynamo.config.suppress_errors = True
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -185,7 +191,7 @@ class RandomTrainTransformations:
             transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
             transforms.RandomGrayscale(p=0.1),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                  std=[0.229, 0.224, 0.225])
         ])
         self.mask_transform = transforms.Compose([mask_to_tensor])
@@ -201,7 +207,7 @@ class SimpleValTransformations:
         self.image_transform = transforms.Compose([
             transforms.Resize((128, 128)),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                  std=[0.229, 0.224, 0.225])
         ])
         self.mask_transform = transforms.Compose([
@@ -264,11 +270,91 @@ class UrineStripDataset(Dataset):
         return mask
 
 # -------------------------------
-# Main training loop
+# Additional functions for SVM training
+# -------------------------------
+def extract_bounding_boxes(mask_np):
+    """
+    Given a numpy mask, extract bounding boxes using OpenCV.
+    Returns a list of boxes [(x, y, w, h), ...]
+    """
+    # Ensure mask is in uint8 format for OpenCV
+    mask_uint8 = (mask_np > 0).astype(np.uint8) * 255
+    contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    boxes = [cv2.boundingRect(c) for c in contours]
+    return boxes
+
+def compute_average_lab(image_pil, box):
+    """
+    Given a PIL image and a bounding box (x, y, w, h),
+    crop the region, convert to Lab, and compute the mean Lab color.
+    """
+    x, y, w, h = box
+    cropped = image_pil.crop((x, y, x + w, y + h))
+    cropped_np = np.array(cropped)
+    # Convert from RGB to Lab using skimage.color
+    lab = color.rgb2lab(cropped_np)
+    mean_lab = lab.mean(axis=(0, 1))
+    return mean_lab
+
+def simulated_label_from_filename(filename):
+    """
+    Placeholder: extract or simulate a label for the ROI.
+    In practice, use a mapping based on ground truth.
+    """
+    # For demonstration, simply return 0 (or parse the filename)
+    return 0
+
+def extract_features_and_labels(dataset, unet_model):
+    """
+    Run the trained U-Net on the dataset to extract segmentation masks,
+    then extract features (e.g., average Lab color) from each bounding box,
+    and collect corresponding labels.
+    """
+    unet_model.eval()
+    features = []
+    labels = []
+    # Use the original PIL images from the dataset (without transforms)
+    for i in range(len(dataset)):
+        # Load original image (without transform) for feature extraction
+        image_file = dataset.image_files[i]
+        image_path = os.path.join(dataset.image_folder, image_file)
+        image_pil = Image.open(image_path).convert("RGB").resize((128, 128))
+        # Get the corresponding mask using the dataset's method
+        txt_file = dataset.txt_files[i]
+        txt_path = os.path.join(dataset.mask_folder, txt_file)
+        mask_pil = Image.fromarray(dataset.create_mask_from_yolo(txt_path)).resize((128, 128), Image.NEAREST)
+        # Convert image to tensor and add batch dimension for U-Net inference
+        input_tensor = transforms.ToTensor()(image_pil).unsqueeze(0).to(device)
+        with torch.no_grad():
+            output = unet_model(input_tensor)
+            pred_mask = torch.argmax(output, dim=1).squeeze(0).cpu().numpy()
+        # Extract bounding boxes from the predicted mask
+        boxes = extract_bounding_boxes(pred_mask)
+        for box in boxes:
+            feat = compute_average_lab(image_pil, box)
+            features.append(feat)
+            # Here, we simulate label extraction (in a real scenario, use annotated data)
+            labels.append(simulated_label_from_filename(image_file))
+    return np.array(features), np.array(labels)
+
+def train_svm_classifier(features, labels):
+    """
+    Train an SVM classifier with an RBF kernel using GridSearchCV.
+    """
+    param_grid = {'C': [0.1, 1, 10],
+                   'gamma': [0.001, 0.01, 0.1]}
+    svm = SVC(kernel='rbf')
+    grid = GridSearchCV(svm, param_grid, cv=5)
+    grid.fit(features, labels)
+    print("Best SVM parameters:", grid.best_params_)
+    return grid.best_estimator_
+
+# -------------------------------
+# Main training loop (U-Net) and SVM training
 # -------------------------------
 def main():
-    image_folder = r"3k plus/train/images"
-    mask_folder = r"3k plus/train/labels"
+    image_folder = r"3k plus\train\images"
+    mask_folder = r"3k plus\train\labels"
 
     # Create two datasets with different transforms:
     full_dataset = UrineStripDataset(image_folder, mask_folder, transform=None)
@@ -286,10 +372,10 @@ def main():
     )
 
     # DataLoaders with persistent workers:
-    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True,
-                              num_workers=8, pin_memory=True, persistent_workers=True)
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True,
+                              num_workers=4)
     val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False,
-                            num_workers=8, pin_memory=True, persistent_workers=True)
+                            num_workers=4)
 
     # Initialize the model and send to device
     num_classes = 10
@@ -302,10 +388,10 @@ def main():
 
     scaler = GradScaler()
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(unet_model.parameters(), lr=0.0002, weight_decay=1e-6)
+    optimizer = torch.optim.Adam(unet_model.parameters(), lr=0.0005, weight_decay=1e-6)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
-    patience = 10
+    patience = 20
     best_val_loss = float('inf')
     early_stop_counter = 0
 
@@ -313,9 +399,9 @@ def main():
     val_losses = []
     val_accuracies = []
 
-    num_epochs = 100
-    validation_interval = 2  # Validate every 2 epochs
+    num_epochs = 200
 
+    # U-Net training loop
     for epoch in range(num_epochs):
         unet_model.train()
         running_loss = 0.0
@@ -324,7 +410,7 @@ def main():
             images = images.to(device, non_blocking=True)
             masks = masks.to(device, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
-            with autocast(device_type="cuda"):
+            with torch.cuda.amp.autocast():
                 outputs = unet_model(images)
                 # Compute combined loss: cross-entropy + dice loss
                 loss_ce = criterion(outputs, masks)
@@ -395,6 +481,19 @@ def main():
     plt.title('Validation Accuracy')
     plt.tight_layout()
     plt.show()
+
+    # ---------- Now, train the SVM classifier using features extracted from the training set ----------
+    print("Extracting features from training set for SVM training...")
+    # Use the full (untransformed) dataset to extract features.
+    # Here we pass the unaugmented full_dataset.
+    features, labels = extract_features_and_labels(full_dataset, unet_model)
+    print("Training SVM classifier with RBF kernel...")
+    best_svm = train_svm_classifier(features, labels)
+    # Save the SVM model using joblib or pickle
+    import joblib
+    svm_model_filename = f"svm_rbf_model_{timestamp}.pkl"
+    joblib.dump(best_svm, svm_model_filename)
+    print("SVM model saved as", svm_model_filename)
 
 if __name__ == '__main__':
     print(f"Using device: {device}")
