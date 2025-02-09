@@ -129,10 +129,11 @@ class UNet(nn.Module):
         self.initialize_weights()
 
     def initialize_weights(self):
-        """Apply Xavier Initialization to Conv2d and ConvTranspose2d layers."""
+        """Apply Kaiming Initialization for Conv2d and ConvTranspose2d layers (better for LeakyReLU)."""
         for m in self.modules():
-            if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
-                nn.init.xavier_uniform_(m.weight)
+            if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
+                # Use kaiming_uniform_ with 'leaky_relu' nonlinearity
+                nn.init.kaiming_uniform_(m.weight, nonlinearity='leaky_relu')
 
 
     def forward(self, x):
@@ -431,7 +432,7 @@ def main():
     num_classes = 10
     unet_model = UNet(in_channels=3, out_channels=num_classes)
     unet_model.to(device)
-    optimizer = torch.optim.AdamW(unet_model.parameters(), lr=1e-6, weight_decay=1e-5)
+    optimizer = torch.optim.AdamW(unet_model.parameters(), lr=1e-4, weight_decay=1e-5)
     scaler = GradScaler()
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
@@ -461,7 +462,7 @@ def main():
 
             # 🚀 Apply Gradient Clipping Before Updating
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(unet_model.parameters(), max_norm=1.0)  # 🔥 Reduced from 0.1 to 0.05
+            torch.nn.utils.clip_grad_norm_(unet_model.parameters(), max_norm=0.5)  # 🔥 Reduced from 0.1 to 0.05
             
             # 🚀 Monitor Gradient Norms
             for name, param in unet_model.named_parameters():
