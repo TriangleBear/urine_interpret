@@ -392,8 +392,8 @@ def train_svm_classifier(features, labels):
     return grid.best_estimator_
 
 def main():
-    image_folder = r"3k plus/train/images"
-    mask_folder = r"3k plus/train/labels"
+    image_folder = r"almost 1k dataset/train/images"
+    mask_folder = r"almost 1k dataset/train/labels"
 
     # Create two datasets with different transforms:
     full_dataset = UrineStripDataset(image_folder, mask_folder, transform=None)
@@ -408,7 +408,7 @@ def main():
     val_dataset = torch.utils.data.Subset(
         UrineStripDataset(image_folder, mask_folder, transform=SimpleValTransformations()),
         val_indices
-    )
+    )   
 
     # DataLoaders with persistent workers:
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True,
