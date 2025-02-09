@@ -137,40 +137,40 @@ class UNet(nn.Module):
 
     def forward(self, x):
         enc1 = checkpoint.checkpoint(self.enc1, x, use_reentrant=False)
-        print(f"🔍 Activation after enc1: mean={enc1.abs().mean().item()}, max={enc1.abs().max().item()}")
+        #print(f"🔍 Activation after enc1: mean={enc1.abs().mean().item()}, max={enc1.abs().max().item()}")
 
         enc2 = checkpoint.checkpoint(self.enc2, enc1, use_reentrant=False)
-        print(f"🔍 Activation after enc2: mean={enc2.abs().mean().item()}, max={enc2.abs().max().item()}")
+        #print(f"🔍 Activation after enc2: mean={enc2.abs().mean().item()}, max={enc2.abs().max().item()}")
 
         enc3 = checkpoint.checkpoint(self.enc3, enc2, use_reentrant=False)
-        print(f"🔍 Activation after enc3: mean={enc3.abs().mean().item()}, max={enc3.abs().max().item()}")
+        #print(f"🔍 Activation after enc3: mean={enc3.abs().mean().item()}, max={enc3.abs().max().item()}")
 
         enc4 = checkpoint.checkpoint(self.enc4, enc3, use_reentrant=False)
-        print(f"🔍 Activation after enc4: mean={enc4.abs().mean().item()}, max={enc4.abs().max().item()}")
+        #print(f"🔍 Activation after enc4: mean={enc4.abs().mean().item()}, max={enc4.abs().max().item()}")
 
         bottleneck = checkpoint.checkpoint(self.bottleneck, enc4, use_reentrant=False)
-        print(f"🔍 Activation after bottleneck: mean={bottleneck.abs().mean().item()}, max={bottleneck.abs().max().item()}")
+        #print(f"🔍 Activation after bottleneck: mean={bottleneck.abs().mean().item()}, max={bottleneck.abs().max().item()}")
 
         up3 = checkpoint.checkpoint(self.upconv3, bottleneck, use_reentrant=False)
         up3 = F.interpolate(up3, size=enc4.size()[2:], mode='bilinear', align_corners=True)
         up3 = torch.cat([up3, enc4], dim=1)
         up3 = self.conv_up3(up3)
-        print(f"🔍 Activation after up3: mean={up3.abs().mean().item()}, max={up3.abs().max().item()}")
+        #print(f"🔍 Activation after up3: mean={up3.abs().mean().item()}, max={up3.abs().max().item()}")
 
         up2 = checkpoint.checkpoint(self.upconv2, up3, use_reentrant=False)
         up2 = F.interpolate(up2, size=enc3.size()[2:], mode='bilinear', align_corners=True)
         up2 = torch.cat([up2, enc3], dim=1)
         up2 = self.conv_up2(up2)
-        print(f"🔍 Activation after up2: mean={up2.abs().mean().item()}, max={up2.abs().max().item()}")
+        #print(f"🔍 Activation after up2: mean={up2.abs().mean().item()}, max={up2.abs().max().item()}")
 
         up1 = checkpoint.checkpoint(self.upconv1, up2, use_reentrant=False)
         up1 = F.interpolate(up1, size=enc2.size()[2:], mode='bilinear', align_corners=True)
         up1 = torch.cat([up1, enc2], dim=1)
         up1 = self.conv_up1(up1)
-        print(f"🔍 Activation after up1: mean={up1.abs().mean().item()}, max={up1.abs().max().item()}")
+        #print(f"🔍 Activation after up1: mean={up1.abs().mean().item()}, max={up1.abs().max().item()}")
 
         output = self.output(up1)
-        print(f"🔍 Activation after output: mean={output.abs().mean().item()}, max={output.abs().max().item()}")
+        #print(f"🔍 Activation after output: mean={output.abs().mean().item()}, max={output.abs().max().item()}")
 
         return output
 
