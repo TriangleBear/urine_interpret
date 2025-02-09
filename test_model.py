@@ -87,7 +87,7 @@ class UNet(nn.Module):
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = UNet(in_channels=3, out_channels=10)
 
-checkpoint = torch.load('unet_model_20250209-001407.pth', map_location=device)
+checkpoint = torch.load('unet_model_20250209-121235.pth', map_location=device)
 
 # If the checkpoint contains a 'state_dict' key, use it; otherwise, use the checkpoint directly.
 if 'state_dict' in checkpoint:
