@@ -430,6 +430,10 @@ def main():
     val_losses = []
     val_accuracies = []
 
+    best_val_loss = float('inf')  # Set to infinity so the first validation loss will always be lower.
+    early_stop_counter = 0
+    patience = 20  # Or whichever number of epochs you want to wait without improvement.
+
     for epoch in range(num_epochs):
         unet_model.train()
         running_loss = 0.0
