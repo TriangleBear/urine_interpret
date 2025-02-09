@@ -43,15 +43,17 @@ def mask_to_tensor(mask):
 # Dice loss function (new)
 # -------------------------------
 def dice_loss(outputs, targets, smooth=1e-6):
-    """
-    Computes the Dice loss.
-    outputs: tensor of shape [B, C, H, W] (raw logits)
-    targets: tensor of shape [B, H, W] with class indices
-    """
     outputs = F.softmax(outputs, dim=1)  # Convert logits to probabilities
-    targets_one_hot = F.one_hot(targets, num_classes=outputs.shape[1]).permute(0, 3, 1, 2).float()
+
+    # Ensure targets are squeezed to remove extra channel dimension
+    targets = targets.squeeze(1)  # Shape becomes [B, H, W]
+
+    # Ensure targets are integer type before one-hot encoding
+    targets_one_hot = F.one_hot(targets.long(), num_classes=outputs.shape[1]).permute(0, 3, 1, 2).float()
+
     intersection = (outputs * targets_one_hot).sum(dim=(2,3))
     union = outputs.sum(dim=(2,3)) + targets_one_hot.sum(dim=(2,3))
+
     loss = 1 - (2 * intersection + smooth) / (union + smooth)
     return loss.mean()
 
@@ -59,77 +61,118 @@ def dice_loss(outputs, targets, smooth=1e-6):
 # Define the U-Net model class
 # -------------------------------
 class UNet(nn.Module):
-    def __init__(self, in_channels, out_channels=10, dropout_prob=0.5):  # Consider reducing dropout_prob if needed.
+    def __init__(self, in_channels, out_channels=10, dropout_prob=0.1):
         super(UNet, self).__init__()
-        # Encoder path
+
+        # Encoder path with BatchNorm and LeakyReLU
         self.enc1 = nn.Sequential(
             nn.Conv2d(in_channels, 32, kernel_size=3, padding=1, bias=False),
-            nn.ReLU(inplace=True),
+            nn.BatchNorm2d(32),  # 🔥 Added BatchNorm
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),  # 🔥 Changed to LeakyReLU
             nn.Dropout(p=dropout_prob)
         )
         self.enc2 = nn.Sequential(
             nn.Conv2d(32, 64, kernel_size=3, padding=1, bias=False),
-            nn.ReLU(inplace=True),
+            nn.BatchNorm2d(64),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.Dropout(p=dropout_prob)
         )
         self.enc3 = nn.Sequential(
             nn.Conv2d(64, 128, kernel_size=3, padding=1, bias=False),
-            nn.ReLU(inplace=True),
+            nn.BatchNorm2d(128),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.Dropout(p=dropout_prob)
         )
         self.enc4 = nn.Sequential(
             nn.Conv2d(128, 256, kernel_size=3, padding=1, bias=False),
-            nn.ReLU(inplace=True),
+            nn.BatchNorm2d(256),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.Dropout(p=dropout_prob)
         )
-        # Bottleneck layer
+
+        # Bottleneck
         self.bottleneck = nn.Sequential(
             nn.Conv2d(256, 512, kernel_size=3, padding=1, bias=False),
-            nn.ReLU(inplace=True),
+            nn.BatchNorm2d(512),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.Dropout(p=dropout_prob)
         )
+
         # Decoder path
         self.upconv3 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
         self.upconv2 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
         self.upconv1 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
-        # Additional Conv2d layers
+
         self.conv_up3 = nn.Sequential(
             nn.Conv2d(512, 256, kernel_size=3, padding=1, bias=False),
-            nn.ReLU(inplace=True),
+            nn.BatchNorm2d(256),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.Dropout(p=dropout_prob)
         )
         self.conv_up2 = nn.Sequential(
             nn.Conv2d(256, 128, kernel_size=3, padding=1, bias=False),
-            nn.ReLU(inplace=True),
+            nn.BatchNorm2d(128),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.Dropout(p=dropout_prob)
         )
         self.conv_up1 = nn.Sequential(
             nn.Conv2d(128, 64, kernel_size=3, padding=1, bias=False),
-            nn.ReLU(inplace=True),
+            nn.BatchNorm2d(64),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.Dropout(p=dropout_prob)
         )
+
         # Output layer
         self.output = nn.Conv2d(64, out_channels, kernel_size=1, bias=False)
 
+        # 🚀 Apply Xavier Initialization
+        self.initialize_weights()
+
+    def initialize_weights(self):
+        """Apply Xavier Initialization to Conv2d and ConvTranspose2d layers."""
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+                nn.init.xavier_uniform_(m.weight)
+
+
     def forward(self, x):
         enc1 = checkpoint.checkpoint(self.enc1, x, use_reentrant=False)
+        print(f"🔍 Activation after enc1: mean={enc1.abs().mean().item()}, max={enc1.abs().max().item()}")
+
         enc2 = checkpoint.checkpoint(self.enc2, enc1, use_reentrant=False)
+        print(f"🔍 Activation after enc2: mean={enc2.abs().mean().item()}, max={enc2.abs().max().item()}")
+
         enc3 = checkpoint.checkpoint(self.enc3, enc2, use_reentrant=False)
+        print(f"🔍 Activation after enc3: mean={enc3.abs().mean().item()}, max={enc3.abs().max().item()}")
+
         enc4 = checkpoint.checkpoint(self.enc4, enc3, use_reentrant=False)
+        print(f"🔍 Activation after enc4: mean={enc4.abs().mean().item()}, max={enc4.abs().max().item()}")
+
         bottleneck = checkpoint.checkpoint(self.bottleneck, enc4, use_reentrant=False)
+        print(f"🔍 Activation after bottleneck: mean={bottleneck.abs().mean().item()}, max={bottleneck.abs().max().item()}")
+
         up3 = checkpoint.checkpoint(self.upconv3, bottleneck, use_reentrant=False)
         up3 = F.interpolate(up3, size=enc4.size()[2:], mode='bilinear', align_corners=True)
         up3 = torch.cat([up3, enc4], dim=1)
         up3 = self.conv_up3(up3)
+        print(f"🔍 Activation after up3: mean={up3.abs().mean().item()}, max={up3.abs().max().item()}")
+
         up2 = checkpoint.checkpoint(self.upconv2, up3, use_reentrant=False)
         up2 = F.interpolate(up2, size=enc3.size()[2:], mode='bilinear', align_corners=True)
         up2 = torch.cat([up2, enc3], dim=1)
         up2 = self.conv_up2(up2)
+        print(f"🔍 Activation after up2: mean={up2.abs().mean().item()}, max={up2.abs().max().item()}")
+
         up1 = checkpoint.checkpoint(self.upconv1, up2, use_reentrant=False)
         up1 = F.interpolate(up1, size=enc2.size()[2:], mode='bilinear', align_corners=True)
         up1 = torch.cat([up1, enc2], dim=1)
         up1 = self.conv_up1(up1)
-        return self.output(up1)
+        print(f"🔍 Activation after up1: mean={up1.abs().mean().item()}, max={up1.abs().max().item()}")
+
+        output = self.output(up1)
+        print(f"🔍 Activation after output: mean={output.abs().mean().item()}, max={output.abs().max().item()}")
+
+        return output
 
 # -------------------------------
 # Data augmentation classes (unchanged)
@@ -188,19 +231,25 @@ class RandomTrainTransformations:
             RandomAffine(translate=(0.1, 0.1))
         ])
         self.image_transform = transforms.Compose([
+            transforms.RandomResizedCrop(128, scale=(0.8, 1.0)),  # Works with PIL
             transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
             transforms.RandomGrayscale(p=0.1),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                 std=[0.229, 0.224, 0.225])
+            transforms.ToTensor(),  # Converts PIL to Tensor
+            transforms.RandomErasing(p=0.2, scale=(0.02, 0.1), ratio=(0.3, 3.3)),  # Works with Tensors
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
-        self.mask_transform = transforms.Compose([mask_to_tensor])
+        self.mask_transform = transforms.Compose([
+            transforms.ToTensor(),  # Convert masks to tensor
+            mask_to_tensor
+        ])
 
     def __call__(self, sample):
-        sample = self.joint_transform(sample)
-        image = self.image_transform(sample['image'])
+        sample = self.joint_transform(sample)  # Apply augmentations that work with PIL
+        image = self.image_transform(sample['image'])  # Convert to Tensor after PIL augmentations
         mask = self.mask_transform(sample['mask'])
         return {'image': image, 'mask': mask}
+
+
 
 class SimpleValTransformations:
     def __init__(self):
@@ -353,8 +402,8 @@ def train_svm_classifier(features, labels):
 # Main training loop (U-Net) and SVM training
 # -------------------------------
 def main():
-    image_folder = r"3k plus\train\images"
-    mask_folder = r"3k plus\train\labels"
+    image_folder = r"3k plus/train/images"
+    mask_folder = r"3k plus/train/labels"
 
     # Create two datasets with different transforms:
     full_dataset = UrineStripDataset(image_folder, mask_folder, transform=None)
@@ -372,36 +421,26 @@ def main():
     )
 
     # DataLoaders with persistent workers:
-    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True,
+    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True,
                               num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False,
+    val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False,
                             num_workers=4)
 
-    # Initialize the model and send to device
+    # Initialize Model and Optimizer
     num_classes = 10
     unet_model = UNet(in_channels=3, out_channels=num_classes)
     unet_model.to(device)
 
-    # Use PyTorch 2.0 compilation (if CUDA available) for speedup
-    if device.type == "cuda":
-        unet_model = torch.compile(unet_model)
-
+    optimizer = torch.optim.AdamW(unet_model.parameters(), lr=5e-6, weight_decay=1e-5)  # 🔥 Lowered Learning Rate
     scaler = GradScaler()
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(unet_model.parameters(), lr=0.0005, weight_decay=1e-6)
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
-    patience = 20
-    best_val_loss = float('inf')
-    early_stop_counter = 0
-
+    num_epochs = 200
     train_losses = []
     val_losses = []
     val_accuracies = []
 
-    num_epochs = 200
-
-    # U-Net training loop
     for epoch in range(num_epochs):
         unet_model.train()
         running_loss = 0.0
@@ -409,24 +448,38 @@ def main():
         for images, masks in tqdm(train_loader, desc='Training Epoch', leave=False):
             images = images.to(device, non_blocking=True)
             masks = masks.to(device, non_blocking=True)
+
             optimizer.zero_grad(set_to_none=True)
-            with torch.cuda.amp.autocast():
+
+            with torch.amp.autocast('cuda'):  # Mixed precision training
                 outputs = unet_model(images)
-                # Compute combined loss: cross-entropy + dice loss
-                loss_ce = criterion(outputs, masks)
+                loss_ce = criterion(outputs, masks.squeeze(1))  # Remove channel dimension
                 loss_dice = dice_loss(outputs, masks)
                 loss = loss_ce + loss_dice
+
             scaler.scale(loss).backward()
+
+            # 🚀 Apply Gradient Clipping Before Updating
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(unet_model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(unet_model.parameters(), max_norm=0.05)  # 🔥 Reduced from 0.1 to 0.05
+            
+            # 🚀 Monitor Gradient Norms
+            for name, param in unet_model.named_parameters():
+                if param.grad is not None:
+                    grad_norm = param.grad.norm().item()
+                    if grad_norm > 100:  # 🚀 Only print if grad norm is large
+                        print(f"🔍 High Grad Norm [{name}]: {grad_norm:.2f}")
+
             scaler.step(optimizer)
             scaler.update()
+
             running_loss += loss.item()
 
         avg_train_loss = running_loss / len(train_loader)
         train_losses.append(avg_train_loss)
         print(f"Epoch [{epoch + 1}/{num_epochs}], Train Loss: {avg_train_loss:.4f}")
 
+        # 🚀 Validation Phase
         unet_model.eval()
         val_loss = 0.0
         correct_predictions = 0
@@ -436,32 +489,38 @@ def main():
             for images, masks in tqdm(val_loader, desc="Validation", leave=False):
                 images = images.to(device, non_blocking=True)
                 masks = masks.to(device, non_blocking=True)
+
                 outputs = unet_model(images)
                 loss = criterion(outputs, masks)
                 val_loss += loss.item()
+
                 preds = torch.argmax(outputs, dim=1)
                 correct_predictions += (preds == masks).sum().item()
-                total_pixels += masks.numel()
+
+                # 🚀 Fixed total_pixels calculation
+                total_pixels += masks.shape[0] * masks.shape[1] * masks.shape[2]  # Only H×W, ignoring batch & channels
 
         avg_val_loss = val_loss / len(val_loader)
         val_losses.append(avg_val_loss)
         accuracy = 100 * correct_predictions / total_pixels
         val_accuracies.append(accuracy)
         print(f"Epoch [{epoch + 1}/{num_epochs}], Val Loss: {avg_val_loss:.4f}, Val Accuracy: {accuracy:.2f}%")
+
         scheduler.step(avg_val_loss)
 
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
-            early_stop_counter = 0
-            torch.save(unet_model.state_dict(), model_filename)
-            print("✅ Model improved and saved!")
-        else:
-            early_stop_counter += 1
-            print(f"⚠️ No improvement in validation loss for {early_stop_counter}/{patience} epochs")
 
-        if early_stop_counter >= patience:
-            print("⛔ Early stopping triggered! Training stopped.")
-            break
+        # if avg_val_loss < best_val_loss:
+        #     best_val_loss = avg_val_loss
+        #     early_stop_counter = 0
+        #     torch.save(unet_model.state_dict(), model_filename)
+        #     print("✅ Model improved and saved!")
+        # else:
+        #     early_stop_counter += 1
+        #     print(f"⚠️ No improvement in validation loss for {early_stop_counter}/{patience} epochs")
+
+        # if early_stop_counter >= patience:
+        #     print("⛔ Early stopping triggered! Training stopped.")
+        #     break
 
     torch.save(unet_model.state_dict(), model_filename)
     epochs_range = range(1, len(train_losses) + 1)
@@ -482,18 +541,18 @@ def main():
     plt.tight_layout()
     plt.show()
 
-    # ---------- Now, train the SVM classifier using features extracted from the training set ----------
-    print("Extracting features from training set for SVM training...")
-    # Use the full (untransformed) dataset to extract features.
-    # Here we pass the unaugmented full_dataset.
-    features, labels = extract_features_and_labels(full_dataset, unet_model)
-    print("Training SVM classifier with RBF kernel...")
-    best_svm = train_svm_classifier(features, labels)
-    # Save the SVM model using joblib or pickle
-    import joblib
-    svm_model_filename = f"svm_rbf_model_{timestamp}.pkl"
-    joblib.dump(best_svm, svm_model_filename)
-    print("SVM model saved as", svm_model_filename)
+    # # ---------- Now, train the SVM classifier using features extracted from the training set ----------
+    # print("Extracting features from training set for SVM training...")
+    # # Use the full (untransformed) dataset to extract features.
+    # # Here we pass the unaugmented full_dataset.
+    # features, labels = extract_features_and_labels(full_dataset, unet_model)
+    # print("Training SVM classifier with RBF kernel...")
+    # best_svm = train_svm_classifier(features, labels)
+    # # Save the SVM model using joblib or pickle
+    # import joblib
+    # svm_model_filename = f"svm_rbf_model_{timestamp}.pkl"
+    # joblib.dump(best_svm, svm_model_filename)
+    # print("SVM model saved as", svm_model_filename)
 
 if __name__ == '__main__':
     print(f"Using device: {device}")
