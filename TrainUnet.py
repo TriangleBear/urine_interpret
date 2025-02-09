@@ -392,8 +392,8 @@ def train_svm_classifier(features, labels):
     return grid.best_estimator_
 
 def main():
-    image_folder = r"/content/urine_interpret/3k plus/train/images"
-    mask_folder = r"/content/urine_interpret/3k plus/train/labels"
+    image_folder = r"3k plus/train/images"
+    mask_folder = r"3k plus/train/labels"
 
     # Create two datasets with different transforms:
     full_dataset = UrineStripDataset(image_folder, mask_folder, transform=None)
@@ -499,18 +499,18 @@ def main():
         scheduler.step(avg_val_loss)
 
 
-        # if avg_val_loss < best_val_loss:
-        #     best_val_loss = avg_val_loss
-        #     early_stop_counter = 0
-        #     torch.save(unet_model.state_dict(), model_filename)
-        #     print("✅ Model improved and saved!")
-        # else:
-        #     early_stop_counter += 1
-        #     print(f"⚠️ No improvement in validation loss for {early_stop_counter}/{patience} epochs")
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            early_stop_counter = 0
+            torch.save(unet_model.state_dict(), model_filename)
+            print("✅ Model improved and saved!")
+        else:
+            early_stop_counter += 1
+            print(f"⚠️ No improvement in validation loss for {early_stop_counter}/{patience} epochs")
 
-        # if early_stop_counter >= patience:
-        #     print("⛔ Early stopping triggered! Training stopped.")
-        #     break
+        if early_stop_counter >= patience:
+            print("⛔ Early stopping triggered! Training stopped.")
+            break
 
     torch.save(unet_model.state_dict(), model_filename)
     epochs_range = range(1, len(train_losses) + 1)
