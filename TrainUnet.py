@@ -6,6 +6,7 @@ import time
 import numpy as np
 import torch.optim as optim
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 import torch._dynamo
 from torch.amp import autocast, GradScaler
@@ -32,16 +33,10 @@ torch.backends.cudnn.enabled = True  # Enable cuDNN for performance
 timestamp = time.strftime("%Y%m%d-%H%M%S")
 model_filename = f"unet_model_{timestamp}.pth"
 
-# -------------------------------
-# Custom helper function for masks
-# -------------------------------
 def mask_to_tensor(mask):
     mask = np.array(mask, dtype=np.int64)
     return torch.from_numpy(mask)
 
-# -------------------------------
-# Dice loss function (new)
-# -------------------------------
 def dice_loss(outputs, targets, smooth=1e-6):
     outputs = F.softmax(outputs, dim=1)  # Convert logits to probabilities
 
@@ -57,11 +52,19 @@ def dice_loss(outputs, targets, smooth=1e-6):
     loss = 1 - (2 * intersection + smooth) / (union + smooth)
     return loss.mean()
 
-# -------------------------------
-# Define the U-Net model class
-# -------------------------------
+def focal_loss(outputs, targets, alpha=0.25, gamma=2):
+    """ Focal Loss for multi-class segmentation. """
+    targets = targets.squeeze(1)  # Remove channel dim (B, H, W)
+    targets_one_hot = F.one_hot(targets, num_classes=outputs.shape[1])  # Convert to one-hot
+    targets_one_hot = targets_one_hot.permute(0, 3, 1, 2).float()  # Reshape to (B, C, H, W)
+
+    bce_loss = F.binary_cross_entropy_with_logits(outputs, targets_one_hot, reduction='none')
+    pt = torch.exp(-bce_loss)
+    focal = (alpha * (1 - pt) ** gamma * bce_loss).mean()
+    return focal
+
 class UNet(nn.Module):
-    def __init__(self, in_channels, out_channels=10, dropout_prob=0.1):
+    def __init__(self, in_channels, out_channels=10, dropout_prob=0.3):
         super(UNet, self).__init__()
 
         # Encoder path with BatchNorm and LeakyReLU
@@ -175,10 +178,6 @@ class UNet(nn.Module):
 
         return output
 
-
-# -------------------------------
-# Data augmentation classes (unchanged)
-# -------------------------------
 class RandomFlip:
     def __init__(self, horizontal=True, vertical=False):
         self.horizontal = horizontal
@@ -222,9 +221,6 @@ class RandomAffine:
         mask = transforms.functional.affine(mask, angle=params[0], translate=params[1], scale=params[2], shear=params[3])
         return {'image': image, 'mask': mask}
 
-# -------------------------------
-# Define separate transformations for training and validation.
-# -------------------------------
 class RandomTrainTransformations:
     def __init__(self):
         self.joint_transform = transforms.Compose([
@@ -234,7 +230,8 @@ class RandomTrainTransformations:
         ])
         self.image_transform = transforms.Compose([
             transforms.RandomResizedCrop(128, scale=(0.8, 1.0)),  # Works with PIL
-            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
+            transforms.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.2),
+            transforms.RandomAffine(degrees=30, translate=(0.2, 0.2), scale=(0.8, 1.2), shear=10),
             transforms.RandomGrayscale(p=0.1),
             transforms.ToTensor(),  # Converts PIL to Tensor
             transforms.RandomErasing(p=0.2, scale=(0.02, 0.1), ratio=(0.3, 3.3)),  # Works with Tensors
@@ -271,9 +268,6 @@ class SimpleValTransformations:
         mask = self.mask_transform(sample['mask'])
         return {'image': image, 'mask': mask}
 
-# -------------------------------
-# Define your dataset.
-# -------------------------------
 class UrineStripDataset(Dataset):
     def __init__(self, image_folder, mask_folder, transform=None):
         self.image_folder = image_folder
@@ -320,9 +314,6 @@ class UrineStripDataset(Dataset):
             mask[ymin:ymax, xmin:xmax] = int(class_id)
         return mask
 
-# -------------------------------
-# Additional functions for SVM training
-# -------------------------------
 def extract_bounding_boxes(mask_np):
     """
     Given a numpy mask, extract bounding boxes using OpenCV.
@@ -400,12 +391,9 @@ def train_svm_classifier(features, labels):
     print("Best SVM parameters:", grid.best_params_)
     return grid.best_estimator_
 
-# -------------------------------
-# Main training loop (U-Net) and SVM training
-# -------------------------------
 def main():
-    image_folder = r"3k plus/train/images"
-    mask_folder = r"3k plus/train/labels"
+    image_folder = r"/content/urine_interpret/3k plus/train/images"
+    mask_folder = r"/content/urine_interpret/3k plus/train/labels"
 
     # Create two datasets with different transforms:
     full_dataset = UrineStripDataset(image_folder, mask_folder, transform=None)
@@ -423,16 +411,16 @@ def main():
     )
 
     # DataLoaders with persistent workers:
-    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True,
-                              num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False,
-                            num_workers=4)
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True,
+                              num_workers=8)
+    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False,
+                            num_workers=8)
 
     # Initialize Model and Optimizer
     num_classes = 10
     unet_model = UNet(in_channels=3, out_channels=num_classes)
     unet_model.to(device)
-    optimizer = torch.optim.AdamW(unet_model.parameters(), lr=1e-4, weight_decay=1e-5)
+    optimizer = torch.optim.AdamW(unet_model.parameters(), lr=1e-5, weight_decay=1e-4)
     scaler = GradScaler()
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
@@ -454,9 +442,10 @@ def main():
 
             with torch.amp.autocast('cuda'):  # Mixed precision training
                 outputs = unet_model(images)
-                loss_ce = criterion(outputs, masks.squeeze(1))  # Remove channel dimension
+                loss_focal = focal_loss(outputs, masks)  # Remove channel dimension
                 loss_dice = dice_loss(outputs, masks)
-                loss = loss_ce + loss_dice
+                loss = loss_focal + loss_dice  # Combine Focal and Dice Loss
+
 
             scaler.scale(loss).backward()
 
@@ -541,19 +530,6 @@ def main():
     plt.title('Validation Accuracy')
     plt.tight_layout()
     plt.show()
-
-    # # ---------- Now, train the SVM classifier using features extracted from the training set ----------
-    # print("Extracting features from training set for SVM training...")
-    # # Use the full (untransformed) dataset to extract features.
-    # # Here we pass the unaugmented full_dataset.
-    # features, labels = extract_features_and_labels(full_dataset, unet_model)
-    # print("Training SVM classifier with RBF kernel...")
-    # best_svm = train_svm_classifier(features, labels)
-    # # Save the SVM model using joblib or pickle
-    # import joblib
-    # svm_model_filename = f"svm_rbf_model_{timestamp}.pkl"
-    # joblib.dump(best_svm, svm_model_filename)
-    # print("SVM model saved as", svm_model_filename)
 
 if __name__ == '__main__':
     print(f"Using device: {device}")
