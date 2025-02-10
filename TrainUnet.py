@@ -64,7 +64,7 @@ def focal_loss(outputs, targets, alpha=0.25, gamma=2):
     return focal
 
 class UNet(nn.Module):
-    def __init__(self, in_channels, out_channels=10, dropout_prob=0.3):
+    def __init__(self, in_channels, out_channels=10, dropout_prob=0.5):
         super(UNet, self).__init__()
 
         # Encoder path with BatchNorm and LeakyReLU
@@ -296,23 +296,31 @@ class UrineStripDataset(Dataset):
             image, mask = sample['image'], sample['mask']
         return image, mask
 
-    def create_mask_from_yolo(self, txt_path, image_size=(256, 256)):
+    def create_mask_from_yolo(self, txt_path, image_size=(128, 128)):  
         mask = np.zeros(image_size, dtype=np.uint8)
         with open(txt_path, 'r') as file:
             lines = file.readlines()
+        
         for line in lines:
             parts = line.strip().split()
             class_id, center_x, center_y, bbox_width, bbox_height = map(float, parts[:5])
-            center_x = int(center_x * image_size[1])
-            center_y = int(center_y * image_size[0])
-            bbox_width = int(bbox_width * image_size[1])
-            bbox_height = int(bbox_height * image_size[0])
-            xmin = max(0, center_x - bbox_width // 2)
-            ymin = max(0, center_y - bbox_height // 2)
-            xmax = min(image_size[1], center_x + bbox_width // 2)
-            ymax = min(image_size[0], center_y + bbox_height // 2)
+
+            # Convert YOLO normalized coordinates to absolute pixels
+            center_x *= image_size[1]
+            center_y *= image_size[0]
+            bbox_width *= image_size[1]
+            bbox_height *= image_size[0]
+
+            xmin = max(0, int(center_x - bbox_width / 2))
+            ymin = max(0, int(center_y - bbox_height / 2))
+            xmax = min(image_size[1], int(center_x + bbox_width / 2))
+            ymax = min(image_size[0], int(center_y + bbox_height / 2))
+
+            # Set mask values to class ID
             mask[ymin:ymax, xmin:xmax] = int(class_id)
+
         return mask
+
 
 def extract_bounding_boxes(mask_np):
     """
@@ -412,27 +420,28 @@ def main():
 
     # DataLoaders with persistent workers:
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True,
-                              num_workers=8)
+                          num_workers=os.cpu_count() // 2, pin_memory=True, persistent_workers=True)
     val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False,
-                            num_workers=8)
+                        num_workers=os.cpu_count() // 2, pin_memory=True, persistent_workers=True)
+
 
     # Initialize Model and Optimizer
     num_classes = 10
     unet_model = UNet(in_channels=3, out_channels=num_classes)
     unet_model.to(device)
-    optimizer = torch.optim.AdamW(unet_model.parameters(), lr=1e-5, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(unet_model.parameters(), lr=3e-4, weight_decay=1e-4)
     scaler = GradScaler()
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2)
 
-    num_epochs = 200
+    num_epochs = 100
     train_losses = []
     val_losses = []
     val_accuracies = []
 
     best_val_loss = float('inf')  # Set to infinity so the first validation loss will always be lower.
     early_stop_counter = 0
-    patience = 20  # Or whichever number of epochs you want to wait without improvement.
+    patience = 10  # Or whichever number of epochs you want to wait without improvement.
 
     for epoch in range(num_epochs):
         unet_model.train()
@@ -448,7 +457,8 @@ def main():
                 outputs = unet_model(images)
                 loss_focal = focal_loss(outputs, masks)  # Remove channel dimension
                 loss_dice = dice_loss(outputs, masks)
-                loss = loss_focal + loss_dice  # Combine Focal and Dice Loss
+                loss = 0.3 * focal_loss(outputs, masks) + 0.7 * dice_loss(outputs, masks)
+
 
 
             scaler.scale(loss).backward()

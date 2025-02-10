@@ -87,7 +87,7 @@ class UNet(nn.Module):
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = UNet(in_channels=3, out_channels=10)
 
-checkpoint = torch.load('unet_model_20250209-121235.pth', map_location=device)
+checkpoint = torch.load('unet_model_20250209-223510.pth', map_location=device)
 
 # If the checkpoint contains a 'state_dict' key, use it; otherwise, use the checkpoint directly.
 if 'state_dict' in checkpoint:
@@ -128,32 +128,54 @@ def load_images_from_folder(folder_path):
 # -------------------------------
 # Bounding Box Creation Functions
 # -------------------------------
-def dynamic_threshold(pred, percentile=95):
-    return np.percentile(pred, percentile)
+def dynamic_threshold(pred):
+    pred_scaled = (pred * 255).astype(np.uint8)  # Convert to 0-255 scale
+    _, binary_image = cv2.threshold(pred_scaled, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    threshold = np.mean(binary_image) / 255  # Get mean value instead of using an array
+    return max(threshold, 0.4)  # Ensure threshold is not too low
 
-def create_bounding_boxes(predictions, channel=0, dynamic=True, default_threshold=0.5, percentile=95):
-    """
-    predictions: tensor of shape (batch, channels, H, W)
-    channel: which channel to use for the binary mask
-    Returns:
-      bounding_boxes: a list (length=batch) of lists of bounding boxes (x, y, w, h)
-      class_ids: a list (length=batch) of lists with the chosen channel id
-    """
+def create_bounding_boxes(predictions, dynamic=True):
     bounding_boxes = []
     class_ids = []
-    for i in range(predictions.shape[0]):
-        # Select the specified channel
-        pred = predictions[i, channel].cpu().numpy()
-        # Compute threshold
-        threshold = dynamic_threshold(pred, percentile) if dynamic else default_threshold
-        # Create binary mask
-        binary_mask = (pred > threshold).astype(np.uint8)
+    urine_strip_classes = 9
+    for i in range(predictions.shape[0]):  # Iterate over batch
+        pred = predictions[i].cpu().numpy()
+
+        # 🔍 DEBUG: Show the predicted segmentation mask
+        plt.figure(figsize=(10, 5))
+        for c in range(pred.shape[0]):  # Loop through each class
+            plt.subplot(1, pred.shape[0], c+1)
+            plt.imshow(pred[c], cmap='gray')
+            plt.title(f"Class {c}")
+            plt.colorbar()
+        plt.show()
+
+        confidence_map = pred[urine_strip_classes]  # Highest confidence per pixel
+        threshold = dynamic_threshold(confidence_map) if dynamic else 0.6  # Use fixed threshold
+        binary_mask = (confidence_map > threshold).astype(np.uint8)
+
+        # 🔍 DEBUG: Show binary mask before contour detection
+        plt.figure(figsize=(6, 6))
+        plt.imshow(binary_mask, cmap='gray')
+        plt.title("Binary Mask Before Contour Detection")
+        plt.colorbar()
+        plt.show()
+
         # Find contours
         contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        boxes = [cv2.boundingRect(contour) for contour in contours]
+        boxes = []
+        classes = []
+        for contour in contours:
+            x, y, w, h = cv2.boundingRect(contour)
+            if w * h < (binary_mask.shape[0] * binary_mask.shape[1] * 0.8):  # Ignore huge detections
+                class_map = np.argmax(pred, axis=0)  # Most frequent class per pixel
+                mask_region = class_map[y:y+h, x:x+w]
+                class_id = np.argmax(np.bincount(mask_region.flatten()))  # Most common class
+                boxes.append((x, y, w, h))
+                classes.append(class_id)
+        
         bounding_boxes.append(boxes)
-        # Associate the chosen channel as class_id for each bounding box
-        class_ids.append([channel] * len(boxes))
+        class_ids.append(classes)
     return bounding_boxes, class_ids
 
 def draw_and_show_bounding_boxes(image_path, boxes, class_ids, min_area_ratio=0.001):
@@ -164,12 +186,13 @@ def draw_and_show_bounding_boxes(image_path, boxes, class_ids, min_area_ratio=0.
     image = cv2.imread(image_path)
     orig_h, orig_w = image.shape[:2]
     # Our model input size is 256x256.
-    scale_x = orig_w / 256
-    scale_y = orig_h / 256
+    h, w = image_tensor.shape[2:]  # Get input size
+    scale_x = orig_w / w
+    scale_y = orig_h / h
 
     for box_list, class_list in zip(boxes, class_ids):
         for (x, y, w, h), cls in zip(box_list, class_list):
-            if w * h > min_area_ratio * orig_w * orig_h:
+            if w * h > (min_area_ratio * orig_w * orig_h) / 2:  # Reduce minimum size filter
                 x1 = int(x * scale_x)
                 y1 = int(y * scale_y)
                 x2 = int((x + w) * scale_x)
@@ -192,7 +215,7 @@ for image_path in filenames:
         # Get model output and apply sigmoid (if using multi-label segmentation)
         prediction = torch.sigmoid(model(image_tensor))
     # For this example, use channel 0 for bounding boxes; change as needed.
-    boxes, cls_ids = create_bounding_boxes(prediction, channel=0, dynamic=True, percentile=95)
+    boxes, cls_ids = create_bounding_boxes(prediction, dynamic=True)
     draw_and_show_bounding_boxes(image_path, boxes, cls_ids)
 
 print("Bounding boxes created and images displayed.")
