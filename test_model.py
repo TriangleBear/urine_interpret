@@ -1,221 +1,180 @@
 import torch
+import torchvision.transforms as T
 import torch.nn as nn
-import torch.nn.functional as F
-import numpy as np
-from PIL import Image
-import torchvision.transforms as transforms
-import os
-import cv2
 import matplotlib.pyplot as plt
-import random
+import torch.nn.functional as F
+import torch.utils.checkpoint as checkpoint
+from PIL import Image
+from icecream import ic
+import numpy as np
 
-# -------------------------------
-# Model Definition (UNet)
-# -------------------------------
 class UNet(nn.Module):
-    def __init__(self, in_channels, out_channels=10):
+    def __init__(self, in_channels, out_channels=10, dropout_prob=0.5):
         super(UNet, self).__init__()
 
-        # Encoder path
+        # Encoder path with BatchNorm and LeakyReLU
         self.enc1 = nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(32),  # 🔥 Added BatchNorm
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),  # 🔥 Changed to LeakyReLU
+            nn.Dropout(p=dropout_prob)
         )
         self.enc2 = nn.Sequential(
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(32, 64, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+            nn.Dropout(p=dropout_prob)
         )
         self.enc3 = nn.Sequential(
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(64, 128, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+            nn.Dropout(p=dropout_prob)
         )
         self.enc4 = nn.Sequential(
-            nn.Conv2d(128, 256, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(128, 256, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+            nn.Dropout(p=dropout_prob)
         )
 
-        # Bottleneck layer
+        # Bottleneck
         self.bottleneck = nn.Sequential(
-            nn.Conv2d(256, 512, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(256, 512, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(512),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+            nn.Dropout(p=dropout_prob)
         )
-        self.dropout = nn.Dropout(p=0.2)
 
         # Decoder path
         self.upconv3 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
         self.upconv2 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
         self.upconv1 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
 
-        # Additional Conv2d layers after concatenation
-        self.conv_up3 = nn.Conv2d(512, 256, kernel_size=3, padding=1)
-        self.conv_up2 = nn.Conv2d(256, 128, kernel_size=3, padding=1)
-        self.conv_up1 = nn.Conv2d(128, 64, kernel_size=3, padding=1)
+        self.conv_up3 = nn.Sequential(
+            nn.Conv2d(512, 256, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+            nn.Dropout(p=dropout_prob)
+        )
+        self.conv_up2 = nn.Sequential(
+            nn.Conv2d(256, 128, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+            nn.Dropout(p=dropout_prob)
+        )
+        self.conv_up1 = nn.Sequential(
+            nn.Conv2d(128, 64, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+            nn.Dropout(p=dropout_prob)
+        )
 
         # Output layer
-        self.output = nn.Conv2d(64, out_channels, kernel_size=1)
+        self.output = nn.Conv2d(64, out_channels, kernel_size=1, bias=False)
+
+        # 🚀 Apply Xavier Initialization
+        self.initialize_weights()
+
+    def initialize_weights(self):
+        """Apply Kaiming Initialization for Conv2d and ConvTranspose2d layers (better for LeakyReLU)."""
+        for m in self.modules():
+            if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
+                # Use kaiming_uniform_ with 'leaky_relu' nonlinearity
+                nn.init.kaiming_uniform_(m.weight, nonlinearity='leaky_relu')
+
 
     def forward(self, x):
-        enc1 = self.enc1(x)
-        enc2 = self.enc2(enc1)
-        enc3 = self.enc3(enc2)
-        enc4 = self.enc4(enc3)
+        enc1 = checkpoint.checkpoint(self.enc1, x, use_reentrant=False)
+        #print(f"🔍 Activation after enc1: mean={enc1.abs().mean().item()}, max={enc1.abs().max().item()}")
 
-        bottleneck = self.bottleneck(enc4)
-        bottleneck = self.dropout(bottleneck)
+        enc2 = checkpoint.checkpoint(self.enc2, enc1, use_reentrant=False)
+        #print(f"🔍 Activation after enc2: mean={enc2.abs().mean().item()}, max={enc2.abs().max().item()}")
 
-        up3 = self.upconv3(bottleneck)
+        enc3 = checkpoint.checkpoint(self.enc3, enc2, use_reentrant=False)
+        #print(f"🔍 Activation after enc3: mean={enc3.abs().mean().item()}, max={enc3.abs().max().item()}")
+
+        enc4 = checkpoint.checkpoint(self.enc4, enc3, use_reentrant=False)
+        #print(f"🔍 Activation after enc4: mean={enc4.abs().mean().item()}, max={enc4.abs().max().item()}")
+
+        bottleneck = checkpoint.checkpoint(self.bottleneck, enc4, use_reentrant=False)
+        #print(f"🔍 Activation after bottleneck: mean={bottleneck.abs().mean().item()}, max={bottleneck.abs().max().item()}")
+
+        up3 = checkpoint.checkpoint(self.upconv3, bottleneck, use_reentrant=False)
         up3 = F.interpolate(up3, size=enc4.size()[2:], mode='bilinear', align_corners=True)
         up3 = torch.cat([up3, enc4], dim=1)
         up3 = self.conv_up3(up3)
+        #print(f"🔍 Activation after up3: mean={up3.abs().mean().item()}, max={up3.abs().max().item()}")
 
-        up2 = self.upconv2(up3)
+        up2 = checkpoint.checkpoint(self.upconv2, up3, use_reentrant=False)
         up2 = F.interpolate(up2, size=enc3.size()[2:], mode='bilinear', align_corners=True)
         up2 = torch.cat([up2, enc3], dim=1)
         up2 = self.conv_up2(up2)
+        #print(f"🔍 Activation after up2: mean={up2.abs().mean().item()}, max={up2.abs().max().item()}")
 
-        up1 = self.upconv1(up2)
+        up1 = checkpoint.checkpoint(self.upconv1, up2, use_reentrant=False)
         up1 = F.interpolate(up1, size=enc2.size()[2:], mode='bilinear', align_corners=True)
         up1 = torch.cat([up1, enc2], dim=1)
         up1 = self.conv_up1(up1)
+        #print(f"🔍 Activation after up1: mean={up1.abs().mean().item()}, max={up1.abs().max().item()}")
 
         output = self.output(up1)
-        return output   
+        #print(f"🔍 Activation after output: mean={output.abs().mean().item()}, max={output.abs().max().item()}")
 
-# -------------------------------
-# Load the Model
-# -------------------------------
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = UNet(in_channels=3, out_channels=10)
+        return output
 
-checkpoint = torch.load('unet_model_20250209-223510.pth', map_location=device)
+# Define the model first
+model = UNet(in_channels=3, out_channels=10)  # Ensure correct class count
 
-# If the checkpoint contains a 'state_dict' key, use it; otherwise, use the checkpoint directly.
-if 'state_dict' in checkpoint:
-    checkpoint = checkpoint['state_dict']
+# Load the trained weights
+state_dict = torch.load('bestmodel_DONOTDELETEME.pth', map_location=torch.device('cuda'))
+model.load_state_dict(state_dict)
 
-# Optionally remove mismatched keys (for example, those in the output layer)
-checkpoint = {k: v for k, v in checkpoint.items() if 'output' not in k}
-model.load_state_dict(checkpoint, strict=False)
-model = model.to(device)
+# Move model to GPU and set to evaluation mode
+model.to(torch.device('cuda'))
 model.eval()
+ic("model loaded")
 
-# -------------------------------
-# Test Data Preparation
-# -------------------------------
-def load_image(image_path):
-    image = Image.open(image_path).convert('RGB')
-    transform = transforms.Compose([
-        transforms.Resize((256, 256)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-    ])
-    image = transform(image)
-    image = image.unsqueeze(0)  # add batch dimension
-    return image
 
-def load_images_from_folder(folder_path):
-    images = []
-    filenames = []
-    for filename in os.listdir(folder_path):
-        if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-            image_path = os.path.join(folder_path, filename)
-            images.append(load_image(image_path))
-            filenames.append(image_path)
-    if images:
-        images = torch.cat(images)
-    return images, filenames
+# Load and preprocess the test image
+image_path = r'urine\train\augmented_images\28_jpg.rf.924e3446e35a7b8594596533bee945f3_aug_2582.png'  # Change this to your image
+image = Image.open(image_path).convert("RGB")
+ic("image loaded")
 
-# -------------------------------
-# Bounding Box Creation Functions
-# -------------------------------
-def dynamic_threshold(pred):
-    pred_scaled = (pred * 255).astype(np.uint8)  # Convert to 0-255 scale
-    _, binary_image = cv2.threshold(pred_scaled, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    threshold = np.mean(binary_image) / 255  # Get mean value instead of using an array
-    return max(threshold, 0.4)  # Ensure threshold is not too low
+transform = T.Compose([
+    T.Resize((512, 512)),  # Resize for consistency
+    T.ToTensor(),
+])
 
-def create_bounding_boxes(predictions, dynamic=True):
-    bounding_boxes = []
-    class_ids = []
-    urine_strip_classes = 9
-    for i in range(predictions.shape[0]):  # Iterate over batch
-        pred = predictions[i].cpu().numpy()
+image_tensor = transform(image).unsqueeze(0).to(torch.device('cuda'))  # Add batch dimension & move to GPU
+ic("image transformed")
 
-        # 🔍 DEBUG: Show the predicted segmentation mask
-        plt.figure(figsize=(10, 5))
-        for c in range(pred.shape[0]):  # Loop through each class
-            plt.subplot(1, pred.shape[0], c+1)
-            plt.imshow(pred[c], cmap='gray')
-            plt.title(f"Class {c}")
-            plt.colorbar()
-        plt.show()
+with torch.no_grad():
+    prediction = model(image_tensor)
 
-        confidence_map = pred[urine_strip_classes]  # Highest confidence per pixel
-        threshold = dynamic_threshold(confidence_map) if dynamic else 0.6  # Use fixed threshold
-        binary_mask = (confidence_map > threshold).astype(np.uint8)
+# Show original image and mask side by side
+if prediction.ndim == 4:
+    mask = prediction.squeeze().cpu().numpy()
+    
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
 
-        # 🔍 DEBUG: Show binary mask before contour detection
-        plt.figure(figsize=(6, 6))
-        plt.imshow(binary_mask, cmap='gray')
-        plt.title("Binary Mask Before Contour Detection")
-        plt.colorbar()
-        plt.show()
+    axes[0].imshow(image)
+    axes[0].set_title("Original Image")
+    axes[0].axis("off")
 
-        # Find contours
-        contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        boxes = []
-        classes = []
-        for contour in contours:
-            x, y, w, h = cv2.boundingRect(contour)
-            if w * h < (binary_mask.shape[0] * binary_mask.shape[1] * 0.8):  # Ignore huge detections
-                class_map = np.argmax(pred, axis=0)  # Most frequent class per pixel
-                mask_region = class_map[y:y+h, x:x+w]
-                class_id = np.argmax(np.bincount(mask_region.flatten()))  # Most common class
-                boxes.append((x, y, w, h))
-                classes.append(class_id)
-        
-        bounding_boxes.append(boxes)
-        class_ids.append(classes)
-    return bounding_boxes, class_ids
+    axes[1].imshow(mask[0], cmap="gray")
+    axes[1].set_title("Predicted Mask")
+    axes[1].axis("off")
 
-def draw_and_show_bounding_boxes(image_path, boxes, class_ids, min_area_ratio=0.001):
-    """
-    Loads the original image using cv2, rescales the bounding boxes from the model input size (256x256)
-    to the original image size, and draws the boxes.
-    """
-    image = cv2.imread(image_path)
-    orig_h, orig_w = image.shape[:2]
-    # Our model input size is 256x256.
-    h, w = image_tensor.shape[2:]  # Get input size
-    scale_x = orig_w / w
-    scale_y = orig_h / h
+    # # Compute accuracy (assuming softmax-like output)
+    # predicted_class = np.argmax(mask, axis=0)
+    # accuracy = (predicted_class == predicted_class.max()).mean() * 100
 
-    for box_list, class_list in zip(boxes, class_ids):
-        for (x, y, w, h), cls in zip(box_list, class_list):
-            if w * h > (min_area_ratio * orig_w * orig_h) / 2:  # Reduce minimum size filter
-                x1 = int(x * scale_x)
-                y1 = int(y * scale_y)
-                x2 = int((x + w) * scale_x)
-                y2 = int((y + h) * scale_y)
-                cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-    cv2.imshow("Bounding Boxes", image)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    # # Add accuracy text
+    # plt.figtext(0.5, 0.01, f"Prediction Accuracy: {accuracy:.2f}%", ha="center", fontsize=12, bbox={"facecolor":"white", "alpha":0.5, "pad":5})
 
-# -------------------------------
-# Test Model and Draw Boxes
-# -------------------------------
-test_folder_path = r'D:\Programming\urine_interpret\urine\test\images'
-test_data, filenames = load_images_from_folder(test_folder_path)
+    plt.show()
 
-# Process each test image individually
-for image_path in filenames:
-    image_tensor = load_image(image_path).to(device)
-    with torch.no_grad():
-        # Get model output and apply sigmoid (if using multi-label segmentation)
-        prediction = torch.sigmoid(model(image_tensor))
-    # For this example, use channel 0 for bounding boxes; change as needed.
-    boxes, cls_ids = create_bounding_boxes(prediction, dynamic=True)
-    draw_and_show_bounding_boxes(image_path, boxes, cls_ids)
 
-print("Bounding boxes created and images displayed.")
+else:
+    ic("Model output is not a mask. Skipping visualization.")
