@@ -136,8 +136,9 @@ model.eval()
 ic("model loaded")
 
 
+
 # Load and preprocess the test image
-image_path = r'Datasets\476127072_530710442769167_3843605275995192669_n.jpg'  # Change this to your image
+image_path = r'Datasets\almost 1k dataset\train\images\IMG_2978_png.rf.3a2c10d2a35b3b41566f7b4944cce2f2.jpg'  # Change this to your image
 image = Image.open(image_path).convert("RGB")
 ic("image loaded")
 
