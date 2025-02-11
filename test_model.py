@@ -137,7 +137,7 @@ ic("model loaded")
 
 
 # Load and preprocess the test image
-image_path = r'Datasets\outputGab\IMG_2979.png'  # Change this to your image
+image_path = r'Datasets\476127072_530710442769167_3843605275995192669_n.jpg'  # Change this to your image
 image = Image.open(image_path).convert("RGB")
 ic("image loaded")
 
@@ -152,7 +152,6 @@ def dynamic_normalization(image):
 
 transform = T.Compose([
     T.Resize((512, 512), interpolation=T.InterpolationMode.BILINEAR),  # Resize for consistency
-    #T.ToTensor(),
     dynamic_normalization
 ])
 
