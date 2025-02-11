@@ -127,7 +127,7 @@ class UNet(nn.Module):
 model = UNet(in_channels=3, out_channels=10)  # Ensure correct class count
 
 # Load the trained weights
-state_dict = torch.load('bestmodel_DONOTDELETEME.pth', map_location=torch.device('cuda'))
+state_dict = torch.load(r'models\bestmodel_DONOTDELETEME.pth', map_location=torch.device('cuda'))
 model.load_state_dict(state_dict)
 
 # Move model to GPU and set to evaluation mode
@@ -137,13 +137,23 @@ ic("model loaded")
 
 
 # Load and preprocess the test image
-image_path = r'urine\train\augmented_images\28_jpg.rf.924e3446e35a7b8594596533bee945f3_aug_2582.png'  # Change this to your image
+image_path = r'Datasets\outputGab\IMG_2979.png'  # Change this to your image
 image = Image.open(image_path).convert("RGB")
 ic("image loaded")
 
+def dynamic_normalization(image):
+    tensor_image = T.ToTensor()(image)  # Convert to tensor first
+    mean = torch.mean(tensor_image, dim=[1, 2], keepdim=True)  # Compute per-channel mean
+    std = torch.std(tensor_image, dim=[1, 2], keepdim=True)  # Compute per-channel std
+    std = torch.clamp(std, min=1e-6)  # Avoid division by zero
+
+    normalize = T.Normalize(mean.flatten().tolist(), std.flatten().tolist())  # Normalize dynamically
+    return normalize(tensor_image)
+
 transform = T.Compose([
-    T.Resize((512, 512)),  # Resize for consistency
-    T.ToTensor(),
+    T.Resize((512, 512), interpolation=T.InterpolationMode.BILINEAR),  # Resize for consistency
+    #T.ToTensor(),
+    dynamic_normalization
 ])
 
 image_tensor = transform(image).unsqueeze(0).to(torch.device('cuda'))  # Add batch dimension & move to GPU
