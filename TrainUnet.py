@@ -6,6 +6,7 @@ import time
 import numpy as np
 import torch.optim as optim
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 import torch._dynamo
 from torch.amp import autocast, GradScaler
