@@ -6,6 +6,7 @@ import time
 import numpy as np
 import torch.optim as optim
 import torch.nn as nn
+import torch.nn.functional as F
 import cv2
 from PIL import Image
 from skimage import color
