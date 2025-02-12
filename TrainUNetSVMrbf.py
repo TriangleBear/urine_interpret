@@ -286,9 +286,9 @@ def simulated_label_from_filename(filename):
 
 def extract_features_and_labels(dataset, unet_model):
     """
-    Run the trained U-Net on the dataset to extract segmentation masks,
-    then extract LAB color features from each bounding box,
-    and collect corresponding labels.
+    Run the trained UNet on the dataset to extract segmentation masks,
+    then extract LAB color features from each bounding box, and collect
+    the corresponding predicted class label (using the mode of the predicted mask).
     """
     unet_model.eval()
     features = []
@@ -299,7 +299,7 @@ def extract_features_and_labels(dataset, unet_model):
         image_pil = Image.open(image_path).convert("RGB").resize((128, 128))
         txt_file = dataset.txt_files[i]
         txt_path = os.path.join(dataset.mask_folder, txt_file)
-        mask_pil = Image.fromarray(dataset.create_mask_from_yolo(txt_path)).resize((128, 128), Image.NEAREST)
+        # We won't use the annotation file for labels; instead, we use the UNet's prediction.
         input_tensor = transforms.ToTensor()(image_pil).unsqueeze(0).to(device)
         with torch.no_grad():
             output = unet_model(input_tensor)
@@ -307,9 +307,12 @@ def extract_features_and_labels(dataset, unet_model):
         boxes = extract_bounding_boxes(pred_mask)
         for box in boxes:
             feat = compute_average_lab(image_pil, box)
+            # Get the predicted label (class id) for this bounding box.
+            lbl = get_box_label(pred_mask, box)
             features.append(feat)
-            labels.append(simulated_label_from_filename(image_file))
+            labels.append(lbl)
     return np.array(features), np.array(labels)
+
 
 # Define functions for UNet segmentation and SVM feature extraction
 def segment_test_strip(unet_model, image):
@@ -351,8 +354,15 @@ def extract_features(image, mask, offset):
             labels.append(class_id)
     return np.array(features), np.array(labels)
 
-class_names = ['Bilirubin', 'Blood', 'Glucose', 'Ketone', 'Leukocytes',
-               'Nitrite', 'Protein', 'SpGravity', 'Urobilinogen', 'pH', 'strip']
+def get_box_label(pred_mask, box):
+    """
+    Given a predicted mask and a bounding box (x, y, w, h),
+    compute the mode (most frequent value) of the mask within that box.
+    """
+    x, y, w, h = box
+    region = pred_mask[y:y+h, x:x+w]
+    values, counts = np.unique(region, return_counts=True)
+    return values[np.argmax(counts)]
 
 
 def train_svm_classifier_with_early_stopping(features, labels, class_names, patience=3):
@@ -534,6 +544,7 @@ if __name__ == "__main__":
     plt.show()
 
     # ----- SVM Training Section -----
+    names = ['Bilirubin', 'Blood', 'Glucose', 'Ketone', 'Leukocytes', 'Nitrite', 'Protein', 'SpGravity', 'Urobilinogen', 'pH', 'strip']
     print("Extracting features for SVM training...")
     svm_features, svm_labels = extract_features_and_labels(full_dataset, unet_model)
     print("Training SVM classifier on extracted features with early stopping...")
