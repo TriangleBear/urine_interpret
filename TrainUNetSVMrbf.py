@@ -57,7 +57,7 @@ def focal_loss(outputs, targets, alpha=0.25, gamma=2):
     return focal
 
 class UNet(nn.Module):
-    def __init__(self, in_channels, out_channels=10, dropout_prob=0.5):
+    def __init__(self, in_channels, out_channels=11, dropout_prob=0.5):
         super(UNet, self).__init__()
         self.enc1 = nn.Sequential(
             nn.Conv2d(in_channels, 32, kernel_size=3, padding=1, bias=False),
@@ -253,16 +253,27 @@ class UrineStripDataset(Dataset):
             lines = file.readlines()
         for line in lines:
             parts = line.strip().split()
-            class_id, center_x, center_y, bbox_width, bbox_height = map(float, parts[:5])
-            center_x *= image_size[1]
-            center_y *= image_size[0]
-            bbox_width *= image_size[1]
-            bbox_height *= image_size[0]
-            xmin = max(0, int(center_x - bbox_width / 2))
-            ymin = max(0, int(center_y - bbox_height / 2))
-            xmax = min(image_size[1], int(center_x + bbox_width / 2))
-            ymax = min(image_size[0], int(center_y + bbox_height / 2))
-            mask[ymin:ymax, xmin:xmax] = int(class_id)
+            if len(parts) == 5:
+                class_id, center_x, center_y, bbox_width, bbox_height = map(float, parts)
+                center_x *= image_size[1]
+                center_y *= image_size[0]
+                bbox_width *= image_size[1]
+                bbox_height *= image_size[0]
+                xmin = max(0, int(center_x - bbox_width / 2))
+                ymin = max(0, int(center_y - bbox_height / 2))
+                xmax = min(image_size[1], int(center_x + bbox_width / 2))
+                ymax = min(image_size[0], int(center_y + bbox_height / 2))
+                mask[ymin:ymax, xmin:xmax] = int(class_id)
+            elif len(parts) > 5:
+                class_id = int(float(parts[0]))
+                coords = list(map(float, parts[1:]))
+                if len(coords) % 2 != 0:
+                    continue  # Skip if not even number of coordinates
+                pts = np.array(coords, dtype=np.float32).reshape(-1, 2)
+                pts[:, 0] *= image_size[1]
+                pts[:, 1] *= image_size[0]
+                pts = pts.astype(np.int32)
+                cv2.fillPoly(mask, [pts], int(class_id))
         return mask
 
 # New helper functions for SVM feature extraction
@@ -272,13 +283,27 @@ def extract_bounding_boxes(mask_np):
     boxes = [cv2.boundingRect(c) for c in contours]
     return boxes
 
-def compute_average_lab(image_pil, box):
-    x, y, w, h = box
-    cropped = image_pil.crop((x, y, x + w, y + h))
-    cropped_np = np.array(cropped)
-    lab = color.rgb2lab(cropped_np)
-    mean_lab = lab.mean(axis=(0, 1))
-    return mean_lab
+def extract_contours(mask_np):
+    """
+    Extract contours from the mask.
+    """
+    mask_uint8 = (mask_np > 0).astype(np.uint8) * 255
+    contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    return contours
+
+def compute_polygon_average_lab(image_pil, contour):
+    """
+    Compute the average LAB color within the polygon defined by the contour.
+    """
+    image_np = np.array(image_pil)
+    mask = np.zeros((image_np.shape[0], image_np.shape[1]), dtype=np.uint8)
+    cv2.fillPoly(mask, [contour], 255)
+    lab = color.rgb2lab(image_np)
+    lab_pixels = lab[mask == 255]
+    if lab_pixels.size == 0:
+        return np.array([0, 0, 0])
+    avg_lab = lab_pixels.mean(axis=0)
+    return avg_lab
 
 def simulated_label_from_filename(filename):
     # Placeholder: return 0 or derive label from filename if available
@@ -287,32 +312,38 @@ def simulated_label_from_filename(filename):
 def extract_features_and_labels(dataset, unet_model):
     """
     Run the trained UNet on the dataset to extract segmentation masks,
-    then extract LAB color features from each bounding box, and collect
-    the corresponding predicted class label (using the mode of the predicted mask).
+    then extract LAB color features from each polygon (contour),
+    and collect corresponding labels determined by the mode of the predicted mask
+    within the bounding rectangle.
     """
-    unet_model.eval()
     features = []
     labels = []
     for i in range(len(dataset)):
         image_file = dataset.image_files[i]
         image_path = os.path.join(dataset.image_folder, image_file)
+        # Open and resize the image.
         image_pil = Image.open(image_path).convert("RGB").resize((128, 128))
+        
+        # Get the ground-truth mask directly from the annotation file.
         txt_file = dataset.txt_files[i]
         txt_path = os.path.join(dataset.mask_folder, txt_file)
-        # We won't use the annotation file for labels; instead, we use the UNet's prediction.
-        input_tensor = transforms.ToTensor()(image_pil).unsqueeze(0).to(device)
-        with torch.no_grad():
-            output = unet_model(input_tensor)
-            pred_mask = torch.argmax(output, dim=1).squeeze(0).cpu().numpy()
-        boxes = extract_bounding_boxes(pred_mask)
-        for box in boxes:
-            feat = compute_average_lab(image_pil, box)
-            # Get the predicted label (class id) for this bounding box.
-            lbl = get_box_label(pred_mask, box)
+        gt_mask = dataset.create_mask_from_yolo(txt_path, image_size=(128, 128))
+        
+        # Debug: print unique classes in the ground truth mask.
+        print(f"Processing {image_file} - Unique classes in GT mask: {np.unique(gt_mask)}")
+        
+        # Extract contours from the ground-truth mask.
+        contours = extract_contours(gt_mask)
+        if len(contours) == 0:
+            print("No contours found in image (GT):", image_file)
+        for contour in contours:
+            feat = compute_polygon_average_lab(image_pil, contour)
+            # Use the bounding rectangle of the contour and get the predominant label from the GT mask.
+            box = cv2.boundingRect(contour)
+            lbl = get_box_label(gt_mask, box)
             features.append(feat)
             labels.append(lbl)
     return np.array(features), np.array(labels)
-
 
 # Define functions for UNet segmentation and SVM feature extraction
 def segment_test_strip(unet_model, image):
@@ -354,47 +385,37 @@ def extract_features(image, mask, offset):
             labels.append(class_id)
     return np.array(features), np.array(labels)
 
-def get_box_label(pred_mask, box):
+def get_box_label(mask, box):
     """
-    Given a predicted mask and a bounding box (x, y, w, h),
+    Given a mask and a bounding box (x, y, w, h),
     compute the mode (most frequent value) of the mask within that box.
     """
     x, y, w, h = box
-    region = pred_mask[y:y+h, x:x+w]
+    region = mask[y:y+h, x:x+w]
     values, counts = np.unique(region, return_counts=True)
     return values[np.argmax(counts)]
 
-
-def train_svm_classifier_with_early_stopping(features, labels, class_names, patience=3):
-    """
-    Custom grid search for SVM with early stopping.
+def train_svm_classifier_with_early_stopping(features, labels, class_names, patience=5):
+    if features.size == 0:
+        raise ValueError("No features extracted. Please check your segmentation and feature extraction pipeline.")
     
-    Parameters:
-      features: np.array of feature vectors.
-      labels: np.array of integer labels.
-      class_names: list mapping label indices to names.
-      patience: number of parameter combinations with no improvement before stopping.
-      
-    Returns:
-      best_model: The best SVM model found.
-    """
-    # Map integer labels to their corresponding class names.
+    # Map integer labels to class names.
     mapped_labels = [class_names[int(lbl)] for lbl in labels]
     
-    # Split features into training and validation sets.
+    from sklearn.model_selection import train_test_split
     X_train, X_val, y_train, y_val = train_test_split(
         features, mapped_labels, test_size=0.2, random_state=42
     )
     
-    # Define parameter grid.
-    param_grid = {'C': [0.1, 1, 10], 'gamma': [0.001, 0.01, 0.1]}
-    keys, values = zip(*param_grid.items())
-    param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
-    
+    import itertools
     best_score = -np.inf
     best_params = None
     best_model = None
     no_improve_count = 0
+    
+    param_grid = {'C': [0.1, 1, 10], 'gamma': [0.001, 0.01, 0.1]}
+    keys, values = zip(*param_grid.items())
+    param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
     
     for params in param_combinations:
         svm = SVC(kernel='rbf', **params)
@@ -411,9 +432,10 @@ def train_svm_classifier_with_early_stopping(features, labels, class_names, pati
             if no_improve_count >= patience:
                 print("Early stopping triggered in SVM grid search.")
                 break
-
+    
     print("Best SVM parameters:", best_params, "with validation accuracy:", best_score)
     return best_model
+
 
 # Main Training Process
 if __name__ == "__main__":
