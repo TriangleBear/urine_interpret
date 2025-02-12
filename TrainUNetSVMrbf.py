@@ -515,7 +515,7 @@ if __name__ == "__main__":
     # ----- SVM Training Section -----
     # Now that the UNet is trained, use it to extract features and train an SVM for reagent pad classification.
     print("Extracting features for SVM training...")
-    svm_features, svm_labels = extract_features_and_labels(full_dataset, unet_model)
+    svm_features, svm_labels = extract_features(full_dataset, unet_model)
     print("Training SVM classifier on extracted features...")
     svm_model = train_svm_classifier(svm_features, svm_labels)
     joblib.dump(svm_model, "svm_model.pkl")
