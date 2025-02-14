@@ -180,23 +180,25 @@ class RandomAffine:
         return {'image': image, 'mask': mask}
 
 class RandomTrainTransformations:
-    def __init__(self):
+    mean = [0.4166, 0.3909, 0.3442]
+    std = [0.2370, 0.2372, 0.2219]
+    def __init__(self, mean, std):
         self.joint_transform = transforms.Compose([
             RandomFlip(horizontal=True, vertical=True),
             RandomRotation(degrees=10),
             RandomAffine(translate=(0.1, 0.1))
         ])
         self.image_transform = transforms.Compose([
-            transforms.RandomResizedCrop(128, scale=(0.8, 1.0)),
+            transforms.RandomResizedCrop(512, scale=(0.8, 1.0)),
             transforms.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.2),
             transforms.RandomAffine(degrees=30, translate=(0.2, 0.2), scale=(0.8, 1.2), shear=10),
             transforms.RandomGrayscale(p=0.1),
             transforms.ToTensor(),
             transforms.RandomErasing(p=0.2, scale=(0.02, 0.1), ratio=(0.3, 3.3)),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            transforms.Normalize(mean=mean, std=std)
         ])
         self.mask_transform = transforms.Compose([
-            transforms.ToTensor(),
+            transforms.Resize((512, 512), interpolation=Image.NEAREST),
             mask_to_tensor
         ])
     def __call__(self, sample):
@@ -206,15 +208,16 @@ class RandomTrainTransformations:
         return {'image': image, 'mask': mask}
 
 class SimpleValTransformations:
-    def __init__(self):
+    mean = [0.4166, 0.3909, 0.3442]
+    std = [0.2370, 0.2372, 0.2219]
+    def __init__(self, mean, std):
         self.image_transform = transforms.Compose([
-            transforms.Resize((128, 128)),
+            transforms.Resize((512, 512)),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                 std=[0.229, 0.224, 0.225])
+            transforms.Normalize(mean=mean, std=std)
         ])
         self.mask_transform = transforms.Compose([
-            transforms.Resize((128, 128), interpolation=Image.NEAREST),
+            transforms.Resize((512, 512), interpolation=Image.NEAREST),
             mask_to_tensor
         ])
     def __call__(self, sample):
@@ -239,15 +242,15 @@ class UrineStripDataset(Dataset):
         image_path = os.path.join(self.image_folder, image_file)
         txt_path = os.path.join(self.mask_folder, txt_file)
         image = Image.open(image_path).convert("RGB")
-        image = image.resize((128, 128))
+        image = image.resize((512, 512))
         mask = self.create_mask_from_yolo(txt_path)
-        mask = Image.fromarray(mask).resize((128, 128), Image.NEAREST)
+        mask = Image.fromarray(mask).resize((512, 512), Image.NEAREST)
         if self.transform:
             sample = {'image': image, 'mask': mask}
             sample = self.transform(sample)
             image, mask = sample['image'], sample['mask']
         return image, mask
-    def create_mask_from_yolo(self, txt_path, image_size=(128, 128)):  
+    def create_mask_from_yolo(self, txt_path, image_size=(512, 512)):  
         mask = np.zeros(image_size, dtype=np.uint8)
         with open(txt_path, 'r') as file:
             lines = file.readlines()
@@ -322,12 +325,12 @@ def extract_features_and_labels(dataset, unet_model):
         image_file = dataset.image_files[i]
         image_path = os.path.join(dataset.image_folder, image_file)
         # Open and resize the image.
-        image_pil = Image.open(image_path).convert("RGB").resize((128, 128))
+        image_pil = Image.open(image_path).convert("RGB").resize((512, 512))
         
         # Get the ground-truth mask directly from the annotation file.
         txt_file = dataset.txt_files[i]
         txt_path = os.path.join(dataset.mask_folder, txt_file)
-        gt_mask = dataset.create_mask_from_yolo(txt_path, image_size=(128, 128))
+        gt_mask = dataset.create_mask_from_yolo(txt_path, image_size=(512, 512))
         
         # Debug: print unique classes in the ground truth mask.
         print(f"Processing {image_file} - Unique classes in GT mask: {np.unique(gt_mask)}")
@@ -436,12 +439,34 @@ def train_svm_classifier_with_early_stopping(features, labels, class_names, pati
     print("Best SVM parameters:", best_params, "with validation accuracy:", best_score)
     return best_model
 
+def compute_mean_std(image_folder, mask_folder):
+    transform = transforms.Compose([transforms.ToTensor()])
+    dataset = UrineStripDataset(image_folder, mask_folder, transform=transform)
+    loader = DataLoader(dataset, batch_size=64, shuffle=False, num_workers=4)
+    
+    mean = 0.0
+    std = 0.0
+    total_images_count = 0
+    
+    for images, _ in loader:
+        batch_samples = images.size(0)  # batch size (the last batch can have smaller size)
+        images = images.view(batch_samples, images.size(1), -1)
+        mean += images.mean(2).sum(0)
+        std += images.std(2).sum(0)
+        total_images_count += batch_samples
+    
+    mean /= total_images_count
+    std /= total_images_count
+    
+    return mean, std
 
 # Main Training Process
-if __name__ == "__main__":
-  def main():
+def main():
     image_folder = r"Datasets/Test test/images"
     mask_folder = r"Datasets/Test test/labels"
+
+    # Compute mean and std for normalization
+    mean, std = compute_mean_std(image_folder)
 
     # Create two datasets with different transforms:
     full_dataset = UrineStripDataset(image_folder, mask_folder, transform=None)
@@ -450,18 +475,18 @@ if __name__ == "__main__":
     train_indices, val_indices = list(range(train_size)), list(range(train_size, len(full_dataset)))
     
     train_dataset = torch.utils.data.Subset(
-        UrineStripDataset(image_folder, mask_folder, transform=RandomTrainTransformations()),
+        UrineStripDataset(image_folder, mask_folder, transform=RandomTrainTransformations(mean, std)),
         train_indices
     )
     val_dataset = torch.utils.data.Subset(
-        UrineStripDataset(image_folder, mask_folder, transform=SimpleValTransformations()),
+        UrineStripDataset(image_folder, mask_folder, transform=SimpleValTransformations(mean, std)),
         val_indices
     )   
 
     # DataLoaders with persistent workers:
-    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True,
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True,
                           num_workers=4, pin_memory=True, persistent_workers=True)
-    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False,
+    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False,
                         num_workers=4, pin_memory=True, persistent_workers=True)
 
     # Initialize Model and Optimizer
@@ -574,5 +599,5 @@ if __name__ == "__main__":
     joblib.dump(svm_model, "svm_model.pkl")
     print("SVM classifier saved!")
 
-  print(f"Using device: {device}")
-  main()
+print(f"Using device: {device}")
+main()
