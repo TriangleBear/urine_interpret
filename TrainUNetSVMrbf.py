@@ -57,7 +57,7 @@ def focal_loss(outputs, targets, alpha=0.25, gamma=2):
     return focal
 
 class UNet(nn.Module):
-    def __init__(self, in_channels, out_channels=11, dropout_prob=0.5):
+    def __init__(self, in_channels, out_channels=11, dropout_prob=0.2):
         super(UNet, self).__init__()
         self.enc1 = nn.Sequential(
             nn.Conv2d(in_channels, 32, kernel_size=3, padding=1, bias=False),
@@ -119,25 +119,30 @@ class UNet(nn.Module):
                 nn.init.kaiming_uniform_(m.weight, nonlinearity='leaky_relu')
 
     def forward(self, x):
-        enc1 = checkpoint.checkpoint(self.enc1, x, use_reentrant=False)
-        enc2 = checkpoint.checkpoint(self.enc2, enc1, use_reentrant=False)
-        enc3 = checkpoint.checkpoint(self.enc3, enc2, use_reentrant=False)
-        enc4 = checkpoint.checkpoint(self.enc4, enc3, use_reentrant=False)
-        bottleneck = checkpoint.checkpoint(self.bottleneck, enc4, use_reentrant=False)
-        up3 = checkpoint.checkpoint(self.upconv3, bottleneck, use_reentrant=False)
+        enc1 = self.enc1(x)
+        enc2 = self.enc2(enc1)
+        enc3 = self.enc3(enc2)
+        enc4 = self.enc4(enc3)
+        bottleneck = self.bottleneck(enc4)
+        
+        up3 = self.upconv3(bottleneck)
         up3 = F.interpolate(up3, size=enc4.size()[2:], mode='bilinear', align_corners=True)
         up3 = torch.cat([up3, enc4], dim=1)
         up3 = self.conv_up3(up3)
-        up2 = checkpoint.checkpoint(self.upconv2, up3, use_reentrant=False)
+
+        up2 = self.upconv2(up3)
         up2 = F.interpolate(up2, size=enc3.size()[2:], mode='bilinear', align_corners=True)
         up2 = torch.cat([up2, enc3], dim=1)
         up2 = self.conv_up2(up2)
-        up1 = checkpoint.checkpoint(self.upconv1, up2, use_reentrant=False)
+
+        up1 = self.upconv1(up2)
         up1 = F.interpolate(up1, size=enc2.size()[2:], mode='bilinear', align_corners=True)
         up1 = torch.cat([up1, enc2], dim=1)
         up1 = self.conv_up1(up1)
+
         output = self.output(up1)
         return output
+
 
 class RandomFlip:
     def __init__(self, horizontal=True, vertical=False):
@@ -187,7 +192,7 @@ class RandomTrainTransformations:
             RandomAffine(translate=(0.1, 0.1))
         ])
         self.image_transform = transforms.Compose([
-            transforms.RandomResizedCrop(512, scale=(0.8, 1.0)),
+            transforms.RandomResizedCrop(256, scale=(0.8, 1.0)),
             transforms.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.2),
             transforms.RandomAffine(degrees=30, translate=(0.2, 0.2), scale=(0.8, 1.2), shear=10),
             transforms.RandomGrayscale(p=0.1),
@@ -196,7 +201,7 @@ class RandomTrainTransformations:
             transforms.Normalize(mean=mean, std=std)
         ])
         self.mask_transform = transforms.Compose([
-            transforms.Resize((512, 512), interpolation=Image.NEAREST),
+            transforms.Resize((256, 256), interpolation=Image.NEAREST),
             mask_to_tensor
         ])
     def __call__(self, sample):
@@ -208,12 +213,12 @@ class RandomTrainTransformations:
 class SimpleValTransformations:
     def __init__(self, mean, std):
         self.image_transform = transforms.Compose([
-            transforms.Resize((512, 512)),
+            transforms.Resize((256, 256)),
             transforms.ToTensor(),
             transforms.Normalize(mean=mean, std=std)
         ])
         self.mask_transform = transforms.Compose([
-            transforms.Resize((512, 512), interpolation=Image.NEAREST),
+            transforms.Resize((256, 256), interpolation=Image.NEAREST),
             mask_to_tensor
         ])
     def __call__(self, sample):
@@ -246,9 +251,9 @@ class UrineStripDataset(Dataset):
         txt_path = os.path.join(self.mask_folder, txt_file)
 
         # Open the image and convert to RGB
-        image = Image.open(image_path).convert("RGB").resize((512, 512))
+        image = Image.open(image_path).convert("RGB").resize((256, 256))
         mask = self.create_mask_from_yolo(txt_path)
-        mask = Image.fromarray(mask).resize((512, 512), Image.NEAREST)
+        mask = Image.fromarray(mask).resize((256, 256), Image.NEAREST)
 
         # Convert image and mask to tensors
         image = self.default_transform(image)
@@ -258,7 +263,7 @@ class UrineStripDataset(Dataset):
 
 
 
-    def create_mask_from_yolo(self, txt_path, image_size=(512, 512)):  
+    def create_mask_from_yolo(self, txt_path, image_size=(256, 256)):  
         mask = np.zeros(image_size, dtype=np.uint8)
         with open(txt_path, 'r') as file:
             lines = file.readlines()
@@ -333,12 +338,12 @@ def extract_features_and_labels(dataset, unet_model):
         image_file = dataset.image_files[i]
         image_path = os.path.join(dataset.image_folder, image_file)
         # Open and resize the image.
-        image_pil = Image.open(image_path).convert("RGB").resize((512, 512))
+        image_pil = Image.open(image_path).convert("RGB").resize((256, 256))
         
         # Get the ground-truth mask directly from the annotation file.
         txt_file = dataset.txt_files[i]
         txt_path = os.path.join(dataset.mask_folder, txt_file)
-        gt_mask = dataset.create_mask_from_yolo(txt_path, image_size=(512, 512))
+        gt_mask = dataset.create_mask_from_yolo(txt_path, image_size=(256, 256))
         
         # Debug: print unique classes in the ground truth mask.
         print(f"Processing {image_file} - Unique classes in GT mask: {np.unique(gt_mask)}")
@@ -492,10 +497,10 @@ def main():
     )   
 
     # DataLoaders with persistent workers:
-    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True,
-                          num_workers=2, pin_memory=True, persistent_workers=False)
-    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False,
-                        num_workers=2, pin_memory=True, persistent_workers=False)
+    train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True,
+                          num_workers=4, pin_memory=True, persistent_workers=False)
+    val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False,
+                        num_workers=4, pin_memory=True, persistent_workers=False)
 
     
     torch.cuda.empty_cache()
