@@ -180,8 +180,6 @@ class RandomAffine:
         return {'image': image, 'mask': mask}
 
 class RandomTrainTransformations:
-    mean = [0.4166, 0.3909, 0.3442]
-    std = [0.2370, 0.2372, 0.2219]
     def __init__(self, mean, std):
         self.joint_transform = transforms.Compose([
             RandomFlip(horizontal=True, vertical=True),
@@ -208,8 +206,6 @@ class RandomTrainTransformations:
         return {'image': image, 'mask': mask}
 
 class SimpleValTransformations:
-    mean = [0.4166, 0.3909, 0.3442]
-    std = [0.2370, 0.2372, 0.2219]
     def __init__(self, mean, std):
         self.image_transform = transforms.Compose([
             transforms.Resize((512, 512)),
@@ -245,11 +241,10 @@ class UrineStripDataset(Dataset):
         image = image.resize((512, 512))
         mask = self.create_mask_from_yolo(txt_path)
         mask = Image.fromarray(mask).resize((512, 512), Image.NEAREST)
+        sample = {'image': image, 'mask': mask}
         if self.transform:
-            sample = {'image': image, 'mask': mask}
             sample = self.transform(sample)
-            image, mask = sample['image'], sample['mask']
-        return image, mask
+        return sample['image'], sample['mask']
     def create_mask_from_yolo(self, txt_path, image_size=(512, 512)):  
         mask = np.zeros(image_size, dtype=np.uint8)
         with open(txt_path, 'r') as file:
@@ -448,7 +443,8 @@ def compute_mean_std(image_folder, mask_folder):
     std = 0.0
     total_images_count = 0
     
-    for images, _ in loader:
+    for batch in loader:
+        images, _ = batch
         batch_samples = images.size(0)  # batch size (the last batch can have smaller size)
         images = images.view(batch_samples, images.size(1), -1)
         mean += images.mean(2).sum(0)
@@ -466,7 +462,7 @@ def main():
     mask_folder = r"Datasets/Test test/labels"
 
     # Compute mean and std for normalization
-    mean, std = compute_mean_std(image_folder)
+    mean, std = compute_mean_std(image_folder, mask_folder)
 
     # Create two datasets with different transforms:
     full_dataset = UrineStripDataset(image_folder, mask_folder, transform=None)
@@ -599,5 +595,6 @@ def main():
     joblib.dump(svm_model, "svm_model.pkl")
     print("SVM classifier saved!")
 
-print(f"Using device: {device}")
-main()
+if __name__ == '__main__':
+    print(f"Using device: {device}")
+    main()
