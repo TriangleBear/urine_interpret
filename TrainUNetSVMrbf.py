@@ -26,7 +26,7 @@ from torch.amp import autocast, GradScaler
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-torch.backends.cudnn.benchmark = True  # Enable cuDNN benchmark for performance
+torch.backends.cudnn.benchmark = False  # Enable cuDNN benchmark for performance
 torch.backends.cudnn.enabled = True  # Enable cuDNN for performance
 
 timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -492,11 +492,14 @@ def main():
     )   
 
     # DataLoaders with persistent workers:
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True,
-                          num_workers=4, pin_memory=True, persistent_workers=True)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False,
-                        num_workers=4, pin_memory=True, persistent_workers=True)
+    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True,
+                          num_workers=2, pin_memory=True, persistent_workers=False)
+    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False,
+                        num_workers=2, pin_memory=True, persistent_workers=False)
 
+    
+    torch.cuda.empty_cache()
+    
     # Initialize Model and Optimizer
     num_classes = 11
     unet_model = UNet(in_channels=3, out_channels=num_classes)
