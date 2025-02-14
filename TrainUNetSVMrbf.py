@@ -230,21 +230,34 @@ class UrineStripDataset(Dataset):
         self.transform = transform
         if len(self.image_files) != len(self.txt_files):
             raise ValueError("Mismatch between number of images and masks")
+
+        # Define default transformation if none is provided
+        self.default_transform = transforms.Compose([
+            transforms.ToTensor()
+        ])
+
     def __len__(self):
         return len(self.image_files)
+
     def __getitem__(self, index):
         image_file = self.image_files[index]
         txt_file = self.txt_files[index]
         image_path = os.path.join(self.image_folder, image_file)
         txt_path = os.path.join(self.mask_folder, txt_file)
-        image = Image.open(image_path).convert("RGB")
-        image = image.resize((512, 512))
+
+        # Open the image and convert to RGB
+        image = Image.open(image_path).convert("RGB").resize((512, 512))
         mask = self.create_mask_from_yolo(txt_path)
         mask = Image.fromarray(mask).resize((512, 512), Image.NEAREST)
-        sample = {'image': image, 'mask': mask}
-        if self.transform:
-            sample = self.transform(sample)
-        return sample['image'], sample['mask']
+
+        # Convert image and mask to tensors
+        image = self.default_transform(image)
+        mask = torch.tensor(np.array(mask), dtype=torch.long)
+
+        return image, mask
+
+
+
     def create_mask_from_yolo(self, txt_path, image_size=(512, 512)):  
         mask = np.zeros(image_size, dtype=np.uint8)
         with open(txt_path, 'r') as file:
@@ -435,25 +448,24 @@ def train_svm_classifier_with_early_stopping(features, labels, class_names, pati
     return best_model
 
 def compute_mean_std(image_folder, mask_folder):
-    transform = transforms.Compose([transforms.ToTensor()])
+    transform = transforms.Compose([transforms.ToTensor()])  # Convert PIL images to tensors
     dataset = UrineStripDataset(image_folder, mask_folder, transform=transform)
     loader = DataLoader(dataset, batch_size=64, shuffle=False, num_workers=4)
-    
+
     mean = 0.0
     std = 0.0
     total_images_count = 0
-    
-    for batch in loader:
-        images, _ = batch
-        batch_samples = images.size(0)  # batch size (the last batch can have smaller size)
-        images = images.view(batch_samples, images.size(1), -1)
+
+    for images, _ in loader:
+        batch_samples = images.size(0)  # batch size (last batch can be smaller)
+        images = images.view(batch_samples, images.size(1), -1)  # Flatten spatial dimensions
         mean += images.mean(2).sum(0)
         std += images.std(2).sum(0)
         total_images_count += batch_samples
-    
+
     mean /= total_images_count
     std /= total_images_count
-    
+
     return mean, std
 
 # Main Training Process
