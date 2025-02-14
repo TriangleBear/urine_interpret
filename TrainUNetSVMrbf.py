@@ -363,7 +363,7 @@ def segment_test_strip(unet_model, image):
     input_tensor = transforms.ToTensor()(image).unsqueeze(0).to(device)
     with torch.no_grad():
         output = unet_model(input_tensor)
-        pred_mask = torch.argmax(output, dim=1).squeeze(0).cpu().numpy()
+        pred_mask = torch.argmax(output, dim=1).squeeze(0).cuda().numpy()
     return pred_mask
 
 def crop_test_strip(image, mask):
@@ -379,7 +379,7 @@ def segment_reagent_pads(unet_model, cropped_image):
     input_tensor = transforms.ToTensor()(cropped_image).unsqueeze(0).to(device)
     with torch.no_grad():
         output = unet_model(input_tensor)
-        pred_mask = torch.argmax(output, dim=1).squeeze(0).cpu().numpy()
+        pred_mask = torch.argmax(output, dim=1).squeeze(0).cuda().numpy()
     return pred_mask
 
 def extract_features(image, mask, offset):
