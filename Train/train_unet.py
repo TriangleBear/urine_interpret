@@ -58,12 +58,14 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS):
         model.eval()
         with torch.no_grad():
             for images, masks in val_loader:
+                images, masks = images.to(device), masks.to(device)
                 outputs = model(images.to(device))
                 dice_loss_value = dice_loss(outputs, masks.to(device))
                 val_loss += dice_loss_value.mean().item()  # Ensure the loss is a scalar
                 
                 # Calculate accuracy
                 _, predicted = torch.max(outputs, 1)
+                predicted = predicted.to(device)  # Ensure predicted is on the same device as masks
                 total += masks.numel()
                 correct += (predicted == masks).sum().item()
         
