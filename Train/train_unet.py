@@ -19,12 +19,6 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
 
-    # Check class distribution
-    class_counts = torch.zeros(NUM_CLASSES)
-    for _, masks in dataset:
-        class_counts += torch.bincount(masks.flatten(), minlength=NUM_CLASSES)
-    print(f"Class distribution: {class_counts}")
-
     # Model and Optimizer
     model = UNet(3, NUM_CLASSES).to(device)
     optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
@@ -34,11 +28,12 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
     # Training loop
     best_loss = float('inf')
     early_stop_counter = 0
+    model_filename = get_model_filename()
 
     for epoch in range(NUM_EPOCHS):
         model.train()
         epoch_loss = 0
-        for i, (images, masks) in enumerate(tqdm(train_loader)):
+        for i, (images, masks) in enumerate(tqdm(train_loader, desc=f"Training Epoch {epoch+1}")):
             images, masks = images.to(device), masks.to(device)
             
             optimizer.zero_grad()
@@ -65,7 +60,7 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
         total = 0
         model.eval()
         with torch.no_grad():
-            for images, masks in val_loader:
+            for images, masks in tqdm(val_loader, desc="Validation"):
                 images, masks = images.to(device), masks.to(device)
                 outputs = model(images.to(device))
                 dice_loss_value = dice_loss(outputs, masks.to(device))
@@ -86,7 +81,7 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
         if avg_val_loss < best_loss:
             best_loss = avg_val_loss
             early_stop_counter = 0
-            torch.save(model.state_dict(), get_model_filename())
+            torch.save(model.state_dict(), model_filename)
             print("Model improved and saved.")
         else:
             early_stop_counter += 1
