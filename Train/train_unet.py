@@ -53,18 +53,26 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS):
 
         # Validation
         val_loss = 0
+        correct = 0
+        total = 0
         model.eval()
         with torch.no_grad():
             for images, masks in val_loader:
                 outputs = model(images.to(device))
                 dice_loss_value = dice_loss(outputs, masks.to(device))
                 val_loss += dice_loss_value.mean().item()  # Ensure the loss is a scalar
+                
+                # Calculate accuracy
+                _, predicted = torch.max(outputs, 1)
+                total += masks.numel()
+                correct += (predicted == masks).sum().item()
         
         avg_loss = epoch_loss/len(train_loader)
         avg_val_loss = val_loss/len(val_loader)
-        print(f"Epoch {epoch+1}: Train Loss {avg_loss:.4f}, Val Loss {avg_val_loss:.4f}")
+        val_accuracy = 100 * correct / total
+        print(f"Epoch {epoch+1}: Train Loss {avg_loss:.4f}, Val Loss {avg_val_loss:.4f}, Val Accuracy {val_accuracy:.2f}%")
         
-        # Save best model
+        # Save best model   
         if avg_val_loss < best_loss:
             best_loss = avg_val_loss
             torch.save(model.state_dict(), get_model_filename())
