@@ -27,9 +27,13 @@ IMAGE_SIZE = (128, 128)  # Reduced image size
 
 # Model Saving
 def get_model_filename():
+    models_dir = os.path.join(BASE_PATH, "models")
+    os.makedirs(models_dir, exist_ok=True)  # Ensure the directory exists
     timestamp = time.strftime("%Y%m%d-%H%M%S")
-    return f"unet_model_{timestamp}.pth"
+    return os.path.join(models_dir, f"unet_model_{timestamp}.pth")
 
 def get_svm_filename():
+    models_dir = os.path.join(BASE_PATH, "models")
+    os.makedirs(models_dir, exist_ok=True)  # Ensure the directory exists
     timestamp = time.strftime("%Y%m%d-%H%M%S")
-    return f"svm_model_{timestamp}.pkl"
+    return os.path.join(models_dir, f"svm_model_{timestamp}.pkl")
