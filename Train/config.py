@@ -5,7 +5,8 @@ import os
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Path Configuration
-BASE_PATH = os.path.dirname(os.path.abspath(__file__))
+BASE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+print(BASE_PATH)
 IMAGE_FOLDER = os.path.join(BASE_PATH, r"Datasets\Test test\images")
 MASK_FOLDER = os.path.join(BASE_PATH, r"Datasets\Test test\labels")
 
