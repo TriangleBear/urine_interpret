@@ -6,8 +6,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Path Configuration
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
-IMAGE_FOLDER = os.path.join(BASE_PATH, "Datasets/Test test/images")
-MASK_FOLDER = os.path.join(BASE_PATH, "Datasets/Test test/labels")
+IMAGE_FOLDER = os.path.join(BASE_PATH, r"Datasets\Test test\images")
+MASK_FOLDER = os.path.join(BASE_PATH, r"Datasets\Test test\labels")
 
 # Training Hyperparameters
 BATCH_SIZE = 8

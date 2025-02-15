@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 from config import *
 from train_unet import train_unet
 from utils import compute_mean_std, extract_features, train_svm
+from datasets import UrineStripDataset
 
 if __name__ == "__main__":
     # Compute dataset statistics
