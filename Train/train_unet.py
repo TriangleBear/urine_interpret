@@ -19,6 +19,12 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS):
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
 
+    # Check class distribution
+    class_counts = torch.zeros(NUM_CLASSES)
+    for _, masks in dataset:
+        class_counts += torch.bincount(masks.flatten(), minlength=NUM_CLASSES)
+    print(f"Class distribution: {class_counts}")
+
     # Model and Optimizer
     model = UNet(3, NUM_CLASSES).to(device)
     optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
