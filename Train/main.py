@@ -2,7 +2,7 @@
 import matplotlib.pyplot as plt
 from config import *
 from train_unet import train_unet
-from utils import compute_mean_std, extract_features, train_svm
+from utils import compute_mean_std, extract_features_and_labels, train_svm_classifier, save_svm_model
 from datasets import UrineStripDataset
 
 if __name__ == "__main__":
@@ -14,12 +14,13 @@ if __name__ == "__main__":
     # Train UNet
     unet_model = train_unet()
     
-    # Train SVM
-    features, labels = extract_features(unet_model, dataset)
-    svm_model = train_svm(features, labels)
-    joblib.dump(svm_model, get_svm_filename())
+    # Extract features and labels for SVM
+    features, labels = extract_features_and_labels(dataset, unet_model)
     
-
+    # Train SVM
+    svm_model = train_svm_classifier(features, labels)
+    save_svm_model(svm_model, get_svm_filename())
+    
     # Plot training results
     epochs_range = range(1, len(train_losses) + 1)
     plt.figure(figsize=(12, 4))
