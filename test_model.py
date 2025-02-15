@@ -1,5 +1,6 @@
 import torch
 import torchvision.transforms as T
+import torch.nn.functional as F
 import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
 import numpy as np
@@ -9,9 +10,8 @@ from PIL import Image
 from icecream import ic
 
 class UNet(nn.Module):
-    def __init__(self, in_channels, out_channels=11, dropout_prob=0.5):
+    def __init__(self, in_channels, out_channels=11, dropout_prob=0.2):
         super(UNet, self).__init__()
-
         self.enc1 = nn.Sequential(
             nn.Conv2d(in_channels, 32, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(32),
@@ -36,18 +36,15 @@ class UNet(nn.Module):
             nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.Dropout(p=dropout_prob)
         )
-
         self.bottleneck = nn.Sequential(
             nn.Conv2d(256, 512, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(512),
             nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.Dropout(p=dropout_prob)
         )
-
         self.upconv3 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
         self.upconv2 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
         self.upconv1 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
-
         self.conv_up3 = nn.Sequential(
             nn.Conv2d(512, 256, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(256),
@@ -66,7 +63,6 @@ class UNet(nn.Module):
             nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.Dropout(p=dropout_prob)
         )
-
         self.output = nn.Conv2d(64, out_channels, kernel_size=1, bias=False)
         self.initialize_weights()
 
@@ -76,21 +72,24 @@ class UNet(nn.Module):
                 nn.init.kaiming_uniform_(m.weight, nonlinearity='leaky_relu')
 
     def forward(self, x):
-        enc1 = checkpoint.checkpoint(self.enc1, x, use_reentrant=False)
-        enc2 = checkpoint.checkpoint(self.enc2, enc1, use_reentrant=False)
-        enc3 = checkpoint.checkpoint(self.enc3, enc2, use_reentrant=False)
-        enc4 = checkpoint.checkpoint(self.enc4, enc3, use_reentrant=False)
-        bottleneck = checkpoint.checkpoint(self.bottleneck, enc4, use_reentrant=False)
-
-        up3 = checkpoint.checkpoint(self.upconv3, bottleneck, use_reentrant=False)
+        enc1 = self.enc1(x)
+        enc2 = self.enc2(enc1)
+        enc3 = self.enc3(enc2)
+        enc4 = self.enc4(enc3)
+        bottleneck = self.bottleneck(enc4)
+        
+        up3 = self.upconv3(bottleneck)
+        up3 = F.interpolate(up3, size=enc4.size()[2:], mode='bilinear', align_corners=True)
         up3 = torch.cat([up3, enc4], dim=1)
         up3 = self.conv_up3(up3)
 
-        up2 = checkpoint.checkpoint(self.upconv2, up3, use_reentrant=False)
+        up2 = self.upconv2(up3)
+        up2 = F.interpolate(up2, size=enc3.size()[2:], mode='bilinear', align_corners=True)
         up2 = torch.cat([up2, enc3], dim=1)
         up2 = self.conv_up2(up2)
 
-        up1 = checkpoint.checkpoint(self.upconv1, up2, use_reentrant=False)
+        up1 = self.upconv1(up2)
+        up1 = F.interpolate(up1, size=enc2.size()[2:], mode='bilinear', align_corners=True)
         up1 = torch.cat([up1, enc2], dim=1)
         up1 = self.conv_up1(up1)
 
@@ -99,14 +98,14 @@ class UNet(nn.Module):
 
 # Load model
 model = UNet(in_channels=3, out_channels=11)
-state_dict = torch.load(r'unet_model_20250213-014930.pth', map_location=torch.device('cuda'))
+state_dict = torch.load(r'models\unet_model_20250214-105734.pth', map_location=torch.device('cuda'))
 model.load_state_dict(state_dict, strict=False)
 model.to(torch.device('cuda'))
 model.eval()
 ic("model loaded")
 
 # Load image
-image_path = r'Datasets\Test test\test\IMG_2986_png.rf.5882528ac456a04ff79284960ca91129.jpg'
+image_path = r'Datasets\Test test\test\476928114_1645216839767274_6559316661334448785_n.jpg'
 image = Image.open(image_path).convert("RGB")
 ic("image loaded")
 
@@ -135,7 +134,7 @@ if prediction.ndim == 4:
     mask = prediction.squeeze().cpu().numpy()
     mask = np.argmax(mask, axis=0)  # Get class-wise segmentation
 
-    image_np = np.array(image.resize((512, 512)))
+    image_np = np.array(image.resize((256, 256)))
     image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
 
     for class_id in range(1, 10):  # Ignore background class (0)
