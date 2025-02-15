@@ -20,7 +20,7 @@ def compute_mean_std(dataset):
     std /= len(loader.dataset)
     return mean.tolist(), std.tolist()
 
-def extract_features(model, dataset):
+def extract_features_and_labels(dataset, model):
     features = []
     labels = []
     model.eval()
@@ -38,9 +38,11 @@ def extract_features(model, dataset):
                 labels.append(class_id)
     return np.array(features), np.array(labels)
 
-def train_svm(features, labels):
-    X_train, X_test, y_train, y_test = train_test_split(features, labels, test_size=0.2)
+def train_svm_classifier(features, labels):
     param_grid = {'C': [0.1, 1, 10], 'gamma': [0.001, 0.01, 0.1]}
     grid_search = GridSearchCV(SVC(kernel='rbf'), param_grid, cv=3)
-    grid_search.fit(X_train, y_train)
+    grid_search.fit(features, labels)
     return grid_search.best_estimator_
+
+def save_svm_model(svm_model, filename):
+    joblib.dump(svm_model, filename)
