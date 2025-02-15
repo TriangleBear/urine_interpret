@@ -1,4 +1,5 @@
 import torch
+from tqdm import tqdm
 from config import *
 from train_unet import train_unet
 from utils import compute_mean_std, extract_features_and_labels, train_svm_classifier, save_svm_model
@@ -21,17 +22,20 @@ def test_pass():
 
     # Simulate extracting features and labels for SVM
     print("Simulating extract_features_and_labels...")
-    features, labels = extract_features_and_labels(dataset, unet_model)
+    for _ in tqdm(range(len(dataset)), desc="Extracting features and labels"):
+        features, labels = extract_features_and_labels(dataset, unet_model)
     print(f"Extracted features shape: {features.shape}, labels shape: {labels.shape}")
 
     # Simulate training SVM
     print("Simulating train_svm_classifier...")
-    svm_model = train_svm_classifier(features, labels)
+    for _ in tqdm(range(1), desc="Training SVM"):
+        svm_model = train_svm_classifier(features, labels)
     print("SVM model trained.")
 
     # Simulate saving SVM model
     print("Simulating save_svm_model...")
-    save_svm_model(svm_model, get_svm_filename())
+    for _ in tqdm(range(1), desc="Saving SVM model"):
+        save_svm_model(svm_model, get_svm_filename())
     print("SVM model saved.")
 
     print("Test pass completed successfully.")
