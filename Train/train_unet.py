@@ -57,7 +57,8 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS):
         with torch.no_grad():
             for images, masks in val_loader:
                 outputs = model(images.to(device))
-                val_loss += dice_loss(outputs, masks.to(device)).item()
+                dice_loss_value = dice_loss(outputs, masks.to(device))
+                val_loss += dice_loss_value.mean().item()  # Ensure the loss is a scalar
         
         avg_loss = epoch_loss/len(train_loader)
         avg_val_loss = val_loss/len(val_loader)
