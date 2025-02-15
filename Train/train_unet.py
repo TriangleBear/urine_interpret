@@ -9,7 +9,7 @@ from models import UNet
 from datasets import UrineStripDataset
 from losses import dice_loss, focal_loss
 
-def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS):
+def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, patience=PATIENCE):
     # Dataset and DataLoader
     dataset = UrineStripDataset(IMAGE_FOLDER, MASK_FOLDER)
     train_size = int(0.8 * len(dataset))
@@ -33,6 +33,8 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS):
 
     # Training loop
     best_loss = float('inf')
+    early_stop_counter = 0
+
     for epoch in range(NUM_EPOCHS):
         model.train()
         epoch_loss = 0
@@ -80,9 +82,19 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS):
         val_accuracy = 100 * correct / total
         print(f"Epoch {epoch+1}: Train Loss {avg_loss:.4f}, Val Loss {avg_val_loss:.4f}, Val Accuracy {val_accuracy:.2f}%")
         
-        # Save best model   
+        # Save best model
         if avg_val_loss < best_loss:
             best_loss = avg_val_loss
+            early_stop_counter = 0
             torch.save(model.state_dict(), get_model_filename())
+            print("Model improved and saved.")
+        else:
+            early_stop_counter += 1
+            print(f"No improvement in validation loss for {early_stop_counter} epochs.")
+        
+        # Check early stopping
+        if early_stop_counter >= patience:
+            print("Early stopping triggered. Training stopped.")
+            break
     
     return model
