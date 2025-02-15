@@ -2,8 +2,7 @@
 import torch
 from torch.utils.data import DataLoader, random_split
 from torch.optim import AdamW
-from torch.amp import autocast
-from torch.cuda.amp import GradScaler
+from torch.amp import autocast, GradScaler
 from tqdm import tqdm
 from config import *
 from models import UNet
@@ -23,7 +22,7 @@ def train_unet():
     # Model and Optimizer
     model = UNet(3, NUM_CLASSES).to(device)
     optimizer = AdamW(model.parameters(), lr=LEARNING_RATE)
-    scaler = GradScaler()
+    scaler = GradScaler(device=device)
 
     # Training loop
     best_loss = float('inf')
