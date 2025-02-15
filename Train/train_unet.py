@@ -9,7 +9,7 @@ from models import UNet
 from datasets import UrineStripDataset
 from losses import dice_loss, focal_loss
 
-def train_unet():
+def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS):
     # Dataset and DataLoader
     dataset = UrineStripDataset(IMAGE_FOLDER, MASK_FOLDER)
     train_size = int(0.8 * len(dataset))
@@ -21,27 +21,36 @@ def train_unet():
 
     # Model and Optimizer
     model = UNet(3, NUM_CLASSES).to(device)
-    optimizer = AdamW(model.parameters(), lr=LEARNING_RATE)
+    optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
     scaler = GradScaler(device=device)
+    criterion = torch.nn.CrossEntropyLoss(label_smoothing=0.1)
 
     # Training loop
     best_loss = float('inf')
     for epoch in range(NUM_EPOCHS):
         model.train()
         epoch_loss = 0
-        for images, masks in tqdm(train_loader):
+        for i, (images, masks) in enumerate(tqdm(train_loader)):
             images, masks = images.to(device), masks.to(device)
             
             optimizer.zero_grad()
             with autocast(device_type='cuda', dtype=torch.float16):
                 outputs = model(images)
-                loss = 0.3*focal_loss(outputs, masks) + 0.7*dice_loss(outputs, masks)
+                focal_loss_value = focal_loss(outputs, masks)
+                dice_loss_value = dice_loss(outputs, masks)
+                loss = 0.3 * focal_loss_value + 0.7 * dice_loss_value  # Combine custom losses
+                loss = loss.mean()  # Ensure the loss is a scalar
             
             scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            
+            if (i + 1) % accumulation_steps == 0:
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+            
             epoch_loss += loss.item()
-        
+            torch.cuda.empty_cache()  # Clear cache after each batch
+
         # Validation
         val_loss = 0
         model.eval()

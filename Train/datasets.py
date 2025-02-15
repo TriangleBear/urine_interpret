@@ -8,6 +8,8 @@ from torchvision import transforms
 from PIL import Image
 import cv2
 
+IMAGE_SIZE = (256, 256)
+
 class UrineStripDataset(Dataset):
     def __init__(self, image_folder, mask_folder, transform=None):
         self.image_folder = image_folder
@@ -15,6 +17,7 @@ class UrineStripDataset(Dataset):
         self.image_files = sorted(os.listdir(image_folder))
         self.txt_files = sorted(os.listdir(mask_folder))
         self.transform = transform
+        self.image_size = IMAGE_SIZE  # Use the new image size
         
         if len(self.image_files) != len(self.txt_files):
             raise ValueError("Mismatch between number of images and masks")
@@ -26,8 +29,8 @@ class UrineStripDataset(Dataset):
         image_path = os.path.join(self.image_folder, self.image_files[idx])
         txt_path = os.path.join(self.mask_folder, self.txt_files[idx])
         
-        image = Image.open(image_path).convert("RGB")
-        mask = self._create_mask_from_yolo(txt_path)
+        image = Image.open(image_path).convert("RGB").resize(self.image_size)
+        mask = self._create_mask_from_yolo(txt_path, image_size=self.image_size)
         
         if self.transform:
             sample = self.transform({'image': image, 'mask': mask})

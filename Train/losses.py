@@ -1,4 +1,5 @@
 import torch.nn.functional as F
+import torch
 
 def dice_loss(outputs, targets, smooth=1e-6):
     outputs = F.softmax(outputs, dim=1)

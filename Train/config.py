@@ -11,11 +11,14 @@ IMAGE_FOLDER = os.path.join(BASE_PATH, r"Datasets\Test test\images")
 MASK_FOLDER = os.path.join(BASE_PATH, r"Datasets\Test test\labels")
 
 # Training Hyperparameters
-BATCH_SIZE = 8
+BATCH_SIZE = 4  # Reduced batch size
 NUM_EPOCHS = 100
 LEARNING_RATE = 3e-4
+WEIGHT_DECAY = 1e-4
+ACCUMULATION_STEPS = 8  # Increased accumulation steps
 NUM_CLASSES = 11
 PATIENCE = 10
+IMAGE_SIZE = (128, 128)  # Reduced image size
 
 # # Data Augmentation Parameters
 # MEAN = [0.485, 0.456, 0.406]  # Default ImageNet mean
