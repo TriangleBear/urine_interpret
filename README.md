@@ -7,8 +7,6 @@ This project is part of the thesis titled "Colorimetric Analysis of Urine Test S
 - [Installation](#installation)
 - [Usage](#usage)
 - [Project Structure](#project-structure)
-- [Training](#training)
-- [Evaluation](#evaluation)
 
 ## Installation
 
@@ -95,22 +93,6 @@ urine_interpret/
 ├── README.md
 └── requirements.txt
 ```
-
-## Training
-
-To train the UNet model, run the following command:
-```bash
-python -m Train.main
-```
-This will train the model and save the best model based on validation loss.
-
-## Evaluation
-
-To evaluate the trained model, run the following command:
-```bash
-python -m Train.main
-```
-This will evaluate the model on the test dataset and print the accuracy.
 
 ## Thesis Reference
 
