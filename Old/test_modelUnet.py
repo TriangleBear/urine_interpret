@@ -13,7 +13,7 @@ from torch.utils.checkpoint import checkpoint
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class UNet(nn.Module):
-    def __init__(self, in_channels, out_channels=11, dropout_prob=0.5):  # Ensure this matches your dataset
+    def __init__(self, in_channels, out_channels=11, dropout_prob=0.3):  # Ensure this matches your dataset
         super(UNet, self).__init__()
         
         self.enc1 = nn.Sequential(
@@ -48,32 +48,32 @@ class UNet(nn.Module):
         )
 
         # Transposed convolutions for upsampling
-        self.upconv3 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
-        self.upconv2 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
-        self.upconv1 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
+        self.upconv3 = nn.ConvTranspose2d(512, 128, kernel_size=2, stride=2)  # Adjusted to match checkpoint
+        self.upconv2 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)  # Adjusted to match checkpoint
+        self.upconv1 = nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2)  # Adjusted to match checkpoint
 
         # Convolutions after concatenation
         self.conv_up3 = nn.Sequential(
-            nn.Conv2d(512, 256, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(256),
-            nn.LeakyReLU(negative_slope=0.01, inplace=True),
-            nn.Dropout(p=dropout_prob)
-        )
-        self.conv_up2 = nn.Sequential(
-            nn.Conv2d(256, 128, kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(256, 128, kernel_size=3, padding=1, bias=False),  # Adjusted to match checkpoint
             nn.BatchNorm2d(128),
             nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.Dropout(p=dropout_prob)
         )
-        self.conv_up1 = nn.Sequential(
-            nn.Conv2d(128, 64, kernel_size=3, padding=1, bias=False),
+        self.conv_up2 = nn.Sequential(
+            nn.Conv2d(128, 64, kernel_size=3, padding=1, bias=False),  # Adjusted to match checkpoint
             nn.BatchNorm2d(64),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+            nn.Dropout(p=dropout_prob)
+        )
+        self.conv_up1 = nn.Sequential(
+            nn.Conv2d(64, 32, kernel_size=3, padding=1, bias=False),  # Adjusted to match checkpoint
+            nn.BatchNorm2d(32),
             nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.Dropout(p=dropout_prob)
         )
 
         # Final output layer
-        self.output = nn.Conv2d(64, out_channels, kernel_size=1, bias=False)
+        self.output = nn.Conv2d(32, out_channels, kernel_size=1, bias=False)  # Adjusted to match checkpoint
 
         self.initialize_weights()
 
@@ -109,7 +109,7 @@ class UNet(nn.Module):
         return output
 
 model = UNet(in_channels=3, out_channels=11).to(device)
-model.load_state_dict(torch.load(r'unet_model_20250213-014930.pth', map_location=device), strict=False)
+model.load_state_dict(torch.load(r'models/unet_model_20250216-082635.pth_epoch_9.pth', map_location=device), strict=False)
 model.eval()
 ic("Model loaded.")
 
