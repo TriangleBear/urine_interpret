@@ -8,6 +8,7 @@ from config import *
 from models import UNet
 from datasets import UrineStripDataset
 from losses import dice_loss, focal_loss
+from torch.optim.lr_scheduler import OneCycleLR
 
 def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, patience=PATIENCE):
     # Dataset and DataLoader
@@ -19,12 +20,21 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
 
+    # Compute class weights
+    class_counts = torch.zeros(NUM_CLASSES)
+    for _, masks in dataset:
+        class_counts += torch.bincount(masks.flatten(), minlength=NUM_CLASSES)
+    class_weights = 1.0 / (class_counts + 1e-6)  # Avoid division by zero
+    class_weights = class_weights / class_weights.sum()
+    class_weights = class_weights.to(device)
+    print(f"Class weights: {class_weights}")
+
     # Model and Optimizer
     model = UNet(3, NUM_CLASSES, dropout_prob=0.3).to(device)  # Increase dropout rate
     optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
     scaler = GradScaler(device=device)
-    criterion = torch.nn.CrossEntropyLoss(label_smoothing=0.1)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2)  # Add learning rate scheduler
+    criterion = torch.nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)  # Add class weights
+    scheduler = OneCycleLR(optimizer, max_lr=LEARNING_RATE, steps_per_epoch=len(train_loader), epochs=NUM_EPOCHS)  # Use OneCycleLR scheduler
 
     train_losses = []
     val_losses = []
@@ -50,6 +60,7 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
                 loss = loss.mean()  # Ensure the loss is a scalar
             
             scaler.scale(loss).backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # Gradient clipping
             
             if (i + 1) % accumulation_steps == 0:
                 scaler.step(optimizer)
@@ -87,7 +98,7 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
         print(f"Epoch {epoch+1}: Train Loss {avg_loss:.4f}, Val Loss {avg_val_loss:.4f}, Val Accuracy {val_accuracy:.2f}%")
         
         # Adjust learning rate
-        scheduler.step(avg_val_loss)
+        scheduler.step()
 
         # Save best model
         if avg_val_loss < best_loss:
