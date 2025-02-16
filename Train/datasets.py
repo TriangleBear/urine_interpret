@@ -97,16 +97,16 @@ class RandomTrainTransformations:
     def __init__(self, mean, std):
         self.joint_transform = transforms.Compose([
             RandomFlip(horizontal=True, vertical=True),
-            RandomRotation(degrees=30),  # Increase rotation range
-            RandomAffine(translate=(0.4, 0.4))  # Increase translation range
+            RandomRotation(degrees=45),  # Increase rotation range
+            RandomAffine(translate=(0.5, 0.5))  # Increase translation range
         ])
         self.image_transform = transforms.Compose([
-            transforms.RandomResizedCrop(256, scale=(0.5, 1.0)),  # Increase scale range
-            transforms.ColorJitter(brightness=0.8, contrast=0.8, saturation=0.8, hue=0.5),  # Increase jitter range
-            transforms.RandomAffine(degrees=90, translate=(0.5, 0.5), scale=(0.5, 1.5), shear=30),  # Increase affine range
-            transforms.RandomGrayscale(p=0.4),  # Increase grayscale probability
+            transforms.RandomResizedCrop(256, scale=(0.4, 1.0)),  # Increase scale range
+            transforms.ColorJitter(brightness=0.9, contrast=0.9, saturation=0.9, hue=0.6),  # Increase jitter range
+            transforms.RandomAffine(degrees=120, translate=(0.5, 0.5), scale=(0.4, 1.6), shear=40),  # Increase affine range
+            transforms.RandomGrayscale(p=0.5),  # Increase grayscale probability
             transforms.ToTensor(),
-            transforms.RandomErasing(p=0.5, scale=(0.02, 0.1), ratio=(0.3, 3.3)),  # Increase erasing probability
+            transforms.RandomErasing(p=0.6, scale=(0.02, 0.1), ratio=(0.3, 3.3)),  # Increase erasing probability
             transforms.Normalize(mean=mean, std=std)
         ])
         self.mask_transform = transforms.Compose([
