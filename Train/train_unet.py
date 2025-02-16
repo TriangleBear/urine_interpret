@@ -27,6 +27,7 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
     class_weights = 1.0 / (class_counts + 1e-6)  # Avoid division by zero
     class_weights = class_weights / class_weights.sum()
     class_weights = class_weights.to(device)
+    print(f"Class counts: {class_counts}")
     print(f"Class weights: {class_weights}")
 
     # Model and Optimizer
