@@ -20,10 +20,15 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
 
     # Model and Optimizer
-    model = UNet(3, NUM_CLASSES).to(device)
+    model = UNet(3, NUM_CLASSES, dropout_prob=0.3).to(device)  # Increase dropout rate
     optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
     scaler = GradScaler(device=device)
     criterion = torch.nn.CrossEntropyLoss(label_smoothing=0.1)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2)  # Add learning rate scheduler
+
+    train_losses = []
+    val_losses = []
+    val_accuracies = []
 
     # Training loop
     best_loss = float('inf')
@@ -54,6 +59,9 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
             epoch_loss += loss.item()
             torch.cuda.empty_cache()  # Clear cache after each batch
 
+        avg_loss = epoch_loss / len(train_loader)
+        train_losses.append(avg_loss)
+
         # Validation
         val_loss = 0
         correct = 0
@@ -72,11 +80,15 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
                 total += masks.numel()
                 correct += (predicted == masks).sum().item()
         
-        avg_loss = epoch_loss/len(train_loader)
-        avg_val_loss = val_loss/len(val_loader)
+        avg_val_loss = val_loss / len(val_loader)
+        val_losses.append(avg_val_loss)
         val_accuracy = 100 * correct / total
+        val_accuracies.append(val_accuracy)
         print(f"Epoch {epoch+1}: Train Loss {avg_loss:.4f}, Val Loss {avg_val_loss:.4f}, Val Accuracy {val_accuracy:.2f}%")
         
+        # Adjust learning rate
+        scheduler.step(avg_val_loss)
+
         # Save best model
         if avg_val_loss < best_loss:
             best_loss = avg_val_loss
@@ -92,4 +104,4 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
             print("Early stopping triggered. Training stopped.")
             break
     
-    return model
+    return model, train_losses, val_losses, val_accuracies

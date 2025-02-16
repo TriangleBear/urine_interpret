@@ -12,7 +12,7 @@ if __name__ == "__main__":
     print(f"Dataset mean: {mean}, std: {std}")
     
     # Train UNet
-    unet_model = train_unet()
+    unet_model, train_losses, val_losses, val_accuracies = train_unet()
     
     # Extract features and labels for SVM
     features, labels = extract_features_and_labels(dataset, unet_model)
