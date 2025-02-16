@@ -8,7 +8,7 @@ from config import *
 from models import UNet
 from datasets import UrineStripDataset
 from losses import dice_loss, focal_loss
-from torch.optim.lr_scheduler import OneCycleLR
+from torch.optim.lr_scheduler import OneCycleLR, CosineAnnealingWarmRestarts
 
 def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, patience=PATIENCE):
     # Dataset and DataLoader
@@ -31,11 +31,11 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
     print(f"Class weights: {class_weights}")
 
     # Model and Optimizer
-    model = UNet(3, NUM_CLASSES, dropout_prob=0.3).to(device)  # Increase dropout rate
+    model = UNet(3, NUM_CLASSES, dropout_prob=0.4).to(device)  # Increase dropout rate
     optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
     scaler = GradScaler(device=device)
     criterion = torch.nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)  # Add class weights
-    scheduler = OneCycleLR(optimizer, max_lr=LEARNING_RATE, steps_per_epoch=len(train_loader), epochs=NUM_EPOCHS)  # Use OneCycleLR scheduler
+    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)  # Use CosineAnnealingWarmRestarts scheduler
 
     train_losses = []
     val_losses = []
@@ -110,6 +110,9 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
         else:
             early_stop_counter += 1
             print(f"No improvement in validation loss for {early_stop_counter} epochs.")
+        
+        # Save model checkpoint
+        torch.save(model.state_dict(), f"{model_filename}_epoch_{epoch+1}.pth")
         
         # Check early stopping
         if early_stop_counter >= patience:

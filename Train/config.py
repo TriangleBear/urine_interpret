@@ -12,9 +12,9 @@ IMAGE_FOLDER = os.path.join(BASE_PATH, r"Datasets\Test test\images")
 MASK_FOLDER = os.path.join(BASE_PATH, r"Datasets\Test test\labels")
 
 # Training Hyperparameters
-BATCH_SIZE = 4  # Reduced batch size
+BATCH_SIZE = 8  # Reduced batch size
 NUM_EPOCHS = 100
-LEARNING_RATE = 1e-4  # Reduced learning rate
+LEARNING_RATE = 1e-6  # Reduced learning rate
 WEIGHT_DECAY = 1e-4
 ACCUMULATION_STEPS = 8  # Increased accumulation steps
 NUM_CLASSES = 11
