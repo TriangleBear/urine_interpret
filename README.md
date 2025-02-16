@@ -32,18 +32,39 @@ This project is part of the thesis titled "Colorimetric Analysis of Urine Test S
 ## Usage
 
 1. **Compute Dataset Statistics**:
-    ```bash
-    python -m Train.main
+    ```python
+    from config import IMAGE_FOLDER, MASK_FOLDER
+    from datasets import UrineStripDataset
+    from utils import compute_mean_std
+
+    dataset = UrineStripDataset(IMAGE_FOLDER, MASK_FOLDER)
+    mean, std = compute_mean_std(dataset)
+    print(f"Dataset mean: {mean}, std: {std}")
     ```
 
 2. **Train the UNet Model**:
-    ```bash
-    python -m Train.main
+    ```python
+    from train_unet import train_unet
+
+    unet_model, train_losses, val_losses, val_accuracies = train_unet()
     ```
 
-3. **Evaluate the Model**:
-    ```bash
-    python -m Train.main
+3. **Extract Features and Train SVM**:
+    ```python
+    from utils import extract_features_and_labels, train_svm_classifier, save_svm_model
+
+    features, labels = extract_features_and_labels(dataset, unet_model)
+    svm_model = train_svm_classifier(features, labels)
+    save_svm_model(svm_model, get_svm_filename())
+    ```
+
+4. **Evaluate the SVM Model**:
+    ```python
+    from sklearn.model_selection import train_test_split
+
+    X_train, X_test, y_train, y_test = train_test_split(features, labels, test_size=0.2)
+    svm_accuracy = svm_model.score(X_test, y_test) * 100
+    print(f"SVM RBF Accuracy: {svm_accuracy:.2f}%")
     ```
 
 ## Project Structure
