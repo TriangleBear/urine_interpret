@@ -17,14 +17,15 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
     
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=8, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, num_workers=8, pin_memory=True)
 
     # Compute class weights
     class_counts = torch.zeros(NUM_CLASSES)
     for _, masks in dataset:
         class_counts += torch.bincount(masks.flatten(), minlength=NUM_CLASSES)
     class_weights = 1.0 / (class_counts + 1e-6)  # Avoid division by zero
+    class_weights[class_counts == 0] = 0  # Set weights of classes with no samples to 0
     class_weights = class_weights / class_weights.sum()
     class_weights = class_weights.to(device)
     print(f"Class counts: {class_counts}")
@@ -50,7 +51,7 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
         model.train()
         epoch_loss = 0
         for i, (images, masks) in enumerate(tqdm(train_loader, desc=f"Training Epoch {epoch+1}")):
-            images, masks = images.to(device), masks.to(device)
+            images, masks = images.to(device, non_blocking=True), masks.to(device, non_blocking=True)
             
             optimizer.zero_grad()
             with autocast(device_type='cuda', dtype=torch.float16):
@@ -81,7 +82,7 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
         model.eval()
         with torch.no_grad():
             for images, masks in tqdm(val_loader, desc="Validation"):
-                images, masks = images.to(device), masks.to(device)
+                images, masks = images.to(device, non_blocking=True), masks.to(device, non_blocking=True)
                 outputs = model(images.to(device))
                 dice_loss_value = dice_loss(outputs, masks.to(device))
                 val_loss += dice_loss_value.mean().item()  # Ensure the loss is a scalar
