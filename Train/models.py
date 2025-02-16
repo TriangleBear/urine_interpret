@@ -35,35 +35,28 @@ class UNet(nn.Module):
             nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.Dropout(p=dropout_prob)
         )
-        self.upconv4 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
-        self.upconv3 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
-        self.upconv2 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
-        self.upconv1 = nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2)
-        self.conv_up4 = nn.Sequential(
+        self.upconv3 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
+        self.upconv2 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
+        self.upconv1 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
+        self.conv_up3 = nn.Sequential(
             nn.Conv2d(512, 256, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(256),
             nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.Dropout(p=dropout_prob)
         )
-        self.conv_up3 = nn.Sequential(
+        self.conv_up2 = nn.Sequential(
             nn.Conv2d(256, 128, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(128),
             nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.Dropout(p=dropout_prob)
         )
-        self.conv_up2 = nn.Sequential(
+        self.conv_up1 = nn.Sequential(
             nn.Conv2d(128, 64, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(64),
             nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.Dropout(p=dropout_prob)
         )
-        self.conv_up1 = nn.Sequential(
-            nn.Conv2d(64, 32, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(32),
-            nn.LeakyReLU(negative_slope=0.01, inplace=True),
-            nn.Dropout(p=dropout_prob)
-        )
-        self.output = nn.Conv2d(32, out_channels, kernel_size=1, bias=False)
+        self.output = nn.Conv2d(64, out_channels, kernel_size=1, bias=False)
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -78,24 +71,19 @@ class UNet(nn.Module):
         enc4 = self.enc4(enc3)
         bottleneck = self.bottleneck(enc4)
         
-        up4 = self.upconv4(bottleneck)
-        up4 = F.interpolate(up4, size=enc4.size()[2:], mode='bilinear', align_corners=True)
-        up4 = torch.cat([up4, enc4], dim=1)
-        up4 = self.conv_up4(up4)
-
-        up3 = self.upconv3(up4)
-        up3 = F.interpolate(up3, size=enc3.size()[2:], mode='bilinear', align_corners=True)
-        up3 = torch.cat([up3, enc3], dim=1)
+        up3 = self.upconv3(bottleneck)
+        up3 = F.interpolate(up3, size=enc4.size()[2:], mode='bilinear', align_corners=True)
+        up3 = torch.cat([up3, enc4], dim=1)
         up3 = self.conv_up3(up3)
 
         up2 = self.upconv2(up3)
-        up2 = F.interpolate(up2, size=enc2.size()[2:], mode='bilinear', align_corners=True)
-        up2 = torch.cat([up2, enc2], dim=1)
+        up2 = F.interpolate(up2, size=enc3.size()[2:], mode='bilinear', align_corners=True)
+        up2 = torch.cat([up2, enc3], dim=1)
         up2 = self.conv_up2(up2)
 
         up1 = self.upconv1(up2)
-        up1 = F.interpolate(up1, size=enc1.size()[2:], mode='bilinear', align_corners=True)
-        up1 = torch.cat([up1, enc1], dim=1)
+        up1 = F.interpolate(up1, size=enc2.size()[2:], mode='bilinear', align_corners=True)
+        up1 = torch.cat([up1, enc2], dim=1)
         up1 = self.conv_up1(up1)
 
         output = self.output(up1)
