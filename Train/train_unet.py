@@ -12,7 +12,7 @@ from torch.optim.lr_scheduler import OneCycleLR, CosineAnnealingWarmRestarts, Re
 
 def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, patience=PATIENCE):
     # Dataset and DataLoader
-    dataset = UrineStripDataset(IMAGE_FOLDER, MASK_FOLDER)
+    dataset = UrineStripDataset(IMAGE_FOLDER, MASK_FOLDER, transform=RandomTrainTransformations(mean, std))
     train_size = int(0.8 * len(dataset))
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
@@ -36,7 +36,7 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
     optimizer = AdamW(model.parameters(), lr=1e-4, weight_decay=WEIGHT_DECAY)  # Adjust learning rate
     scaler = GradScaler(device=device)
     criterion = torch.nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)  # Add class weights
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)  # Use ReduceLROnPlateau scheduler
+    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2, eta_min=1e-6)  # Use CosineAnnealingWarmRestarts scheduler
 
     train_losses = []
     val_losses = []
@@ -100,7 +100,7 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
         print(f"Epoch {epoch+1}: Train Loss {avg_loss:.4f}, Val Loss {avg_val_loss:.4f}, Val Accuracy {val_accuracy:.2f}%")
         
         # Adjust learning rate
-        scheduler.step(avg_val_loss)
+        scheduler.step(epoch + avg_val_loss)
 
         # Save best model
         if avg_val_loss < best_loss:
