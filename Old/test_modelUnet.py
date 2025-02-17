@@ -13,9 +13,8 @@ from torch.utils.checkpoint import checkpoint
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class UNet(nn.Module):
-    def __init__(self, in_channels, out_channels=11, dropout_prob=0.3):  # Ensure this matches your dataset
+    def __init__(self, in_channels, out_channels=11, dropout_prob=0.3):
         super(UNet, self).__init__()
-        
         self.enc1 = nn.Sequential(
             nn.Conv2d(in_channels, 32, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(32),
@@ -46,35 +45,28 @@ class UNet(nn.Module):
             nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.Dropout(p=dropout_prob)
         )
-
-        # Transposed convolutions for upsampling
-        self.upconv3 = nn.ConvTranspose2d(512, 128, kernel_size=2, stride=2)  # Adjusted to match checkpoint
-        self.upconv2 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)  # Adjusted to match checkpoint
-        self.upconv1 = nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2)  # Adjusted to match checkpoint
-
-        # Convolutions after concatenation
+        self.upconv3 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
+        self.upconv2 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
+        self.upconv1 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
         self.conv_up3 = nn.Sequential(
-            nn.Conv2d(256, 128, kernel_size=3, padding=1, bias=False),  # Adjusted to match checkpoint
-            nn.BatchNorm2d(128),
+            nn.Conv2d(512, 256, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(256),
             nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.Dropout(p=dropout_prob)
         )
         self.conv_up2 = nn.Sequential(
-            nn.Conv2d(128, 64, kernel_size=3, padding=1, bias=False),  # Adjusted to match checkpoint
-            nn.BatchNorm2d(64),
+            nn.Conv2d(256, 128, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(128),
             nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.Dropout(p=dropout_prob)
         )
         self.conv_up1 = nn.Sequential(
-            nn.Conv2d(64, 32, kernel_size=3, padding=1, bias=False),  # Adjusted to match checkpoint
-            nn.BatchNorm2d(32),
+            nn.Conv2d(128, 64, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(64),
             nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.Dropout(p=dropout_prob)
         )
-
-        # Final output layer
-        self.output = nn.Conv2d(32, out_channels, kernel_size=1, bias=False)  # Adjusted to match checkpoint
-
+        self.output = nn.Conv2d(64, out_channels, kernel_size=1, bias=False)
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -87,21 +79,20 @@ class UNet(nn.Module):
         enc2 = self.enc2(enc1)
         enc3 = self.enc3(enc2)
         enc4 = self.enc4(enc3)
-
         bottleneck = self.bottleneck(enc4)
-
+        
         up3 = self.upconv3(bottleneck)
-        up3 = F.interpolate(up3, size=enc4.shape[2:], mode='bilinear', align_corners=True)  # Fix size mismatch
+        up3 = F.interpolate(up3, size=enc4.size()[2:], mode='bilinear', align_corners=True)
         up3 = torch.cat([up3, enc4], dim=1)
         up3 = self.conv_up3(up3)
 
         up2 = self.upconv2(up3)
-        up2 = F.interpolate(up2, size=enc3.shape[2:], mode='bilinear', align_corners=True)
+        up2 = F.interpolate(up2, size=enc3.size()[2:], mode='bilinear', align_corners=True)
         up2 = torch.cat([up2, enc3], dim=1)
         up2 = self.conv_up2(up2)
 
         up1 = self.upconv1(up2)
-        up1 = F.interpolate(up1, size=enc2.shape[2:], mode='bilinear', align_corners=True)
+        up1 = F.interpolate(up1, size=enc2.size()[2:], mode='bilinear', align_corners=True)
         up1 = torch.cat([up1, enc2], dim=1)
         up1 = self.conv_up1(up1)
 
@@ -109,18 +100,23 @@ class UNet(nn.Module):
         return output
 
 model = UNet(in_channels=3, out_channels=11).to(device)
-model.load_state_dict(torch.load(r'models/unet_model_20250216-082635.pth_epoch_9.pth', map_location=device), strict=False)
+model.load_state_dict(torch.load(r'models\unet_model_20250216-205216.pth_epoch_100.pth', map_location=device), strict=False)
 model.eval()
 ic("Model loaded.")
 
 # ==== Load and Transform Image ====
 image_path = r'Datasets\Test test\test\IMG_2986_png.rf.5882528ac456a04ff79284960ca91129.jpg'
 image = Image.open(image_path).convert("RGB")
-transform = T.Compose([T.Resize((512, 512)), T.ToTensor()])
+
+# Normalize using mean and std deviation for better brightness preservation
+transform = T.Compose([
+    T.Resize((512, 512)),
+    T.ToTensor(),
+    T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
 image_tensor = transform(image).unsqueeze(0).to(device)
 print("Input image tensor min/max:", torch.min(image_tensor), torch.max(image_tensor))
-image_tensor = image_tensor / 255.0  # Normalize
-
 
 # ==== Run Model ====
 with torch.no_grad():
@@ -139,9 +135,29 @@ with torch.no_grad():
 binary_mask = (prediction > 0.5).float()  # Thresholding
 print("Unique values in binary mask:", torch.unique(binary_mask))
 
+# Define a color map for class IDs
+class_colors = {
+    0: (0, 0, 0),       # Background - Black
+    1: (255, 0, 0),     # Class 1 - Red
+    2: (0, 255, 0),     # Class 2 - Green
+    3: (0, 0, 255),     # Class 3 - Blue
+    4: (255, 255, 0),   # Class 4 - Yellow
+    5: (255, 0, 255),   # Class 5 - Magenta
+    6: (0, 255, 255),   # Class 6 - Cyan
+    7: (128, 0, 0),     # Class 7 - Maroon
+    8: (0, 128, 0),     # Class 8 - Dark Green
+    9: (0, 0, 128),     # Class 9 - Navy
+    10: (128, 128, 0)   # Class 10 - Olive
+}
+
 # ==== Process Predicted Mask ====
 mask = prediction.squeeze(0).cpu().numpy()
 mask = np.argmax(mask, axis=0).astype(np.uint8)
+
+# Create a color mask
+color_mask = np.zeros((mask.shape[0], mask.shape[1], 3), dtype=np.uint8)
+for class_id, color in class_colors.items():
+    color_mask[mask == class_id] = color
 
 # ==== Debugging Output ====
 ic(np.unique(mask))  # Should show different values if segmentation works
@@ -157,11 +173,19 @@ image_np = np.array(image)
 if len(contours) == 0:
     ic("No full strip detected!")
 
+# Scale factor to align bounding boxes with the original image
+scale_x = image_np.shape[1] / mask.shape[1]
+scale_y = image_np.shape[0] / mask.shape[0]
+
 for contour in contours:
     x, y, w, h = cv2.boundingRect(contour)
+    x = int(x * scale_x)
+    y = int(y * scale_y)
+    w = int(w * scale_x)
+    h = int(h * scale_y)
     cv2.rectangle(image_np, (x, y), (x + w, y + h), (0, 255, 0), 2)  # Green for full strip
 
-# ==== Detect Reagent Pads ====
+# ==== Detect Reagent Pads with Bounding Boxes ====
 for class_id in range(1, 10):  # Ignore background
     pad_mask = (mask == class_id).astype(np.uint8) * 255
     cv2.imwrite(f"pad_mask_{class_id}.jpg", pad_mask)  # Save for debugging
@@ -173,23 +197,26 @@ for class_id in range(1, 10):  # Ignore background
 
     for contour in contours:
         x, y, w, h = cv2.boundingRect(contour)
-        cv2.rectangle(image_np, (x, y), (x + w, y + h), (255, 0, 0), 2)  # Blue for reagent pads
-
+        x = int(x * scale_x)
+        y = int(y * scale_y)
+        w = int(w * scale_x)
+        h = int(h * scale_y)
+        cv2.rectangle(image_np, (x, y), (x + w, y + h), class_colors[class_id], 2)  # Use class color for bounding box
 
 print("Raw logits:", torch.min(prediction), torch.max(prediction))
 
 # ==== Display Result ====
-# plt.figure(figsize=(6, 6))
-# plt.imshow(image_np)
-# plt.title("Urine Test Strip & Reagent Pads Detection")
-# plt.axis("off")
-# plt.show()
+plt.figure(figsize=(6, 6))
+plt.imshow(image_np)
+plt.title("Urine Test Strip & Reagent Pads Detection with Bounding Boxes")
+plt.axis("off")
+plt.show()
 
 # Convert multi-class prediction to single-channel mask
 binary_mask = torch.argmax(prediction, dim=1).squeeze(0)  # Shape: (512, 512)
 
-plt.imshow(binary_mask.cpu(), cmap='gray')
-plt.title("Predicted Mask")
+plt.imshow(color_mask)
+plt.title("Predicted Mask with Colors")
 plt.axis("off")
 plt.show()
 
