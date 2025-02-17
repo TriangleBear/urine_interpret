@@ -7,6 +7,7 @@ This project is part of the thesis titled "Colorimetric Analysis of Urine Test S
 - [Installation](#installation)
 - [Usage](#usage)
 - [Project Structure](#project-structure)
+- [Disclaimer](#disclaimer)
 
 ## Installation
 
@@ -93,6 +94,10 @@ urine_interpret/
 ├── README.md
 └── requirements.txt
 ```
+
+## Disclaimer
+
+This project requires the stable version of CUDA. Ensure that you have the correct version of CUDA installed and configured on your system. You can check the compatibility of your CUDA version with PyTorch [here](https://pytorch.org/get-started/previous-versions/) and check the Release compatibility Matric [here](https://github.com/pytorch/pytorch/blob/main/RELEASE.md).
 
 ## Thesis Reference
 
