@@ -98,7 +98,11 @@ class RandomTrainTransformations:
         self.joint_transform = transforms.Compose([
             RandomFlip(horizontal=True, vertical=True),
             RandomRotation(degrees=45),  # Increase rotation range
-            RandomAffine(translate=(0.5, 0.5))  # Increase translation range
+            RandomAffine(translate=(0.5, 0.5)),  # Increase translation range
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomVerticalFlip(),
+            transforms.RandomRotation(90),
+            transforms.RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.8, 1.2), shear=10)
         ])
         self.image_transform = transforms.Compose([
             transforms.RandomResizedCrop(256, scale=(0.4, 1.0)),  # Increase scale range
