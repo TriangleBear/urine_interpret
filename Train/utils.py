@@ -38,6 +38,13 @@ def extract_features_and_labels(dataset, model):
                 labels.append(class_id)
     return np.array(features), np.array(labels)
 
+def post_process_mask(mask):
+    # Apply morphological operations to remove noise and fill gaps
+    kernel = np.ones((5, 5), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    return mask
+
 def train_svm_classifier(features, labels):
     param_grid = {'C': [0.1, 1, 10], 'gamma': [0.001, 0.01, 0.1]}
     grid_search = GridSearchCV(SVC(kernel='rbf'), param_grid, cv=3)
