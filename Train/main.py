@@ -48,3 +48,12 @@ if __name__ == "__main__":
     plt.title('SVM RBF Accuracy')
     plt.tight_layout()
     plt.show()
+
+    # Apply post-processing to the predicted masks
+    for i, (images, masks) in enumerate(dataset):
+        with torch.no_grad():
+            images = images.unsqueeze(0).to(device)
+            outputs = unet_model(images)
+            predicted_mask = torch.argmax(outputs, dim=1).squeeze(0).cpu().numpy()
+            refined_mask = post_process_mask(predicted_mask)
+            cv2.imwrite(f"refined_mask_{i}.png", refined_mask)
