@@ -8,7 +8,7 @@ from torchvision import transforms
 from PIL import Image
 import cv2
 
-IMAGE_SIZE = (256, 256)
+IMAGE_SIZE = (516, 516)
 
 class UrineStripDataset(Dataset):
     def __init__(self, image_folder, mask_folder, transform=None):
@@ -93,6 +93,9 @@ class RandomAffine:
         mask = transforms.functional.affine(mask, angle=params[0], translate=params[1], scale=params[2], shear=params[3])
         return {'image': image, 'mask': mask}
 
+def mask_to_tensor(mask):
+    return torch.from_numpy(np.array(mask, dtype=np.uint8)).long()
+
 class RandomTrainTransformations:
     def __init__(self, mean, std):
         self.joint_transform = transforms.Compose([
@@ -106,21 +109,35 @@ class RandomTrainTransformations:
         ])
         self.image_transform = transforms.Compose([
             transforms.RandomResizedCrop(256, scale=(0.4, 1.0)),  # Increase scale range
-            transforms.ColorJitter(brightness=0.9, contrast=0.9, saturation=0.9, hue=0.6),  # Increase jitter range
+            transforms.ColorJitter(brightness=0.9, contrast=0.9, saturation=0.9, hue=0.5),  # Adjust hue range
             transforms.RandomAffine(degrees=120, translate=(0.5, 0.5), scale=(0.4, 1.6), shear=40),  # Increase affine range
             transforms.RandomGrayscale(p=0.5),  # Increase grayscale probability
             transforms.ToTensor(),
             transforms.RandomErasing(p=0.6, scale=(0.02, 0.1), ratio=(0.3, 3.3)),  # Increase erasing probability
             transforms.Normalize(mean=mean, std=std)
-        ]) 
+        ])
         self.mask_transform = transforms.Compose([
             transforms.Resize((256, 256), interpolation=Image.NEAREST),
             mask_to_tensor
         ])
     def __call__(self, sample):
-        sample = self.joint_transform(sample)
-        image = self.image_transform(sample['image'])
-        mask = self.mask_transform(sample['mask'])
+        image, mask = sample['image'], sample['mask']
+        
+        # Ensure mask is a PIL Image before applying transforms
+        if isinstance(mask, np.ndarray):
+            mask = Image.fromarray(mask)
+
+        # Apply joint transformations
+        image = self.joint_transform(image)
+        mask = self.joint_transform(mask)
+
+        # Apply individual transformations
+        image = self.image_transform(image)
+        mask = self.mask_transform(mask)
+
+        # Convert mask back to a tensor
+        mask = torch.from_numpy(np.array(mask, dtype=np.uint8)).long()
+
         return {'image': image, 'mask': mask}
 
 class SimpleValTransformations:
@@ -136,5 +153,7 @@ class SimpleValTransformations:
         ])
     def __call__(self, sample):
         image = self.image_transform(sample['image'])
-        mask = self.mask_transform(sample['mask'])
+        mask = Image.fromarray(sample['mask'])  # Convert mask to PIL Image
+        mask = self.mask_transform(mask)
+        mask = torch.from_numpy(np.array(mask, dtype=np.uint8)).long()  # Convert mask to tensor
         return {'image': image, 'mask': mask}

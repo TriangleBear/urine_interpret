@@ -6,11 +6,16 @@ from torch.amp import autocast, GradScaler
 from tqdm import tqdm
 from config import *
 from models import UNet
-from datasets import UrineStripDataset
+from datasets import UrineStripDataset, RandomTrainTransformations  # Add the import here
 from losses import dice_loss, focal_loss
 from torch.optim.lr_scheduler import OneCycleLR, CosineAnnealingWarmRestarts, ReduceLROnPlateau
+from utils import compute_mean_std
 
 def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, patience=PATIENCE):
+    # Compute dataset statistics
+    dataset = UrineStripDataset(IMAGE_FOLDER, MASK_FOLDER)
+    mean, std = compute_mean_std(dataset)
+    
     # Dataset and DataLoader
     dataset = UrineStripDataset(IMAGE_FOLDER, MASK_FOLDER, transform=RandomTrainTransformations(mean, std))
     train_size = int(0.8 * len(dataset))
