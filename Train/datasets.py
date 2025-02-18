@@ -53,6 +53,13 @@ class UrineStripDataset(Dataset):
                     w = int(width * image_size[1])
                     h = int(height * image_size[0])
                     cv2.rectangle(mask, (x, y), (x+w, y+h), int(class_id), -1)
+                elif len(parts) > 5:
+                    class_id = int(parts[0])
+                    polygon_points = np.array(parts[1:], dtype=np.float32).reshape(-1, 2)
+                    polygon_points[:, 0] *= image_size[1]
+                    polygon_points[:, 1] *= image_size[0]
+                    polygon_points = polygon_points.astype(np.int32)
+                    cv2.fillPoly(mask, [polygon_points], class_id)
         return mask
 
 class RandomFlip:
