@@ -112,7 +112,7 @@ class RandomTrainTransformations:
             transforms.ToTensor(),
             transforms.RandomErasing(p=0.6, scale=(0.02, 0.1), ratio=(0.3, 3.3)),  # Increase erasing probability
             transforms.Normalize(mean=mean, std=std)
-        ])
+        ]) 
         self.mask_transform = transforms.Compose([
             transforms.Resize((256, 256), interpolation=Image.NEAREST),
             mask_to_tensor
