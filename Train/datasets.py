@@ -32,8 +32,10 @@ class UrineStripDataset(Dataset):
         image = Image.open(image_path).convert("RGB").resize(self.image_size)
         mask = self._create_mask_from_yolo(txt_path, image_size=self.image_size)
         
+        sample = {'image': image, 'mask': mask}
+        
         if self.transform:
-            sample = self.transform({'image': image, 'mask': mask})
+            sample = self.transform(sample)
             return sample['image'], sample['mask']
             
         return transforms.ToTensor()(image), torch.from_numpy(mask).long()
@@ -102,10 +104,6 @@ class RandomTrainTransformations:
             RandomFlip(horizontal=True, vertical=True),
             RandomRotation(degrees=45),  # Increase rotation range
             RandomAffine(translate=(0.5, 0.5)),  # Increase translation range
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomVerticalFlip(),
-            transforms.RandomRotation(90),
-            transforms.RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.8, 1.2), shear=10)
         ])
         self.image_transform = transforms.Compose([
             transforms.RandomResizedCrop(256, scale=(0.4, 1.0)),  # Increase scale range
@@ -128,15 +126,12 @@ class RandomTrainTransformations:
             mask = Image.fromarray(mask)
 
         # Apply joint transformations
-        image = self.joint_transform(image)
-        mask = self.joint_transform(mask)
+        sample = self.joint_transform({'image': image, 'mask': mask})
+        image, mask = sample['image'], sample['mask']
 
         # Apply individual transformations
         image = self.image_transform(image)
         mask = self.mask_transform(mask)
-
-        # Convert mask back to a tensor
-        mask = torch.from_numpy(np.array(mask, dtype=np.uint8)).long()
 
         return {'image': image, 'mask': mask}
 
