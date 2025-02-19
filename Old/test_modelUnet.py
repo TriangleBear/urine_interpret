@@ -9,6 +9,21 @@ from PIL import Image
 from icecream import ic
 from torch.utils.checkpoint import checkpoint
 
+# Define a color map for class IDs
+class_colors = {
+    0: (0, 0, 0),       # Background - Black
+    1: (255, 0, 0),     # Class 1 - Red
+    2: (0, 255, 0),     # Class 2 - Green
+    3: (0, 0, 255),     # Class 3 - Blue
+    4: (255, 255, 0),   # Class 4 - Yellow
+    5: (255, 0, 255),   # Class 5 - Magenta
+    6: (0, 255, 255),   # Class 6 - Cyan
+    7: (128, 0, 0),     # Class 7 - Maroon
+    8: (0, 128, 0),     # Class 8 - Dark Green
+    9: (0, 0, 128),     # Class 9 - Navy
+    10: (128, 128, 0)   # Class 10 - Olive
+}
+
 # ==== Load Model ====
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -100,7 +115,7 @@ class UNet(nn.Module):
         return output
 
 model = UNet(in_channels=3, out_channels=11).to(device)
-model.load_state_dict(torch.load(r'models\unet_model_20250218-190750.pth_epoch_100.pth', map_location=device), strict=False)
+model.load_state_dict(torch.load(r'models\best_unet_model.pth', map_location=device), strict=False)
 model.eval()
 ic("Model loaded.")
 
@@ -118,6 +133,13 @@ transform = T.Compose([
 image_tensor = transform(image).unsqueeze(0).to(device)
 print("Input image tensor min/max:", torch.min(image_tensor), torch.max(image_tensor))
 
+# Visualize the input image
+plt.figure(figsize=(6, 6))
+plt.imshow(image)
+plt.title("Input Image")
+plt.axis("off")
+plt.show()
+
 # ==== Run Model ====
 with torch.no_grad():
     model.eval()
@@ -133,29 +155,26 @@ with torch.no_grad():
     print("Prediction shape:", prediction.shape)  # Debugging output
     print("Prediction min/max:", torch.min(prediction), torch.max(prediction))  # Debugging output
 
-binary_mask = (prediction > 0.5).float()  # Thresholding
-print("Unique values in binary mask:", torch.unique(binary_mask))
-
-# Define a color map for class IDs
-class_colors = {
-    0: (0, 0, 0),       # Background - Black
-    1: (255, 0, 0),     # Class 1 - Red
-    2: (0, 255, 0),     # Class 2 - Green
-    3: (0, 0, 255),     # Class 3 - Blue
-    4: (255, 255, 0),   # Class 4 - Yellow
-    5: (255, 0, 255),   # Class 5 - Magenta
-    6: (0, 255, 255),   # Class 6 - Cyan
-    7: (128, 0, 0),     # Class 7 - Maroon
-    8: (0, 128, 0),     # Class 8 - Dark Green
-    9: (0, 0, 128),     # Class 9 - Navy
-    10: (128, 128, 0)   # Class 10 - Olive
-}
+# Visualize the predicted mask
+predicted_mask = predicted_class.squeeze(0).cpu().numpy()
+plt.figure(figsize=(6, 6))
+plt.imshow(predicted_mask, cmap='gray')
+plt.title("Predicted Mask")
+plt.axis("off")
+plt.show()
 
 # ==== Process Predicted Mask ====
 mask = prediction.squeeze(0).cpu().numpy()
 mask = np.argmax(mask, axis=0).astype(np.uint8)
 
 print("Unique values in mask:", np.unique(mask))  # Debugging output
+
+# Visualize the processed mask
+plt.figure(figsize=(6, 6))
+plt.imshow(mask, cmap='gray')
+plt.title("Processed Mask")
+plt.axis("off")
+plt.show()
 
 # Create a color mask
 color_mask = np.zeros((mask.shape[0], mask.shape[1], 3), dtype=np.uint8)

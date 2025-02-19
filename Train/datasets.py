@@ -62,35 +62,50 @@ class UrineStripDataset(Dataset):
                     cv2.fillPoly(mask, [polygon_points], class_id)
         return mask
 
+# Add a function to visualize the dataset
+def visualize_dataset(dataset, num_samples=5):
+    import matplotlib.pyplot as plt
+    for i in range(num_samples):
+        image, mask = dataset[i]
+        image = image.permute(1, 2, 0).numpy()
+        mask = mask.numpy()
+        
+        plt.figure(figsize=(12, 6))
+        plt.subplot(1, 2, 1)
+        plt.imshow(image)
+        plt.title("Image")
+        plt.axis("off")
+        
+        plt.subplot(1, 2, 2)
+        plt.imshow(mask, cmap='gray')
+        plt.title("Mask")
+        plt.axis("off")
+        
+        plt.show()
+
 class RandomFlip:
     def __init__(self, horizontal=True, vertical=False):
         self.horizontal = horizontal
         self.vertical = vertical
-    def __call__(self, sample):
-        image, mask = sample['image'], sample['mask']
+    def __call__(self,         image):
         if self.horizontal and random.random() > 0.5:
             image = transforms.functional.hflip(image)
-            mask = transforms.functional.hflip(mask)
         if self.vertical and random.random() > 0.5:
             image = transforms.functional.vflip(image)
-            mask = transforms.functional.vflip(mask)
-        return {'image': image, 'mask': mask}
+        return image
 
 class RandomRotation:
     def __init__(self, degrees):
         self.degrees = degrees
-    def __call__(self, sample):
-        image, mask = sample['image'], sample['mask']
+    def __call__(self, image):
         angle = random.uniform(-self.degrees, self.degrees)
         image = transforms.functional.rotate(image, angle)
-        mask = transforms.functional.rotate(mask, angle)
-        return {'image': image, 'mask': mask}
+        return image
 
 class RandomAffine:
     def __init__(self, translate=(0.1, 0.1)):
         self.translate = translate
-    def __call__(self, sample):
-        image, mask = sample['image'], sample['mask']
+    def __call__(self, image):
         params = transforms.RandomAffine.get_params(
             degrees=[-10, 10],
             translate=self.translate,
@@ -99,8 +114,7 @@ class RandomAffine:
             img_size=image.size
         )
         image = transforms.functional.affine(image, angle=params[0], translate=params[1], scale=params[2], shear=params[3])
-        mask = transforms.functional.affine(mask, angle=params[0], translate=params[1], scale=params[2], shear=params[3])
-        return {'image': image, 'mask': mask}
+        return image
 
 def mask_to_tensor(mask):
     return torch.from_numpy(np.array(mask, dtype=np.uint8)).long()
@@ -133,8 +147,8 @@ class RandomTrainTransformations:
             mask = Image.fromarray(mask)
 
         # Apply joint transformations
-        sample = self.joint_transform({'image': image, 'mask': mask})
-        image, mask = sample['image'], sample['mask']
+        image = self.joint_transform(image)
+        mask = self.joint_transform(mask)
 
         # Apply individual transformations
         image = self.image_transform(image)

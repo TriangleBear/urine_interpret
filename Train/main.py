@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 from config import *
 from train_unet import train_unet
 from utils import compute_mean_std, extract_features_and_labels, train_svm_classifier, save_svm_model
-from datasets import UrineStripDataset
+from datasets import UrineStripDataset, visualize_dataset
 from sklearn.model_selection import train_test_split
 
 if __name__ == "__main__":
@@ -10,6 +10,9 @@ if __name__ == "__main__":
     dataset = UrineStripDataset(IMAGE_FOLDER, MASK_FOLDER)
     mean, std = compute_mean_std(dataset)
     print(f"Dataset mean: {mean}, std: {std}")
+    
+    # Visualize the dataset
+    visualize_dataset(dataset)
     
     # Train UNet
     unet_model, train_losses, val_losses, val_accuracies = train_unet()

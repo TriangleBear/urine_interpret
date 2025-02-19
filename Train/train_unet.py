@@ -31,7 +31,7 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
         class_counts += torch.bincount(masks.flatten(), minlength=NUM_CLASSES)
     class_weights = 1.0 / (class_counts + 1e-6)  # Avoid division by zero
     class_weights[class_counts == 0] = 0  # Set weights of classes with no samples to 0
-    class_weights = class_weights / class_weights.sum()
+    class_weights = class_weights / class_weights.sum()  # Normalize weights to sum to 1
     class_weights = class_weights.to(device)
     print(f"Class counts: {class_counts}")
     print(f"Class weights: {class_weights}")
@@ -79,6 +79,7 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
 
         avg_loss = epoch_loss / len(train_loader)
         train_losses.append(avg_loss)
+        print(f"Epoch {epoch+1} Train Loss: {avg_loss:.4f}")
 
         # Validation
         val_loss = 0
