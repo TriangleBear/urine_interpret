@@ -100,7 +100,7 @@ class UNet(nn.Module):
         return output
 
 model = UNet(in_channels=3, out_channels=11).to(device)
-model.load_state_dict(torch.load(r'models\unet_model_20250218-083523.pth_epoch_68.pth', map_location=device), strict=False)
+model.load_state_dict(torch.load(r'models\unet_model_20250218-190750.pth_epoch_100.pth', map_location=device), strict=False)
 model.eval()
 ic("Model loaded.")
 
@@ -129,8 +129,9 @@ with torch.no_grad():
     # Get the class with the highest probability
     predicted_class = torch.argmax(prediction, dim=1)
 
-    print(torch.unique(predicted_class))  # Should show values 0-9
-    
+    print("Unique predicted classes:", torch.unique(predicted_class))  # Debugging output
+    print("Prediction shape:", prediction.shape)  # Debugging output
+    print("Prediction min/max:", torch.min(prediction), torch.max(prediction))  # Debugging output
 
 binary_mask = (prediction > 0.5).float()  # Thresholding
 print("Unique values in binary mask:", torch.unique(binary_mask))
@@ -153,6 +154,8 @@ class_colors = {
 # ==== Process Predicted Mask ====
 mask = prediction.squeeze(0).cpu().numpy()
 mask = np.argmax(mask, axis=0).astype(np.uint8)
+
+print("Unique values in mask:", np.unique(mask))  # Debugging output
 
 # Create a color mask
 color_mask = np.zeros((mask.shape[0], mask.shape[1], 3), dtype=np.uint8)

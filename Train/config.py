@@ -12,14 +12,14 @@ IMAGE_FOLDER = os.path.join(BASE_PATH, r"Datasets\Final Dataset I think\images")
 MASK_FOLDER = os.path.join(BASE_PATH, r"Datasets\Final Dataset I think\labels")
 
 # Training Hyperparameters
-BATCH_SIZE = 4  # Reduced batch size
+BATCH_SIZE = 8  # Keep it low to prevent OOM (6GB VRAM)
 NUM_EPOCHS = 100
-LEARNING_RATE = 1e-6  # Reduced learning rate
+LEARNING_RATE = 3e-5  # Slightly lower LR for stability
 WEIGHT_DECAY = 1e-4
-ACCUMULATION_STEPS = 8  # Increased accumulation steps
+ACCUMULATION_STEPS = 4  # Helps when batch size is small
 NUM_CLASSES = 11
-PATIENCE = 15
-IMAGE_SIZE = (128, 128)  # Reduced image size
+PATIENCE = 10
+IMAGE_SIZE = (224, 224)  # Avoid very small images
 
 # # Data Augmentation Parameters
 # MEAN = [0.485, 0.456, 0.406]  # Default ImageNet mean

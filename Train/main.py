@@ -17,14 +17,24 @@ if __name__ == "__main__":
     # Extract features and labels for SVM
     features, labels = extract_features_and_labels(dataset, unet_model)
     
-    # Train SVM
-    svm_model = train_svm_classifier(features, labels)
-    save_svm_model(svm_model, get_svm_filename())
+    # Ensure there are multiple classes in the labels
+    if len(np.unique(labels)) > 1:
+        # Train SVM
+        svm_model = train_svm_classifier(features, labels)
+        save_svm_model(svm_model, get_svm_filename())
 
-    # Evaluate SVM
-    X_train, X_test, y_train, y_test = train_test_split(features, labels, test_size=0.2)
-    svm_accuracy = svm_model.score(X_test, y_test) * 100
-    print(f"SVM RBF Accuracy: {svm_accuracy:.2f}%")
+        # Evaluate SVM
+        X_train, X_test, y_train, y_test = train_test_split(features, labels, test_size=0.2)
+        svm_accuracy = svm_model.score(X_test, y_test) * 100
+        print(f"SVM RBF Accuracy: {svm_accuracy:.2f}%")
+        
+        # Plot SVM accuracy
+        plt.subplot(1, 3, 3)
+        plt.bar(['SVM RBF'], [svm_accuracy])
+        plt.ylabel('Accuracy (%)')
+        plt.title('SVM RBF Accuracy')
+    else:
+        print("Not enough classes to train SVM. Skipping SVM training and evaluation.")
     
     # Plot training results
     epochs_range = range(1, len(train_losses) + 1)
@@ -42,10 +52,6 @@ if __name__ == "__main__":
     plt.ylabel('Accuracy (%)')
     plt.legend()
     plt.title('Validation Accuracy')
-    plt.subplot(1, 3, 3)
-    plt.bar(['SVM RBF'], [svm_accuracy])
-    plt.ylabel('Accuracy (%)')
-    plt.title('SVM RBF Accuracy')
     plt.tight_layout()
     plt.show()
 

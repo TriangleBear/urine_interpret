@@ -47,7 +47,7 @@ def post_process_mask(mask):
 
 def train_svm_classifier(features, labels):
     param_grid = {'C': [0.1, 1, 10], 'gamma': [0.001, 0.01, 0.1]}
-    grid_search = GridSearchCV(SVC(kernel='rbf'), param_grid, cv=3)
+    grid_search = GridSearchCV(SVC(kernel='rbf'), param_grid, cv=3, error_score='raise')
     grid_search.fit(features, labels)
     return grid_search.best_estimator_
 
