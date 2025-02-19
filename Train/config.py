@@ -6,13 +6,12 @@ import time
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Path Configuration
-BASE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-# print(BASE_PATH)  # Comment out or remove this line
+BASE_PATH = r"D:\Programming\urine_interpret"
 IMAGE_FOLDER = os.path.join(BASE_PATH, r"Datasets\Final Dataset I think\images")
 MASK_FOLDER = os.path.join(BASE_PATH, r"Datasets\Final Dataset I think\labels")
 
 # Training Hyperparameters
-BATCH_SIZE = 8  # Keep it low to prevent OOM (6GB VRAM)
+BATCH_SIZE = 6  # Keep it low to prevent OOM (6GB VRAM)
 NUM_EPOCHS = 100
 LEARNING_RATE = 3e-5  # Slightly lower LR for stability
 WEIGHT_DECAY = 1e-4
