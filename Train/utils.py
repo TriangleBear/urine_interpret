@@ -6,6 +6,7 @@ from sklearn.svm import SVC
 from sklearn.model_selection import train_test_split, GridSearchCV
 import joblib
 from config import device, NUM_CLASSES
+import torchvision.transforms as T  # Add this import
 
 def compute_mean_std(dataset):
     loader = torch.utils.data.DataLoader(dataset, batch_size=64, shuffle=False)
