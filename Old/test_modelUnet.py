@@ -115,12 +115,12 @@ class UNet(nn.Module):
         return output
 
 model = UNet(in_channels=3, out_channels=11).to(device)
-model.load_state_dict(torch.load(r'D:\Programming\urine_interpret\models\unet_model_20250220-020156.pth_epoch_54.pth', map_location=device), strict=False)
+model.load_state_dict(torch.load(r'D:\Programming\urine_interpret\models\unet_model_20250220-213018.pth_epoch_62.pth', map_location=device), strict=False)
 model.eval()
 ic("Model loaded.")
 
 # ==== Load and Transform Image ====
-image_path = r'D:\Programming\urine_interpret\Datasets\Final Dataset I think\images\IMG_3002_png.rf.ec32bffd6eac2f895a76c22ae66e63a9.jpg'
+image_path = r'D:\Programming\urine_interpret\Datasets\Test test\images\IMG_2978_png.rf.847fdb3c89e2b7d091f00881edb10506.jpg'
 image = Image.open(image_path).convert("RGB")
 
 # Normalize using mean and std deviation for better brightness preservation

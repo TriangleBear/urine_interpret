@@ -9,7 +9,7 @@ from PIL import Image
 
 # Device configuration
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+    
 # Define the UNet model
 class UNet(nn.Module):
     def __init__(self, in_channels, out_channels=11, dropout_prob=0.3):
@@ -81,29 +81,39 @@ class UNet(nn.Module):
         bottleneck = self.bottleneck(enc4)
         
         up3 = self.upconv3(bottleneck)
-        up3 = F.interpolate(up3, size=enc4.size()[2:], mode='bilinear', align_corners=True)
+        up3 = F.interpolate(up3, size=enc4.size()[2:], mode='bilinear', align_corners=False)
         up3 = torch.cat([up3, enc4], dim=1)
         up3 = self.conv_up3(up3)
 
         up2 = self.upconv2(up3)
-        up2 = F.interpolate(up2, size=enc3.size()[2:], mode='bilinear', align_corners=True)
+        up2 = F.interpolate(up2, size=enc3.size()[2:], mode='bilinear', align_corners=False)
         up2 = torch.cat([up2, enc3], dim=1)
         up2 = self.conv_up2(up2)
 
         up1 = self.upconv1(up2)
-        up1 = F.interpolate(up1, size=enc2.size()[2:], mode='bilinear', align_corners=True)
+        up1 = F.interpolate(up1, size=enc2.size()[2:], mode='bilinear', align_corners=False)
         up1 = torch.cat([up1, enc2], dim=1)
         up1 = self.conv_up1(up1)
 
         output = self.output(up1)
         return output
 
+# Dynamic normalization: computes per-image mean and std.
 def dynamic_normalization(image):
+    image = image.resize((256, 256))
     tensor_image = T.ToTensor()(image)
     mean = torch.mean(tensor_image, dim=[1, 2], keepdim=True)
     std = torch.std(tensor_image, dim=[1, 2], keepdim=True)
     std = torch.clamp(std, min=1e-6)
-    normalize = T.Normalize(mean.flatten().tolist(), std.flatten().tolist())
+    normalize = T.Normalize(mean.squeeze().tolist(), std.squeeze().tolist())
+    return normalize(tensor_image)
+
+# Fixed normalization: using fixed mean/std (e.g., ImageNet values)
+def fixed_normalization(image):
+    image = image.resize((256, 256))
+    tensor_image = T.ToTensor()(image)
+    normalize = T.Normalize(mean=[0.485, 0.456, 0.406], 
+                            std=[0.229, 0.224, 0.225])
     return normalize(tensor_image)
 
 def load_model(model_path):
@@ -114,50 +124,87 @@ def load_model(model_path):
     model.eval()
     return model
 
-def predict_and_visualize(model, image_path):
+def predict_and_visualize(model, image_path, norm_method='dynamic'):
     image = Image.open(image_path).convert("RGB")
-    image_tensor = dynamic_normalization(image).unsqueeze(0).to(device)
+    
+    # Choose normalization method
+    if norm_method == 'dynamic':
+        print("Using dynamic normalization...")
+        image_tensor = dynamic_normalization(image).unsqueeze(0).to(device)
+    else:
+        print("Using fixed normalization...")
+        image_tensor = fixed_normalization(image).unsqueeze(0).to(device)
 
     with torch.no_grad():
         prediction = model(image_tensor)
+        prediction = F.softmax(prediction, dim=1)  # Softmax along channel dimension
+        prediction_np = prediction.squeeze().cpu().numpy()  # shape: (11, H, W)
+        print("Prediction tensor:", prediction_np)
 
-    if prediction.ndim == 4:
-        mask = prediction.squeeze().cpu().numpy()
-        mask = np.argmax(mask, axis=0)
+    # Create segmentation mask (pixel-wise predicted class)
+    mask = np.argmax(prediction_np, axis=0)  # shape: (H, W)
+    unique_classes = np.unique(mask)
+    print("Unique classes in mask:", unique_classes)
 
-        print("Unique values in mask before processing:", np.unique(mask))
+    # Create confidence map (max probability per pixel)
+    confidence_map = np.max(prediction_np, axis=0)
+    mean_confidence = np.mean(confidence_map)
+    print(f"Mean confidence: {mean_confidence:.4f}")
 
-        plt.figure(figsize=(6, 6))
-        plt.imshow(mask, cmap='jet')
-        plt.title("Raw Predicted Mask")
-        plt.axis("off")
-        plt.show()
+    # # Display segmentation mask
+    # plt.figure(figsize=(6, 6))
+    # plt.imshow(mask, cmap='jet')
+    # plt.title("Segmentation Mask")
+    # plt.axis("off")
+    # plt.show()
 
-        image_np = np.array(image.resize((256, 256)))
-        image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+    # Display confidence map
+    plt.figure(figsize=(6, 6))
+    plt.imshow(confidence_map, cmap='hot')
+    plt.title("Confidence Map")
+    plt.axis("off")
+    plt.colorbar()
+    plt.show()
 
-        for class_id in range(1, 11):
-            binary_mask = (mask == class_id).astype(np.uint8) * 255
+    # Draw bounding boxes for each class.
+    # Classes 0-9 are reagent pads, and class 10 is the whole test strip.
+    image_np = np.array(image.resize((256, 256)))
+    image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
 
-            contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            for cnt in contours:
-                x, y, w, h = cv2.boundingRect(cnt)
-                print(f"Class {class_id}: x={x}, y={y}, w={w}, h={h}")
-                color = (255, 0, 255)
-                cv2.rectangle(image_np, (x, y), (x + w, y + h), color, 2)
-                cv2.putText(image_np, f"Class {class_id}", (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+    for class_id in unique_classes:
+        # Create a binary mask for the current class
+        binary_mask = (mask == class_id).astype(np.uint8) * 255
+        contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for cnt in contours:
+            x, y, w, h = cv2.boundingRect(cnt)
+            # Calculate average confidence within this bounding box
+            region_confidence = confidence_map[y:y+h, x:x+w]
+            avg_conf = np.mean(region_confidence)
+            # Label accordingly: reagent pads vs test strip
+            if class_id == 10:
+                label = f"Test Strip ({avg_conf:.2f})"
+                color = (0, 255, 0)  # Green for test strip
+            else:
+                label = f"Pad {class_id} ({avg_conf:.2f})"
+                color = (255, 0, 255)  # Magenta for reagent pads
 
-        plt.figure(figsize=(8, 8))
-        plt.imshow(cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB))
-        plt.title("Bounding Box Predictions")
-        plt.axis("off")
-        plt.show()
-    else:
-        print("Model output is not a mask. Skipping visualization.")
+            print(f"{label}: x={x}, y={y}, w={w}, h={h}")
+            cv2.rectangle(image_np, (x, y), (x+w, y+h), color, 2)
+            cv2.putText(image_np, label, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+    # plt.figure(figsize=(8, 8))
+    # plt.imshow(cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB))
+    # plt.title("Bounding Box Predictions")
+    # plt.axis("off")
+    # plt.show()
 
 if __name__ == "__main__":
-    model_path = r"D:/Programming/urine_interpret/models/unet_model_20250220-111405.pth_epoch_17.pth"
-    image_path = r"D:/Programming/urine_interpret/Datasets/Test test/test/476928114_1645216839767274_6559316661334448785_n.jpg"
+    model_path = r'D:\Programming\urine_interpret\models\unet_model_20250220-213018.pth_epoch_62.pth'
+    image_path = r"C:\Users\Bear\Downloads\476970923_606722331996304_6786862967582133413_n.jpg"
     
     model = load_model(model_path)
-    predict_and_visualize(model, image_path)
+    
+    # Try with fixed normalization if dynamic yields only class 0 predictions.
+    predict_and_visualize(model, image_path, norm_method='fixed')
+    # You can also try:
+    # predict_and_visualize(model, image_path, norm_method='dynamic')
