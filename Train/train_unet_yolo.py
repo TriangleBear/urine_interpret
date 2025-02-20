@@ -59,7 +59,7 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
     # Training loop
     best_loss = float('inf')
     early_stop_counter = 0
-    model_filename = get_model_filename()
+    model_filename = get_model_filename().replace(".pth", ".pt")  # Change extension to .pt
 
     for epoch in range(NUM_EPOCHS):
         model.train()
@@ -129,7 +129,7 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
             print(f"No improvement in validation loss for {early_stop_counter} epochs.")
         
         # Save model checkpoint
-        torch.save(model.state_dict(), f"{model_filename}_epoch_{epoch+1}.pth")
+        torch.save(model.state_dict(), f"{model_filename}_epoch_{epoch+1}.pt")  # Change extension to .pt
         
         # Check early stopping
         if early_stop_counter >= patience:
