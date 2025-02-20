@@ -11,10 +11,10 @@ IMAGE_FOLDER = os.path.join(BASE_PATH, r"Datasets\Final Dataset I think\images")
 MASK_FOLDER = os.path.join(BASE_PATH, r"Datasets\Final Dataset I think\labels")
 
 # Training Hyperparameters
-BATCH_SIZE = 16  # Increased batch size since T4 has more VRAM
+BATCH_SIZE = 4  # Increased batch size since T4 has more VRAM
 NUM_EPOCHS = 100
-LEARNING_RATE = 3e-4  # Higher LR for faster convergence on a larger batch
-WEIGHT_DECAY = 5e-5  # Slightly reduced to prevent over-regularization
+LEARNING_RATE = 1e-4  # Adjusted learning rate
+WEIGHT_DECAY = 1e-4  # Adjusted weight decay
 ACCUMULATION_STEPS = 2  # Reduced since we increased batch size
 NUM_CLASSES = 11
 PATIENCE = 10
