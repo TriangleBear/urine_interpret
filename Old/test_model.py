@@ -98,7 +98,7 @@ class UNet(nn.Module):
 
 # Load model
 model = UNet(in_channels=3, out_channels=11)
-state_dict = torch.load(r'models\unet_model_20250214-105734.pth', map_location=torch.device('cuda'))
+state_dict = torch.load(r'models\unet_model_20250220-020156.pth_epoch_54.pth', map_location=torch.device('cuda'))
 model.load_state_dict(state_dict, strict=False)
 model.to(torch.device('cuda'))
 model.eval()
@@ -130,9 +130,30 @@ with torch.no_grad():
     prediction = model(image_tensor)
 
 # Convert mask to bounding boxes
+class_colors = {
+    1: (255, 0, 0),  # Red
+    2: (0, 255, 0),  # Green
+    3: (0, 0, 255),  # Blue
+    4: (255, 255, 0),  # Cyan
+    5: (255, 0, 255),  # Magenta
+    6: (0, 255, 255),  # Yellow
+    7: (128, 0, 0),  # Maroon
+    8: (0, 128, 0),  # Olive
+    9: (0, 0, 128)   # Navy
+}
+
 if prediction.ndim == 4:
     mask = prediction.squeeze().cpu().numpy()
     mask = np.argmax(mask, axis=0)  # Get class-wise segmentation
+
+    print("Unique values in mask before processing:", np.unique(mask))
+
+    # Visualize the unprocessed mask
+    plt.figure(figsize=(6, 6))
+    plt.imshow(mask, cmap='jet')
+    plt.title("Raw Predicted Mask")
+    plt.axis("off")
+    plt.show()
 
     image_np = np.array(image.resize((256, 256)))
     image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
@@ -143,8 +164,10 @@ if prediction.ndim == 4:
         contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         for cnt in contours:
             x, y, w, h = cv2.boundingRect(cnt)
-            cv2.rectangle(image_np, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            cv2.putText(image_np, f"Class {class_id}", (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            print(f"Class {class_id}: x={x}, y={y}, w={w}, h={h}")  # Print contour info
+            color = (255, 0, 255)  # Force bright pink color
+            cv2.rectangle(image_np, (x, y), (x + w, y + h), color, 5)  # Thicker bounding box
+            cv2.putText(image_np, f"Class {class_id}", (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
     # Show results
     plt.figure(figsize=(8, 8))

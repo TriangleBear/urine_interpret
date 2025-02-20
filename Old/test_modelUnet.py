@@ -115,12 +115,12 @@ class UNet(nn.Module):
         return output
 
 model = UNet(in_channels=3, out_channels=11).to(device)
-model.load_state_dict(torch.load(r'models\best_unet_model.pth', map_location=device), strict=False)
+model.load_state_dict(torch.load(r'D:\Programming\urine_interpret\models\unet_model_20250220-020156.pth_epoch_54.pth', map_location=device), strict=False)
 model.eval()
 ic("Model loaded.")
 
 # ==== Load and Transform Image ====
-image_path = r'Datasets\outputGab\IMG_2979.png'
+image_path = r'D:\Programming\urine_interpret\Datasets\Final Dataset I think\images\IMG_3002_png.rf.ec32bffd6eac2f895a76c22ae66e63a9.jpg'
 image = Image.open(image_path).convert("RGB")
 
 # Normalize using mean and std deviation for better brightness preservation
@@ -180,6 +180,13 @@ plt.show()
 color_mask = np.zeros((mask.shape[0], mask.shape[1], 3), dtype=np.uint8)
 for class_id, color in class_colors.items():
     color_mask[mask == class_id] = color
+
+# Visualize the color mask
+plt.figure(figsize=(6, 6))
+plt.imshow(color_mask)
+plt.title("Color Mask")
+plt.axis("off")
+plt.show()
 
 # ==== Debugging Output ====
 ic(np.unique(mask))  # Should show different values if segmentation works
