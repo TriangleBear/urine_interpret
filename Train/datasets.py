@@ -64,12 +64,12 @@ class UrineStripDataset(Dataset):
                     polygon_points = polygon_points.astype(np.int32)
                     cv2.fillPoly(mask, [polygon_points], class_id)
 
-        # Visualize the mask for the first 5 samples
-        if self.visualization_count < 5:
-            plt.imshow(mask, cmap='gray')
-            plt.title("YOLO Mask")
-            plt.show()
-            self.visualization_count += 1
+        # Comment out the mask visualization
+        # if self.visualization_count < 5:
+        #     plt.imshow(mask, cmap='gray')
+        #     plt.title("YOLO Mask")
+        #     plt.show()
+        #     self.visualization_count += 1
         
         return mask
 
