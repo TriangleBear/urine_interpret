@@ -3,13 +3,15 @@ from torch.utils.data import DataLoader, random_split
 from torch.optim import AdamW
 from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
+from icecream import ic
 from config import *
 from models import UNetYOLO
 from datasets import UrineStripDataset, RandomTrainTransformations
 from losses import dice_loss, focal_loss
 from utils import compute_mean_std, dynamic_normalization
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts  # Import the scheduler
 
-def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, patience=PATIENCE):
+def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, patience=PATIENCE, pre_trained_weights=None):
     # Compute dataset statistics
     dataset = UrineStripDataset(IMAGE_FOLDER, MASK_FOLDER)
     mean, std = compute_mean_std(dataset)
@@ -36,6 +38,15 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
 
     # Model and Optimizer
     model = UNetYOLO(3, NUM_CLASSES, dropout_prob=0.5).to(device)  # Use UNetYOLO model
+
+    # Load pre-trained weights if provided
+    if pre_trained_weights:
+        try:
+            model.load_state_dict(torch.load(pre_trained_weights, map_location=device), strict=False)
+            ic(f"Loaded pre-trained weights from {pre_trained_weights}")
+        except Exception as e:
+            ic(f"Failed to load pre-trained weights: {e}")
+
     optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)  # Adjust learning rate and weight decay
     scaler = GradScaler()
     criterion = torch.nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)  # Add class weights
@@ -128,4 +139,5 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
     return model, train_losses, val_losses, val_accuracies
 
 if __name__ == "__main__":
-    train_unet_yolo()
+    pre_trained_weights_path = r"D:\Programming\urine_interpret\models\weights.pt"  # Replace with the actual path to weights.pt
+    train_unet_yolo(pre_trained_weights=pre_trained_weights_path)
