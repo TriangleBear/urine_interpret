@@ -52,18 +52,36 @@ class UrineStripDataset(Dataset):
                 parts = line.strip().split()
                 if len(parts) == 5:
                     class_id, x_center, y_center, width, height = map(float, parts)
-                    if class_id == 0:
+                    if class_id == 10:
                         full_strip_lines.append(line)
                     else:
                         other_class_lines.append(line)
                 elif len(parts) > 5:
                     class_id = int(parts[0])
-                    if class_id == 0:
+                    if class_id == 10:
                         full_strip_lines.append(line)
                     else:
                         other_class_lines.append(line)
 
-        # Draw other classes first
+        # Draw full strip class first
+        for line in full_strip_lines:
+            parts = line.strip().split()
+            if len(parts) == 5:
+                class_id, x_center, y_center, width, height = map(float, parts)
+                x = int((x_center - width/2) * image_size[1])
+                y = int((y_center - height/2) * image_size[0])
+                w = int(width * image_size[1])
+                h = int(height * image_size[0])
+                cv2.rectangle(mask, (x, y), (x+w, y+h), int(class_id), -1)
+            elif len(parts) > 5:
+                class_id = int(parts[0])
+                polygon_points = np.array(parts[1:], dtype=np.float32).reshape(-1, 2)
+                polygon_points[:, 0] *= image_size[1]
+                polygon_points[:, 1] *= image_size[0]
+                polygon_points = polygon_points.astype(np.int32)
+                cv2.fillPoly(mask, [polygon_points], int(class_id))
+
+        # Draw other classes on top
         for line in other_class_lines:
             parts = line.strip().split()
             if len(parts) == 5:
@@ -72,24 +90,14 @@ class UrineStripDataset(Dataset):
                 y = int((y_center - height/2) * image_size[0])
                 w = int(width * image_size[1])
                 h = int(height * image_size[0])
-                cv2.rectangle(mask, (x, y), (x+w, y+h), 255, -1)
+                cv2.rectangle(mask, (x, y), (x+w, y+h), int(class_id), -1)
             elif len(parts) > 5:
                 class_id = int(parts[0])
                 polygon_points = np.array(parts[1:], dtype=np.float32).reshape(-1, 2)
                 polygon_points[:, 0] *= image_size[1]
                 polygon_points[:, 1] *= image_size[0]
                 polygon_points = polygon_points.astype(np.int32)
-                cv2.fillPoly(mask, [polygon_points], 128)  # Change color to 128 for polygons
-
-        # Draw full strip class last
-        for line in full_strip_lines:
-            parts = line.strip().split()
-            class_id, x_center, y_center, width, height = map(float, parts)
-            x = int((x_center - width/2) * image_size[1])
-            y = int((y_center - height/2) * image_size[0])
-            w = int(width * image_size[1])
-            h = int(height * image_size[0])
-            cv2.rectangle(mask, (x, y), (x+w, y+h), int(class_id), -1)
+                cv2.fillPoly(mask, [polygon_points], int(class_id))
 
         # Visualize the mask for the first 5 samples
         if self.visualization_count < 5:
