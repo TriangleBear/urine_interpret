@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 from config import *
 from train_unet import train_unet
-from utils import compute_mean_std, extract_features_and_labels, train_svm_classifier, save_svm_model
+from utils import compute_mean_std, extract_features_and_labels, train_svm_classifier, save_svm_model, dynamic_normalization
 from datasets import UrineStripDataset, visualize_dataset
 from sklearn.model_selection import train_test_split
 
