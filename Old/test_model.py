@@ -2,15 +2,17 @@ import torch
 import torchvision.transforms as T
 import torch.nn.functional as F
 import torch.nn as nn
-import torch.utils.checkpoint as checkpoint
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 from PIL import Image
-from icecream import ic
 
+# Device configuration
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Define the UNet model
 class UNet(nn.Module):
-    def __init__(self, in_channels, out_channels=11, dropout_prob=0.2):
+    def __init__(self, in_channels, out_channels=11, dropout_prob=0.3):
         super(UNet, self).__init__()
         self.enc1 = nn.Sequential(
             nn.Conv2d(in_channels, 32, kernel_size=3, padding=1, bias=False),
@@ -96,19 +98,6 @@ class UNet(nn.Module):
         output = self.output(up1)
         return output
 
-# Load model
-model = UNet(in_channels=3, out_channels=11)
-state_dict = torch.load(r'models\unet_model_20250220-020156.pth_epoch_54.pth', map_location=torch.device('cuda'))
-model.load_state_dict(state_dict, strict=False)
-model.to(torch.device('cuda'))
-model.eval()
-ic("model loaded")
-
-# Load image
-image_path = r'Datasets\Test test\test\476928114_1645216839767274_6559316661334448785_n.jpg'
-image = Image.open(image_path).convert("RGB")
-ic("image loaded")
-
 def dynamic_normalization(image):
     tensor_image = T.ToTensor()(image)
     mean = torch.mean(tensor_image, dim=[1, 2], keepdim=True)
@@ -117,60 +106,58 @@ def dynamic_normalization(image):
     normalize = T.Normalize(mean.flatten().tolist(), std.flatten().tolist())
     return normalize(tensor_image)
 
-# Normalize the input image
-image_tensor = dynamic_normalization(image).unsqueeze(0).to(torch.device('cuda'))
-ic("image transformed")
+def load_model(model_path):
+    model = UNet(in_channels=3, out_channels=11)
+    state_dict = torch.load(model_path, map_location=device)
+    model.load_state_dict(state_dict, strict=False)
+    model.to(device)
+    model.eval()
+    return model
 
-# Run model
-with torch.no_grad():
-    prediction = model(image_tensor)
+def predict_and_visualize(model, image_path):
+    image = Image.open(image_path).convert("RGB")
+    image_tensor = dynamic_normalization(image).unsqueeze(0).to(device)
 
-# Convert mask to bounding boxes
-class_colors = {
-    1: (255, 0, 0),  # Red
-    2: (0, 255, 0),  # Green
-    3: (0, 0, 255),  # Blue
-    4: (255, 255, 0),  # Cyan
-    5: (255, 0, 255),  # Magenta
-    6: (0, 255, 255),  # Yellow
-    7: (128, 0, 0),  # Maroon
-    8: (0, 128, 0),  # Olive
-    9: (0, 0, 128)   # Navy
-}
+    with torch.no_grad():
+        prediction = model(image_tensor)
 
-if prediction.ndim == 4:
-    mask = prediction.squeeze().cpu().numpy()
-    mask = np.argmax(mask, axis=0)  # Get class-wise segmentation
+    if prediction.ndim == 4:
+        mask = prediction.squeeze().cpu().numpy()
+        mask = np.argmax(mask, axis=0)
 
-    print("Unique values in mask before processing:", np.unique(mask))
+        print("Unique values in mask before processing:", np.unique(mask))
 
-    # Visualize the unprocessed mask
-    plt.figure(figsize=(6, 6))
-    plt.imshow(mask, cmap='jet')
-    plt.title("Raw Predicted Mask")
-    plt.axis("off")
-    plt.show()
+        plt.figure(figsize=(6, 6))
+        plt.imshow(mask, cmap='jet')
+        plt.title("Raw Predicted Mask")
+        plt.axis("off")
+        plt.show()
 
-    image_np = np.array(image.resize((256, 256)))
-    image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+        image_np = np.array(image.resize((256, 256)))
+        image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
 
-    for class_id in range(1, 10):  # Ignore background class (0)
-        binary_mask = (mask == class_id).astype(np.uint8) * 255
+        for class_id in range(1, 11):
+            binary_mask = (mask == class_id).astype(np.uint8) * 255
 
-        contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        for cnt in contours:
-            x, y, w, h = cv2.boundingRect(cnt)
-            print(f"Class {class_id}: x={x}, y={y}, w={w}, h={h}")  # Print contour info
-            color = (255, 0, 255)  # Force bright pink color
-            cv2.rectangle(image_np, (x, y), (x + w, y + h), color, 5)  # Thicker bounding box
-            cv2.putText(image_np, f"Class {class_id}", (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for cnt in contours:
+                x, y, w, h = cv2.boundingRect(cnt)
+                print(f"Class {class_id}: x={x}, y={y}, w={w}, h={h}")
+                color = (255, 0, 255)
+                cv2.rectangle(image_np, (x, y), (x + w, y + h), color, 2)
+                cv2.putText(image_np, f"Class {class_id}", (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
-    # Show results
-    plt.figure(figsize=(8, 8))
-    plt.imshow(cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB))
-    plt.title("Bounding Box Predictions")
-    plt.axis("off")
-    plt.show()
+        plt.figure(figsize=(8, 8))
+        plt.imshow(cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB))
+        plt.title("Bounding Box Predictions")
+        plt.axis("off")
+        plt.show()
+    else:
+        print("Model output is not a mask. Skipping visualization.")
 
-else:
-    ic("Model output is not a mask. Skipping visualization.")
+if __name__ == "__main__":
+    model_path = r"D:/Programming/urine_interpret/models/unet_model_20250220-111405.pth_epoch_17.pth"
+    image_path = r"D:/Programming/urine_interpret/Datasets/Test test/test/476928114_1645216839767274_6559316661334448785_n.jpg"
+    
+    model = load_model(model_path)
+    predict_and_visualize(model, image_path)
