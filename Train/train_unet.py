@@ -9,7 +9,7 @@ from models import UNet
 from datasets import UrineStripDataset, RandomTrainTransformations  # Add the import here
 from losses import dice_loss, focal_loss
 from torch.optim.lr_scheduler import OneCycleLR, CosineAnnealingWarmRestarts, ReduceLROnPlateau
-from utils import compute_mean_std, dynamic_normalization  # Add dynamic_normalization import
+from utils import compute_mean_std, dynamic_normalization  # Ensure dynamic_normalization is imported
 
 def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, patience=PATIENCE):
     # Compute dataset statistics
