@@ -21,8 +21,9 @@ def compute_mean_std(dataset):
     std /= len(loader.dataset)
     return mean.tolist(), std.tolist()
 
-def dynamic_normalization(image):
-    tensor_image = T.ToTensor()(image)
+def dynamic_normalization(tensor_image):
+    if not isinstance(tensor_image, torch.Tensor):
+        tensor_image = T.ToTensor()(tensor_image)
     mean = torch.mean(tensor_image, dim=[1, 2], keepdim=True)
     std = torch.std(tensor_image, dim=[1, 2], keepdim=True)
     std = torch.clamp(std, min=1e-6)
