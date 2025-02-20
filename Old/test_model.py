@@ -117,12 +117,8 @@ def dynamic_normalization(image):
     normalize = T.Normalize(mean.flatten().tolist(), std.flatten().tolist())
     return normalize(tensor_image)
 
-transform = T.Compose([
-    T.Resize((512, 512), interpolation=T.InterpolationMode.BILINEAR),
-    dynamic_normalization
-])
-
-image_tensor = transform(image).unsqueeze(0).to(torch.device('cuda'))
+# Normalize the input image
+image_tensor = dynamic_normalization(image).unsqueeze(0).to(torch.device('cuda'))
 ic("image transformed")
 
 # Run model
