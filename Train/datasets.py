@@ -38,9 +38,9 @@ class UrineStripDataset(Dataset):
         
         if self.transform:
             sample = self.transform(sample)
-            return sample['image'], sample['mask'].flatten()  # Flatten the mask
+            return sample['image'], sample['mask']
             
-        return transforms.ToTensor()(image), torch.from_numpy(mask).long().flatten()  # Flatten the mask
+        return transforms.ToTensor()(image), torch.from_numpy(mask).long()
 
     def _create_mask_from_yolo(self, txt_path, image_size=(256, 256)):
         mask = np.zeros(image_size, dtype=np.uint8)
@@ -63,17 +63,7 @@ class UrineStripDataset(Dataset):
                     else:
                         other_class_lines.append(line)
 
-        # Draw full strip class first
-        for line in full_strip_lines:
-            parts = line.strip().split()
-            class_id, x_center, y_center, width, height = map(float, parts)
-            x = int((x_center - width/2) * image_size[1])
-            y = int((y_center - height/2) * image_size[0])
-            w = int(width * image_size[1])
-            h = int(height * image_size[0])
-            cv2.rectangle(mask, (x, y), (x+w, y+h), int(class_id), -1)
-
-        # Draw other classes on top
+        # Draw other classes first
         for line in other_class_lines:
             parts = line.strip().split()
             if len(parts) == 5:
@@ -90,6 +80,16 @@ class UrineStripDataset(Dataset):
                 polygon_points[:, 1] *= image_size[0]
                 polygon_points = polygon_points.astype(np.int32)
                 cv2.fillPoly(mask, [polygon_points], 128)  # Change color to 128 for polygons
+
+        # Draw full strip class last
+        for line in full_strip_lines:
+            parts = line.strip().split()
+            class_id, x_center, y_center, width, height = map(float, parts)
+            x = int((x_center - width/2) * image_size[1])
+            y = int((y_center - height/2) * image_size[0])
+            w = int(width * image_size[1])
+            h = int(height * image_size[0])
+            cv2.rectangle(mask, (x, y), (x+w, y+h), int(class_id), -1)
 
         # Visualize the mask for the first 5 samples
         if self.visualization_count < 5:
