@@ -20,6 +20,14 @@ def compute_mean_std(dataset):
     std /= len(loader.dataset)
     return mean.tolist(), std.tolist()
 
+def dynamic_normalization(image):
+    tensor_image = T.ToTensor()(image)
+    mean = torch.mean(tensor_image, dim=[1, 2], keepdim=True)
+    std = torch.std(tensor_image, dim=[1, 2], keepdim=True)
+    std = torch.clamp(std, min=1e-6)
+    normalize = T.Normalize(mean.flatten().tolist(), std.flatten().tolist())
+    return normalize(tensor_image)
+
 def extract_features_and_labels(dataset, model):
     features = []
     labels = []

@@ -62,6 +62,7 @@ if __name__ == "__main__":
     for i, (images, masks) in enumerate(dataset):
         with torch.no_grad():
             images = images.unsqueeze(0).to(device)
+            images = dynamic_normalization(images)  # Normalize the input images
             outputs = unet_model(images)
             predicted_mask = torch.argmax(outputs, dim=1).squeeze(0).cpu().numpy()
             refined_mask = post_process_mask(predicted_mask)

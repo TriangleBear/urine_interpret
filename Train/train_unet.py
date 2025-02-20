@@ -57,6 +57,7 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
         epoch_loss = 0
         for i, (images, masks) in enumerate(tqdm(train_loader, desc=f"Training Epoch {epoch+1}")):
             images, masks = images.to(device, non_blocking=True), masks.to(device, non_blocking=True)
+            images = dynamic_normalization(images)  # Normalize the input images
             
             optimizer.zero_grad()
             with autocast(device_type='cuda', dtype=torch.float16):
@@ -89,6 +90,7 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
         with torch.no_grad():
             for images, masks in tqdm(val_loader, desc="Validation"):
                 images, masks = images.to(device, non_blocking=True), masks.to(device, non_blocking=True)
+                images = dynamic_normalization(images)  # Normalize the input images
                 outputs = model(images.to(device))
                 dice_loss_value = dice_loss(outputs, masks.to(device))
                 val_loss += dice_loss_value.mean().item()  # Ensure the loss is a scalar

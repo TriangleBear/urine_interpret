@@ -7,6 +7,7 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 from PIL import Image
 import cv2
+import matplotlib.pyplot as plt
 
 IMAGE_SIZE = (516, 516)
 
@@ -60,6 +61,12 @@ class UrineStripDataset(Dataset):
                     polygon_points[:, 1] *= image_size[0]
                     polygon_points = polygon_points.astype(np.int32)
                     cv2.fillPoly(mask, [polygon_points], class_id)
+        
+        # Visualize the mask
+        plt.imshow(mask, cmap='gray')
+        plt.title("YOLO Mask")
+        plt.show()
+        
         return mask
 
 # Add a function to visualize the dataset
@@ -87,7 +94,7 @@ class RandomFlip:
     def __init__(self, horizontal=True, vertical=False):
         self.horizontal = horizontal
         self.vertical = vertical
-    def __call__(self,         image):
+    def __call__(self, image):
         if self.horizontal and random.random() > 0.5:
             image = transforms.functional.hflip(image)
         if self.vertical and random.random() > 0.5:
