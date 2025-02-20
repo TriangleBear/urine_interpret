@@ -38,7 +38,7 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
 
     # Model and Optimizer
     model = UNet(3, NUM_CLASSES, dropout_prob=0.5).to(device)  # Increase dropout rate
-    optimizer = AdamW(model.parameters(), lr=1e-4, weight_decay=WEIGHT_DECAY)  # Adjust learning rate
+    optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)  # Adjust learning rate and weight decay
     scaler = GradScaler(device=device)
     criterion = torch.nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)  # Add class weights
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2, eta_min=1e-6)  # Use CosineAnnealingWarmRestarts scheduler
