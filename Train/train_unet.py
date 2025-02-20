@@ -2,7 +2,7 @@
 import torch
 from torch.utils.data import DataLoader, random_split
 from torch.optim import AdamW
-from torch.amp import autocast, GradScaler
+from torch.cuda.amp import autocast, GradScaler  # Correct import for autocast
 from tqdm import tqdm
 from config import *
 from models import UNet
@@ -22,8 +22,8 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
     
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=8, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, num_workers=8, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=8, pin_memory=True)
 
     # Compute class weights
     class_counts = torch.zeros(NUM_CLASSES)
@@ -39,7 +39,7 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
     # Model and Optimizer
     model = UNet(3, NUM_CLASSES, dropout_prob=0.5).to(device)  # Increase dropout rate
     optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)  # Adjust learning rate and weight decay
-    scaler = GradScaler(device=device)
+    scaler = GradScaler()
     criterion = torch.nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)  # Add class weights
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2, eta_min=1e-6)  # Use CosineAnnealingWarmRestarts scheduler
 
@@ -60,7 +60,7 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
             images = dynamic_normalization(images)  # Normalize the input images
             
             optimizer.zero_grad()
-            with autocast(device_type='cuda', dtype=torch.float16):
+            with autocast():
                 outputs = model(images)
                 focal_loss_value = focal_loss(outputs, masks)
                 dice_loss_value = dice_loss(outputs, masks)
@@ -91,13 +91,12 @@ def train_unet(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, pat
             for images, masks in tqdm(val_loader, desc="Validation"):
                 images, masks = images.to(device, non_blocking=True), masks.to(device, non_blocking=True)
                 images = dynamic_normalization(images)  # Normalize the input images
-                outputs = model(images.to(device))
-                dice_loss_value = dice_loss(outputs, masks.to(device))
+                outputs = model(images)
+                dice_loss_value = dice_loss(outputs, masks)
                 val_loss += dice_loss_value.mean().item()  # Ensure the loss is a scalar
                 
                 # Calculate accuracy
                 _, predicted = torch.max(outputs, 1)
-                predicted = predicted.to(device)  # Ensure predicted is on the same device as masks
                 total += masks.numel()
                 correct += (predicted == masks).sum().item()
         
