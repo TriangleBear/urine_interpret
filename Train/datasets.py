@@ -19,6 +19,7 @@ class UrineStripDataset(Dataset):
         self.txt_files = sorted(os.listdir(mask_folder))
         self.transform = transform
         self.image_size = IMAGE_SIZE  # Use the new image size
+        self.visualization_count = 0  # Add a counter for visualizations
         
         if len(self.image_files) != len(self.txt_files):
             raise ValueError("Mismatch between number of images and masks")
@@ -90,10 +91,12 @@ class UrineStripDataset(Dataset):
                 polygon_points = polygon_points.astype(np.int32)
                 cv2.fillPoly(mask, [polygon_points], 255)
 
-        # Visualize the mask
-        plt.imshow(mask, cmap='gray')
-        plt.title("YOLO Mask")
-        plt.show()
+        # Visualize the mask for the first 5 samples
+        if self.visualization_count < 5:
+            plt.imshow(mask, cmap='gray')
+            plt.title("YOLO Mask")
+            plt.show()
+            self.visualization_count += 1
         
         return mask
 
