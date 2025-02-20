@@ -2,9 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class UNet(nn.Module):
-    def __init__(self, in_channels, out_channels=11, dropout_prob=0.3):
-        super(UNet, self).__init__()
+class UNetEncoder(nn.Module):
+    def __init__(self, in_channels, dropout_prob=0.3):
+        super(UNetEncoder, self).__init__()
         self.enc1 = nn.Sequential(
             nn.Conv2d(in_channels, 32, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(32),
@@ -35,28 +35,6 @@ class UNet(nn.Module):
             nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.Dropout(p=dropout_prob)
         )
-        self.upconv3 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
-        self.upconv2 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
-        self.upconv1 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
-        self.conv_up3 = nn.Sequential(
-            nn.Conv2d(512, 256, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(256),
-            nn.LeakyReLU(negative_slope=0.01, inplace=True),
-            nn.Dropout(p=dropout_prob)
-        )
-        self.conv_up2 = nn.Sequential(
-            nn.Conv2d(256, 128, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(128),
-            nn.LeakyReLU(negative_slope=0.01, inplace=True),
-            nn.Dropout(p=dropout_prob)
-        )
-        self.conv_up1 = nn.Sequential(
-            nn.Conv2d(128, 64, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(64),
-            nn.LeakyReLU(negative_slope=0.01, inplace=True),
-            nn.Dropout(p=dropout_prob)
-        )
-        self.output = nn.Conv2d(64, out_channels, kernel_size=1, bias=False)
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -70,21 +48,30 @@ class UNet(nn.Module):
         enc3 = self.enc3(enc2)
         enc4 = self.enc4(enc3)
         bottleneck = self.bottleneck(enc4)
-        
-        up3 = self.upconv3(bottleneck)
-        up3 = F.interpolate(up3, size=enc4.size()[2:], mode='bilinear', align_corners=True)
-        up3 = torch.cat([up3, enc4], dim=1)
-        up3 = self.conv_up3(up3)
+        return bottleneck, enc1, enc2, enc3, enc4
 
-        up2 = self.upconv2(up3)
-        up2 = F.interpolate(up2, size=enc3.size()[2:], mode='bilinear', align_corners=True)
-        up2 = torch.cat([up2, enc3], dim=1)
-        up2 = self.conv_up2(up2)
+class YOLODecoder(nn.Module):
+    def __init__(self, num_classes):
+        super(YOLODecoder, self).__init__()
+        self.conv1 = nn.Conv2d(512, 256, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(256, 128, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(128, 64, kernel_size=3, padding=1)
+        self.conv4 = nn.Conv2d(64, num_classes, kernel_size=1)
 
-        up1 = self.upconv1(up2)
-        up1 = F.interpolate(up1, size=enc2.size()[2:], mode='bilinear', align_corners=True)
-        up1 = torch.cat([up1, enc2], dim=1)
-        up1 = self.conv_up1(up1)
+    def forward(self, x):
+        x = F.leaky_relu(self.conv1(x), 0.1)
+        x = F.leaky_relu(self.conv2(x), 0.1)
+        x = F.leaky_relu(self.conv3(x), 0.1)
+        x = self.conv4(x)
+        return x
 
-        output = self.output(up1)
+class UNetYOLO(nn.Module):
+    def __init__(self, in_channels, num_classes, dropout_prob=0.3):
+        super(UNetYOLO, self).__init__()
+        self.encoder = UNetEncoder(in_channels, dropout_prob)
+        self.decoder = YOLODecoder(num_classes)
+
+    def forward(self, x):
+        bottleneck, enc1, enc2, enc3, enc4 = self.encoder(x)
+        output = self.decoder(bottleneck)
         return output
