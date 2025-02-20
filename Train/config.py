@@ -11,18 +11,14 @@ IMAGE_FOLDER = os.path.join(BASE_PATH, r"Datasets/Final Dataset I think/images")
 MASK_FOLDER = os.path.join(BASE_PATH, r"Datasets/Final Dataset I think/labels")
 
 # Training Hyperparameters
-BATCH_SIZE = 4  # Increased batch size since T4 has more VRAM
-NUM_EPOCHS = 100
-LEARNING_RATE = 1e-4  # Adjusted learning 
-WEIGHT_DECAY = 1e-4  # Adjusted weight decay
-ACCUMULATION_STEPS = 2  # Reduced since we increased batch size
+BATCH_SIZE = 8  # Increased batch size for better gradient estimation
+NUM_EPOCHS = 150  # Increased number of epochs for better convergence
+LEARNING_RATE = 5e-5  # Adjusted learning rate for more stable training
+WEIGHT_DECAY = 1e-5  # Adjusted weight decay to prevent overfitting
+ACCUMULATION_STEPS = 4  # Increased accumulation steps to simulate larger batch size
 NUM_CLASSES = 11
-PATIENCE = 10
+PATIENCE = 15  # Increased patience for early stopping
 IMAGE_SIZE = (256, 256)  # Slightly larger for better feature extraction
-
-# # Data Augmentation Parameters
-# MEAN = [0.485, 0.456, 0.406]  # Default ImageNet mean
-# STD = [0.229, 0.224, 0.225]   # Default ImageNet std
 
 # Model Saving
 def get_model_filename():
