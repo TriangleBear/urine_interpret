@@ -43,25 +43,53 @@ class UrineStripDataset(Dataset):
 
     def _create_mask_from_yolo(self, txt_path, image_size=(256, 256)):
         mask = np.zeros(image_size, dtype=np.uint8)
+        full_strip_lines = []
+        other_class_lines = []
+
         with open(txt_path, 'r') as f:
             for line in f:
                 parts = line.strip().split()
                 if len(parts) == 5:
                     class_id, x_center, y_center, width, height = map(float, parts)
-                    # Convert YOLO format to bounding box coordinates
-                    x = int((x_center - width/2) * image_size[1])
-                    y = int((y_center - height/2) * image_size[0])
-                    w = int(width * image_size[1])
-                    h = int(height * image_size[0])
-                    cv2.rectangle(mask, (x, y), (x+w, y+h), int(class_id), -1)
+                    if class_id == 0:
+                        full_strip_lines.append(line)
+                    else:
+                        other_class_lines.append(line)
                 elif len(parts) > 5:
                     class_id = int(parts[0])
-                    polygon_points = np.array(parts[1:], dtype=np.float32).reshape(-1, 2)
-                    polygon_points[:, 0] *= image_size[1]
-                    polygon_points[:, 1] *= image_size[0]
-                    polygon_points = polygon_points.astype(np.int32)
-                    cv2.fillPoly(mask, [polygon_points], class_id)
-        
+                    if class_id == 0:
+                        full_strip_lines.append(line)
+                    else:
+                        other_class_lines.append(line)
+
+        # Draw full strip class first
+        for line in full_strip_lines:
+            parts = line.strip().split()
+            class_id, x_center, y_center, width, height = map(float, parts)
+            x = int((x_center - width/2) * image_size[1])
+            y = int((y_center - height/2) * image_size[0])
+            w = int(width * image_size[1])
+            h = int(height * image_size[0])
+            cv2.rectangle(mask, (x, y), (x+w, y+h), int(class_id), -1)
+
+        # Draw other classes on top
+        for line in other_class_lines:
+            parts = line.strip().split()
+            if len(parts) == 5:
+                class_id, x_center, y_center, width, height = map(float, parts)
+                x = int((x_center - width/2) * image_size[1])
+                y = int((y_center - height/2) * image_size[0])
+                w = int(width * image_size[1])
+                h = int(height * image_size[0])
+                cv2.rectangle(mask, (x, y), (x+w, y+h), 255, -1)
+            elif len(parts) > 5:
+                class_id = int(parts[0])
+                polygon_points = np.array(parts[1:], dtype=np.float32).reshape(-1, 2)
+                polygon_points[:, 0] *= image_size[1]
+                polygon_points[:, 1] *= image_size[0]
+                polygon_points = polygon_points.astype(np.int32)
+                cv2.fillPoly(mask, [polygon_points], 255)
+
         # Visualize the mask
         plt.imshow(mask, cmap='gray')
         plt.title("YOLO Mask")
