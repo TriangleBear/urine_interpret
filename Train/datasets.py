@@ -38,9 +38,9 @@ class UrineStripDataset(Dataset):
         
         if self.transform:
             sample = self.transform(sample)
-            return sample['image'], sample['mask']
+            return sample['image'], sample['mask'].flatten()  # Flatten the mask
             
-        return transforms.ToTensor()(image), torch.from_numpy(mask).long()
+        return transforms.ToTensor()(image), torch.from_numpy(mask).long().flatten()  # Flatten the mask
 
     def _create_mask_from_yolo(self, txt_path, image_size=(256, 256)):
         mask = np.zeros(image_size, dtype=np.uint8)
@@ -89,7 +89,7 @@ class UrineStripDataset(Dataset):
                 polygon_points[:, 0] *= image_size[1]
                 polygon_points[:, 1] *= image_size[0]
                 polygon_points = polygon_points.astype(np.int32)
-                cv2.fillPoly(mask, [polygon_points], 255)
+                cv2.fillPoly(mask, [polygon_points], 128)  # Change color to 128 for polygons
 
         # Visualize the mask for the first 5 samples
         if self.visualization_count < 5:
