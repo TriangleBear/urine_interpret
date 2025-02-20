@@ -50,18 +50,19 @@ class UrineStripDataset(Dataset):
                 parts = line.strip().split()
                 if len(parts) == 5:
                     class_id, x_center, y_center, width, height = map(float, parts)
+                    class_id = int(class_id)
                     x = int((x_center - width/2) * image_size[1])
                     y = int((y_center - height/2) * image_size[0])
                     w = int(width * image_size[1])
                     h = int(height * image_size[0])
-                    cv2.rectangle(mask, (x, y), (x+w, y+h), int(class_id), -1)
+                    cv2.rectangle(mask, (x, y), (x+w, y+h), class_id, -1)
                 elif len(parts) > 5:
                     class_id = int(parts[0])
                     polygon_points = np.array(parts[1:], dtype=np.float32).reshape(-1, 2)
                     polygon_points[:, 0] *= image_size[1]
                     polygon_points[:, 1] *= image_size[0]
                     polygon_points = polygon_points.astype(np.int32)
-                    cv2.fillPoly(mask, [polygon_points], int(class_id))
+                    cv2.fillPoly(mask, [polygon_points], class_id)
 
         # Visualize the mask for the first 5 samples
         if self.visualization_count < 5:
