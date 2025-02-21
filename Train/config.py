@@ -6,7 +6,7 @@ import time
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Path Configuration
-BASE_PATH = r"D:/Programming/urine_interpret"
+BASE_PATH = r"/content/urine_interpret"
 IMAGE_FOLDER = os.path.join(BASE_PATH, r"Datasets/Final Dataset I think/images")
 MASK_FOLDER = os.path.join(BASE_PATH, r"Datasets/Final Dataset I think/labels")
 
