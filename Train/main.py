@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 from config import *
 import numpy as np
 from train_unet_yolo import train_unet_yolo
-from utils import compute_mean_std, extract_features_and_labels, train_svm_classifier, save_svm_model, dynamic_normalization
+from utils import compute_mean_std, extract_features_and_labels, train_svm_classifier, save_svm_model, dynamic_normalization, post_process_mask  # Import post_process_mask
 from datasets import UrineStripDataset, visualize_dataset
 from sklearn.model_selection import train_test_split
 
