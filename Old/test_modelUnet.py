@@ -8,6 +8,7 @@ import numpy as np
 from PIL import Image
 from icecream import ic
 from torch.utils.checkpoint import checkpoint
+from ultralytics.nn.tasks import DetectionModel  # Import the required module
 
 # Define a color map for class IDs
 class_colors = {
@@ -115,7 +116,8 @@ class UNet(nn.Module):
         return output
 
 model = UNet(in_channels=3, out_channels=11).to(device)
-model.load_state_dict(torch.load(r'D:\Programming\urine_interpret\models\unet_model_20250220-213018.pth_epoch_62.pth', map_location=device), strict=False)
+torch.serialization.add_safe_globals([DetectionModel])  # Add DetectionModel to safe globals
+model.load_state_dict(torch.load(r'D:\Programming\urine_interpret\models\weights.pt', map_location=device, weights_only=False), strict=False)  # Set weights_only to False
 model.eval()
 ic("Model loaded.")
 

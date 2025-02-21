@@ -5,11 +5,18 @@ import torch.nn as nn
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
-from PIL import Image
+import torch.serialization
+from PIL import Image, ImageTk
+from ultralytics.nn.tasks import DetectionModel  # Import the required module
+import tkinter as tk
+from tkinter import ttk
 
 # Device configuration
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
+
+CONFIDENCE = 0.5
+IOU_THRESHOLD = 0.5
+
 # Define the UNet model
 class UNet(nn.Module):
     def __init__(self, in_channels, out_channels=11, dropout_prob=0.3):
@@ -118,13 +125,51 @@ def fixed_normalization(image):
 
 def load_model(model_path):
     model = UNet(in_channels=3, out_channels=11)
-    state_dict = torch.load(model_path, map_location=device)
+    torch.serialization.add_safe_globals([DetectionModel])  # Add DetectionModel to safe globals
+    state_dict = torch.load(model_path, map_location=device, weights_only=False)  # Set weights_only to False
     model.load_state_dict(state_dict, strict=False)
     model.to(device)
     model.eval()
     return model
 
-def predict_and_visualize(model, image_path, norm_method='dynamic'):
+def draw_bounding_boxes(image_np, mask, confidence_map, unique_classes, confidence_threshold):
+    for class_id in unique_classes:
+        # Create a binary mask for the current class
+        binary_mask = (mask == class_id).astype(np.uint8) * 255
+        contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        print(f"Class {class_id}: Found {len(contours)} contours")  # Debugging output
+        for cnt in contours:
+            x, y, w, h = cv2.boundingRect(cnt)
+            # Calculate average confidence within this bounding box
+            region_confidence = confidence_map[y:y+h, x:x+w]
+            avg_conf = np.mean(region_confidence)
+            if avg_conf >= confidence_threshold:
+                # Label accordingly: reagent pads vs test strip
+                if class_id == 20:
+                    label = f"Test Strip ({avg_conf:.2f})"
+                    color = (0, 255, 0)  # Green for test strip
+                else:
+                    label = f"Pad {class_id} ({avg_conf:.2f})"
+                    color = (255, 0, 255)  # Magenta for reagent pads
+
+                print(f"{label}: x={x}, y={y}, w={w}, h={h}")  # Debugging output
+                cv2.rectangle(image_np, (x, y), (x+w, y+h), color, 2)
+                cv2.putText(image_np, label, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+def update_image_on_canvas(image_np):
+    image_pil = Image.fromarray(cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB))
+    image_tk = ImageTk.PhotoImage(image_pil)
+    canvas.itemconfig(image_on_canvas, image=image_tk)
+    canvas.image = image_tk
+
+def display_image_with_bboxes(image_np):
+    plt.figure(figsize=(8, 8))
+    plt.imshow(cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB))
+    plt.title("Bounding Box Predictions")
+    plt.axis("off")
+    plt.show()
+
+def predict_and_visualize(model, image_path, norm_method='dynamic', confidence_threshold=0.5):
     image = Image.open(image_path).convert("RGB")
     
     # Choose normalization method
@@ -151,60 +196,42 @@ def predict_and_visualize(model, image_path, norm_method='dynamic'):
     mean_confidence = np.mean(confidence_map)
     print(f"Mean confidence: {mean_confidence:.4f}")
 
-    # # Display segmentation mask
-    # plt.figure(figsize=(6, 6))
-    # plt.imshow(mask, cmap='jet')
-    # plt.title("Segmentation Mask")
-    # plt.axis("off")
-    # plt.show()
-
-    # Display confidence map
-    plt.figure(figsize=(6, 6))
-    plt.imshow(confidence_map, cmap='hot')
-    plt.title("Confidence Map")
-    plt.axis("off")
-    plt.colorbar()
-    plt.show()
-
     # Draw bounding boxes for each class.
-    # Classes 0-9 are reagent pads, and class 10 is the whole test strip.
+    # Classes 0-9 are reagent pads, and class 20 is the whole test strip.
     image_np = np.array(image.resize((256, 256)))
     image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
 
-    for class_id in unique_classes:
-        # Create a binary mask for the current class
-        binary_mask = (mask == class_id).astype(np.uint8) * 255
-        contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        for cnt in contours:
-            x, y, w, h = cv2.boundingRect(cnt)
-            # Calculate average confidence within this bounding box
-            region_confidence = confidence_map[y:y+h, x:x+w]
-            avg_conf = np.mean(region_confidence)
-            # Label accordingly: reagent pads vs test strip
-            if class_id == 10:
-                label = f"Test Strip ({avg_conf:.2f})"
-                color = (0, 255, 0)  # Green for test strip
-            else:
-                label = f"Pad {class_id} ({avg_conf:.2f})"
-                color = (255, 0, 255)  # Magenta for reagent pads
+    draw_bounding_boxes(image_np, mask, confidence_map, unique_classes, confidence_threshold)
+    update_image_on_canvas(image_np)
 
-            print(f"{label}: x={x}, y={y}, w={w}, h={h}")
-            cv2.rectangle(image_np, (x, y), (x+w, y+h), color, 2)
-            cv2.putText(image_np, label, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-
-    # plt.figure(figsize=(8, 8))
-    # plt.imshow(cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB))
-    # plt.title("Bounding Box Predictions")
-    # plt.axis("off")
-    # plt.show()
+def update_confidence_threshold(val):
+    confidence_threshold = float(val)
+    predict_and_visualize(model, image_path, norm_method='fixed', confidence_threshold=confidence_threshold)
 
 if __name__ == "__main__":
-    model_path = r'D:\Programming\urine_interpret\models\unet_model_20250220-213018.pth_epoch_62.pth'
-    image_path = r"C:\Users\Bear\Downloads\476970923_606722331996304_6786862967582133413_n.jpg"
+    model_path = r'D:\Programming\urine_interpret\models\weights.pt'  # Updated path to weight.pt
+    image_path = r"D:\Programming\urine_interpret\Datasets\outputGab\IMG_2983.png"
     
     model = load_model(model_path)
     
-    # Try with fixed normalization if dynamic yields only class 0 predictions.
-    predict_and_visualize(model, image_path, norm_method='fixed')
-    # You can also try:
-    # predict_and_visualize(model, image_path, norm_method='dynamic')
+    # Create a tkinter window
+    root = tk.Tk()
+    root.title("Confidence Threshold Adjuster")
+
+    # Create a canvas to display the image
+    canvas = tk.Canvas(root, width=256, height=256)
+    canvas.pack()
+
+    # Initialize the image on the canvas
+    image_np = np.zeros((256, 256, 3), dtype=np.uint8)
+    image_pil = Image.fromarray(image_np)
+    image_tk = ImageTk.PhotoImage(image_pil)
+    image_on_canvas = canvas.create_image(0, 0, anchor=tk.NW, image=image_tk)
+
+    # Create a scale widget with higher resolution
+    scale = tk.Scale(root, from_=0.0, to=1.0, orient='horizontal', command=update_confidence_threshold, length=300, resolution=0.01)
+    scale.set(0.5)  # Set initial value to 0.5
+    scale.pack()
+
+    # Run the tkinter main loop
+    root.mainloop()
