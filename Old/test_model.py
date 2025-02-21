@@ -132,24 +132,23 @@ def load_model(model_path):
     model.eval()
     return model
 
-def draw_bounding_boxes(image_np, mask, confidence_map, unique_classes, confidence_threshold):
-    if 11 in unique_classes:
-        # Create a binary mask for the full test strip (class 11)
-        binary_mask = (mask == 11).astype(np.uint8) * 255
-        contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        print(f"Class 11: Found {len(contours)} contours")  # Debugging output
-        for cnt in contours:
-            x, y, w, h = cv2.boundingRect(cnt)
-            # Calculate average confidence within this bounding box
-            region_confidence = confidence_map[y:y+h, x:x+w]
-            avg_conf = np.mean(region_confidence)
-            if avg_conf >= confidence_threshold:
-                label = f"Test Strip ({avg_conf:.2f})"
-                color = (0, 255, 0)  # Green for test strip
+def draw_bounding_boxes(image_np, mask, confidence_map, confidence_threshold):
+    # Create a binary mask for the full test strip (class 11)
+    binary_mask = (mask == 11).astype(np.uint8) * 255
+    contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    print(f"Class 11: Found {len(contours)} contours")  # Debugging output
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        # Calculate average confidence within this bounding box
+        region_confidence = confidence_map[y:y+h, x:x+w]
+        avg_conf = np.mean(region_confidence)
+        if avg_conf >= confidence_threshold:
+            label = f"Test Strip ({avg_conf:.2f})"
+            color = (0, 255, 0)  # Green for test strip
 
-                print(f"{label}: x={x}, y={y}, w={w}, h={h}")  # Debugging output
-                cv2.rectangle(image_np, (x, y), (x+w, y+h), color, 2)
-                cv2.putText(image_np, label, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            print(f"{label}: x={x}, y={y}, w={w}, h={h}")  # Debugging output
+            cv2.rectangle(image_np, (x, y), (x+w, y+h), color, 2)
+            cv2.putText(image_np, label, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
 def update_image_on_canvas(image_np):
     image_pil = Image.fromarray(cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB))
@@ -191,16 +190,16 @@ def predict_and_visualize(model, image_path, norm_method='dynamic'):
     mean_confidence = np.mean(confidence_map)
     print(f"Mean confidence: {mean_confidence:.4f}")
 
-    return mask, confidence_map, unique_classes
+    return mask, confidence_map
 
 def preload_predictions(model, image_path, norm_method='dynamic'):
     global predictions
     predictions = {}
-    mask, confidence_map, unique_classes = predict_and_visualize(model, image_path, norm_method)
+    mask, confidence_map = predict_and_visualize(model, image_path, norm_method)
     for threshold in np.arange(0.0, 1.01, 0.01):
         image_np = np.array(Image.open(image_path).resize((256, 256)))
         image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
-        draw_bounding_boxes(image_np, mask, confidence_map, unique_classes, confidence_threshold=threshold)
+        draw_bounding_boxes(image_np, mask, confidence_map, confidence_threshold=threshold)
         predictions[threshold] = image_np
 
 def update_confidence_threshold(val):
