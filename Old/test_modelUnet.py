@@ -117,7 +117,7 @@ class UNet(nn.Module):
 
 model = UNet(in_channels=3, out_channels=11).to(device)
 torch.serialization.add_safe_globals([DetectionModel])  # Add DetectionModel to safe globals
-model.load_state_dict(torch.load(r'D:\Programming\urine_interpret\models\weights.pt', map_location=device, weights_only=False), strict=False)  # Set weights_only to False
+model.load_state_dict(torch.load(r'D:\Programming\urine_interpret\models\unet_model_20250221-100214.pt_epoch_78.pt', map_location=device, weights_only=False), strict=False)  # Set weights_only to False
 model.eval()
 ic("Model loaded.")
 
