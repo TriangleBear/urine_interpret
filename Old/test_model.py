@@ -3,13 +3,13 @@ import torchvision.transforms as T
 import torch.nn.functional as F
 import torch.nn as nn
 import numpy as np
-import cv2
+import cv2  # Ensure cv2 is imported
 import matplotlib.pyplot as plt
 import torch.serialization
 from PIL import Image, ImageTk
 from ultralytics.nn.tasks import DetectionModel  # Import the required module
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog
 
 # Device configuration
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -133,24 +133,19 @@ def load_model(model_path):
     return model
 
 def draw_bounding_boxes(image_np, mask, confidence_map, unique_classes, confidence_threshold):
-    for class_id in unique_classes:
-        # Create a binary mask for the current class
-        binary_mask = (mask == class_id).astype(np.uint8) * 255
+    if 11 in unique_classes:
+        # Create a binary mask for the full test strip (class 11)
+        binary_mask = (mask == 11).astype(np.uint8) * 255
         contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        print(f"Class {class_id}: Found {len(contours)} contours")  # Debugging output
+        print(f"Class 11: Found {len(contours)} contours")  # Debugging output
         for cnt in contours:
             x, y, w, h = cv2.boundingRect(cnt)
             # Calculate average confidence within this bounding box
             region_confidence = confidence_map[y:y+h, x:x+w]
             avg_conf = np.mean(region_confidence)
             if avg_conf >= confidence_threshold:
-                # Label accordingly: reagent pads vs test strip
-                if class_id == 20:
-                    label = f"Test Strip ({avg_conf:.2f})"
-                    color = (0, 255, 0)  # Green for test strip
-                else:
-                    label = f"Pad {class_id} ({avg_conf:.2f})"
-                    color = (255, 0, 255)  # Magenta for reagent pads
+                label = f"Test Strip ({avg_conf:.2f})"
+                color = (0, 255, 0)  # Green for test strip
 
                 print(f"{label}: x={x}, y={y}, w={w}, h={h}")  # Debugging output
                 cv2.rectangle(image_np, (x, y), (x+w, y+h), color, 2)
@@ -169,7 +164,7 @@ def display_image_with_bboxes(image_np):
     plt.axis("off")
     plt.show()
 
-def predict_and_visualize(model, image_path, norm_method='dynamic', confidence_threshold=0.5):
+def predict_and_visualize(model, image_path, norm_method='dynamic'):
     image = Image.open(image_path).convert("RGB")
     
     # Choose normalization method
@@ -196,21 +191,41 @@ def predict_and_visualize(model, image_path, norm_method='dynamic', confidence_t
     mean_confidence = np.mean(confidence_map)
     print(f"Mean confidence: {mean_confidence:.4f}")
 
-    # Draw bounding boxes for each class.
-    # Classes 0-9 are reagent pads, and class 20 is the whole test strip.
-    image_np = np.array(image.resize((256, 256)))
-    image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+    return mask, confidence_map, unique_classes
 
-    draw_bounding_boxes(image_np, mask, confidence_map, unique_classes, confidence_threshold)
-    update_image_on_canvas(image_np)
+def preload_predictions(model, image_path, norm_method='dynamic'):
+    global predictions
+    predictions = {}
+    mask, confidence_map, unique_classes = predict_and_visualize(model, image_path, norm_method)
+    for threshold in np.arange(0.0, 1.01, 0.01):
+        image_np = np.array(Image.open(image_path).resize((256, 256)))
+        image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+        draw_bounding_boxes(image_np, mask, confidence_map, unique_classes, confidence_threshold=threshold)
+        predictions[threshold] = image_np
 
 def update_confidence_threshold(val):
+    global predictions
     confidence_threshold = float(val)
-    predict_and_visualize(model, image_path, norm_method='fixed', confidence_threshold=confidence_threshold)
+    if not predictions:
+        print("No predictions available yet.")
+        return
+    if confidence_threshold in predictions:
+        image_np = predictions[confidence_threshold]
+        update_image_on_canvas(image_np)
+    else:
+        print(f"Confidence threshold {confidence_threshold} not found in predictions.")
+
+def select_image():
+    global image_path, predictions
+    predictions = {}  # Ensure predictions is defined
+    image_path = filedialog.askopenfilename(filetypes=[("Image files", "*.jpg;*.jpeg;*.png")])
+    if image_path:
+        preload_predictions(model, image_path, norm_method='fixed')
+        scale.set(0.5)  # Set initial threshold
+        update_confidence_threshold(0.5)  # Call update after preloading
 
 if __name__ == "__main__":
     model_path = r'D:\Programming\urine_interpret\models\weights.pt'  # Updated path to weight.pt
-    image_path = r"D:\Programming\urine_interpret\Datasets\outputGab\IMG_2983.png"
     
     model = load_model(model_path)
     
@@ -232,6 +247,10 @@ if __name__ == "__main__":
     scale = tk.Scale(root, from_=0.0, to=1.0, orient='horizontal', command=update_confidence_threshold, length=300, resolution=0.01)
     scale.set(0.5)  # Set initial value to 0.5
     scale.pack()
+
+    # Create a button to select an image
+    button = tk.Button(root, text="Select Image", command=select_image)
+    button.pack()
 
     # Run the tkinter main loop
     root.mainloop()
