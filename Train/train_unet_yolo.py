@@ -64,28 +64,31 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
     for epoch in range(NUM_EPOCHS):
         model.train()
         epoch_loss = 0
-        for i, (images, masks) in enumerate(tqdm(train_loader, desc=f"Training Epoch {epoch+1}")):
-            images, masks = images.to(device, non_blocking=True), masks.to(device, non_blocking=True)
-            images = dynamic_normalization(images)  # Normalize the input images
-            
-            optimizer.zero_grad()
-            with autocast():
-                outputs = model(images)
-                focal_loss_value = focal_loss(outputs, masks)
-                dice_loss_value = dice_loss(outputs, masks)
-                loss = 0.3 * focal_loss_value + 0.7 * dice_loss_value  # Combine custom losses
-                loss = loss.mean()  # Ensure the loss is a scalar
-            
-            scaler.scale(loss).backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # Gradient clipping
-            
-            if (i + 1) % accumulation_steps == 0:
-                scaler.step(optimizer)
-                scaler.update()
+        with tqdm(total=len(train_loader), desc=f"Training Epoch {epoch+1}") as pbar:  # Add tqdm progress bar
+            for i, (images, masks) in enumerate(train_loader):
+                images, masks = images.to(device, non_blocking=True), masks.to(device, non_blocking=True)
+                images = dynamic_normalization(images)  # Normalize the input images
+                
                 optimizer.zero_grad()
-            
-            epoch_loss += loss.item()
-            torch.cuda.empty_cache()  # Clear cache after each batch
+                with autocast():
+                    outputs = model(images)
+                    focal_loss_value = focal_loss(outputs, masks)
+                    dice_loss_value = dice_loss(outputs, masks)
+                    loss = 0.3 * focal_loss_value + 0.7 * dice_loss_value  # Combine custom losses
+                    loss = loss.mean()  # Ensure the loss is a scalar
+                
+                scaler.scale(loss).backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # Gradient clipping
+                
+                if (i + 1) % accumulation_steps == 0:
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad()
+                
+                epoch_loss += loss.item()
+                torch.cuda.empty_cache()  # Clear cache after each batch
+                
+                pbar.update(1)  # Update tqdm progress bar
 
         avg_loss = epoch_loss / len(train_loader)
         train_losses.append(avg_loss)
@@ -122,14 +125,14 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
         if avg_val_loss < best_loss:
             best_loss = avg_val_loss
             early_stop_counter = 0
-            torch.save(model.state_dict(), model_filename)
+            torch.save(model, model_filename)  # Save the entire model
             print("Model improved and saved.")
         else:
             early_stop_counter += 1
             print(f"No improvement in validation loss for {early_stop_counter} epochs.")
         
         # Save model checkpoint
-        torch.save(model.state_dict(), f"{model_filename}_epoch_{epoch+1}.pt")  # Change extension to .pt
+        torch.save(model, f"{model_filename}_epoch_{epoch+1}.pt")  # Save the entire model
         
         # Check early stopping
         if early_stop_counter >= patience:
