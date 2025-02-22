@@ -10,6 +10,7 @@ from PIL import Image, ImageTk
 from ultralytics.nn.tasks import DetectionModel  # Import the required module
 import tkinter as tk
 from tkinter import ttk, filedialog
+import joblib  # Import joblib to load the SVM model
 
 # Device configuration
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -132,6 +133,9 @@ def load_model(model_path):
     model.eval()
     return model
 
+def load_svm_model(svm_model_path):
+    return joblib.load(svm_model_path)
+
 def draw_bounding_boxes(image_np, mask, confidence_map, confidence_threshold):
     # Create a binary mask for the full test strip (class 11)
     binary_mask = (mask == 11).astype(np.uint8) * 255
@@ -163,7 +167,7 @@ def display_image_with_bboxes(image_np):
     plt.axis("off")
     plt.show()
 
-def predict_and_visualize(model, image_path, norm_method='dynamic'):
+def predict_and_visualize(model, svm_model, image_path, norm_method='dynamic'):
     image = Image.open(image_path).convert("RGB")
     
     # Choose normalization method
@@ -190,12 +194,27 @@ def predict_and_visualize(model, image_path, norm_method='dynamic'):
     mean_confidence = np.mean(confidence_map)
     print(f"Mean confidence: {mean_confidence:.4f}")
 
-    return mask, confidence_map
+    # Extract features for SVM classification
+    lab_image = color.rgb2lab(image.resize((256, 256)).numpy())
+    features = []
+    for class_id in range(11):
+        if np.any(mask == class_id):
+            region = lab_image[mask == class_id]
+            features.append(region.mean(axis=0))
+        else:
+            features.append(np.random.rand(3))
+    features = np.array(features).flatten().reshape(1, -1)
 
-def preload_predictions(model, image_path, norm_method='dynamic'):
+    # SVM classification
+    svm_prediction = svm_model.predict(features)
+    print(f"SVM Prediction: {svm_prediction}")
+
+    return mask, confidence_map, svm_prediction
+
+def preload_predictions(model, svm_model, image_path, norm_method='dynamic'):
     global predictions
     predictions = {}
-    mask, confidence_map = predict_and_visualize(model, image_path, norm_method)
+    mask, confidence_map, svm_prediction = predict_and_visualize(model, svm_model, image_path, norm_method)
     for threshold in np.arange(0.0, 1.01, 0.01):
         image_np = np.array(Image.open(image_path).resize((256, 256)))
         image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
@@ -219,14 +238,16 @@ def select_image():
     predictions = {}  # Ensure predictions is defined
     image_path = filedialog.askopenfilename(filetypes=[("Image files", "*.jpg;*.jpeg;*.png")])
     if image_path:
-        preload_predictions(model, image_path, norm_method='fixed')
+        preload_predictions(model, svm_model, image_path, norm_method='fixed')
         scale.set(0.5)  # Set initial threshold
         update_confidence_threshold(0.5)  # Call update after preloading
 
 if __name__ == "__main__":
-    model_path = r'D:\Programming\urine_interpret\models\weights.pt'  # Updated path to weight.pt
-    
+    model_path = r'D:\Programming\urine_interpret\models\unet_model_20250221-100214.pt_epoch_78.pt'  # Updated path to weight.pt
+    svm_model_path = r'D:\Programming\urine_interpret\models\svm_model_20250222-141136.pkl'  # Path to the SVM model
+
     model = load_model(model_path)
+    svm_model = load_svm_model(svm_model_path)
     
     # Create a tkinter window
     root = tk.Tk()
