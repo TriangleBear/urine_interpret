@@ -48,6 +48,10 @@ def extract_features_and_labels(dataset, model):
                 region = lab_image[pred_mask == class_id]
                 features.append(region.mean(axis=0))
                 labels.append(class_id)
+            else:
+                # Add a small random feature for classes not present in the image
+                features.append(np.random.rand(3))
+                labels.append(class_id)
     return np.array(features), np.array(labels)
 
 def post_process_mask(mask):
