@@ -10,6 +10,9 @@ from models import UNetYOLO
 from ultralytics.nn.tasks import DetectionModel  # Import the required module
 from icecream import ic  # Import icecream for debugging
 from tqdm import tqdm  # Import tqdm for progress bar
+from sklearn.preprocessing import StandardScaler  # Import StandardScaler
+from sklearn.pipeline import Pipeline  # Import Pipeline
+from sklearn.model_selection import GridSearchCV  # Import GridSearchCV
 
 def train_svm_rbf(unet_model_path, svm_model_path=None):
     ic("Loading dataset...")
@@ -36,10 +39,25 @@ def train_svm_rbf(unet_model_path, svm_model_path=None):
         # Split the data into training and testing sets
         X_train, X_test, y_train, y_test = train_test_split(features, labels, test_size=0.2, random_state=42)
         
-        ic("Training SVM RBF classifier...")
-        # Train the SVM RBF classifier
-        svm_model = SVC(kernel='rbf', C=1, gamma='scale')
-        svm_model.fit(X_train, y_train)
+        ic("Training SVM RBF classifier with feature scaling and hyperparameter search...")
+        # Create a pipeline with feature scaling and SVM
+        pipeline = Pipeline([
+            ('scaler', StandardScaler()),
+            ('svm', SVC(kernel='rbf'))
+        ])
+        
+        # Define hyperparameter grid
+        param_grid = {
+            'svm__C': [0.1, 1, 10, 100],
+            'svm__gamma': [0.001, 0.01, 0.1, 1]
+        }
+        
+        # Perform grid search with cross-validation
+        grid_search = GridSearchCV(pipeline, param_grid, cv=5, n_jobs=-1)
+        grid_search.fit(X_train, y_train)
+        
+        # Get the best model
+        svm_model = grid_search.best_estimator_
         
         ic("Evaluating SVM model...")
         # Evaluate the SVM model
