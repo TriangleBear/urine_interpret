@@ -41,7 +41,7 @@ def train_svm_rbf(unet_model_path, svm_model_path=None):
     ic(f"Label distribution: {np.bincount(labels, minlength=NUM_CLASSES)}")
     
     # Ensure all classes are represented in the labels
-    if len(np.unique(labels)) == NUM_CLASSES:
+    if len(np.unique(labels)) == NUM_CLASSES and np.all(np.bincount(labels, minlength=NUM_CLASSES) > 0):
         ic("Splitting data into training and testing sets...")
         # Split the data into training and testing sets
         X_train, X_test, y_train, y_test = train_test_split(features, labels, test_size=0.2, random_state=42)
@@ -63,7 +63,7 @@ def train_svm_rbf(unet_model_path, svm_model_path=None):
         save_svm_model(svm_model, svm_model_path)
         ic(f"SVM model saved to {svm_model_path}")
     else:
-        ic("Not all classes are represented in the dataset. Skipping SVM training and evaluation.")
+        ic("Not all classes are represented in the dataset or some classes have zero samples. Skipping SVM training and evaluation.")
 
 if __name__ == "__main__":
     unet_model_path = r"D:\Programming\urine_interpret\models\weights.pt"  # Path to the trained UNet model
