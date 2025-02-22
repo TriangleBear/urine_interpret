@@ -25,7 +25,7 @@ def get_model_filename():
     models_dir = os.path.join(BASE_PATH, "models")
     os.makedirs(models_dir, exist_ok=True)  # Ensure the directory exists
     timestamp = time.strftime("%Y%m%d-%H%M%S")
-    return os.path.join(models_dir, f"unet_model_{timestamp}.pth")
+    return os.path.join(models_dir, f"unet_model_{timestamp}.pt")
 
 def get_svm_filename():
     models_dir = os.path.join(BASE_PATH, "models")
