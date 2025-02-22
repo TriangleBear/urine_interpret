@@ -13,6 +13,7 @@ from tqdm import tqdm  # Import tqdm for progress bar
 from sklearn.preprocessing import StandardScaler  # Import StandardScaler
 from sklearn.pipeline import Pipeline  # Import Pipeline
 from sklearn.model_selection import GridSearchCV  # Import GridSearchCV
+from imblearn.over_sampling import SMOTE  # Import SMOTE for oversampling
 
 def train_svm_rbf(unet_model_path, svm_model_path=None):
     ic("Loading dataset...")
@@ -35,6 +36,12 @@ def train_svm_rbf(unet_model_path, svm_model_path=None):
     
     # Ensure all classes are represented in the labels
     if len(np.unique(labels)) == NUM_CLASSES and np.all(np.bincount(labels, minlength=NUM_CLASSES) > 0):
+        ic("Balancing the dataset using SMOTE...")
+        # Balance the dataset using SMOTE
+        smote = SMOTE()
+        features, labels = smote.fit_resample(features, labels)
+        ic(f"Balanced label distribution: {np.bincount(labels, minlength=NUM_CLASSES)}")
+        
         ic("Splitting data into training and testing sets...")
         # Split the data into training and testing sets
         X_train, X_test, y_train, y_test = train_test_split(features, labels, test_size=0.2, random_state=42)
