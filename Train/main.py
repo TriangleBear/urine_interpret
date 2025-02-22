@@ -2,9 +2,8 @@ import matplotlib.pyplot as plt
 from config import *
 import numpy as np
 from train_unet_yolo import train_unet_yolo
-from utils import compute_mean_std, extract_features_and_labels, train_svm_classifier, save_svm_model, dynamic_normalization, post_process_mask  # Import post_process_mask
+from utils import compute_mean_std, dynamic_normalization, post_process_mask  # Import post_process_mask
 from datasets import UrineStripDataset, visualize_dataset
-from sklearn.model_selection import train_test_split
 
 if __name__ == "__main__":
     # Compute dataset statistics
@@ -17,28 +16,6 @@ if __name__ == "__main__":
     
     # Train UNetYOLO
     unet_model, train_losses, val_losses, val_accuracies = train_unet_yolo()
-    
-    # Extract features and labels for SVM
-    features, labels = extract_features_and_labels(dataset, unet_model)
-    
-    # Ensure there are multiple classes in the labels
-    if len(np.unique(labels)) > 1:
-        # Train SVM
-        svm_model = train_svm_classifier(features, labels)
-        save_svm_model(svm_model, get_svm_filename())
-
-        # Evaluate SVM
-        X_train, X_test, y_train, y_test = train_test_split(features, labels, test_size=0.2)
-        svm_accuracy = svm_model.score(X_test, y_test) * 100
-        print(f"SVM RBF Accuracy: {svm_accuracy:.2f}%")
-        
-        # Plot SVM accuracy
-        plt.subplot(1, 3, 3)
-        plt.bar(['SVM RBF'], [svm_accuracy])
-        plt.ylabel('Accuracy (%)')
-        plt.title('SVM RBF Accuracy')
-    else:
-        print("Not enough classes to train SVM. Skipping SVM training and evaluation.")
     
     # Plot training results
     epochs_range = range(1, len(train_losses) + 1)
