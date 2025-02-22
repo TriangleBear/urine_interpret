@@ -35,6 +35,7 @@ def train_svm_rbf(unet_model_path, svm_model_path=None):
         labels.append(mask.numpy().flatten())
     features = np.array(features)
     labels = np.array(labels).flatten().astype(int)  # Flatten and convert labels to integers
+    labels = labels[:len(features)]  # Ensure labels have the same length as features
     ic(f"Extracted {len(features)} features and {len(labels)} labels.")
     ic(f"Unique labels: {np.unique(labels)}")
     ic(f"Label distribution: {np.bincount(labels, minlength=NUM_CLASSES)}")
