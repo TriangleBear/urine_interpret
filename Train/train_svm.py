@@ -25,17 +25,7 @@ def train_svm_rbf(unet_model_path, svm_model_path=None):
     
     ic("Extracting features and labels...")
     # Extract features and labels
-    features, labels = [], []
-    for i in tqdm(range(len(dataset)), desc="Extracting features"):  # Add tqdm progress bar
-        image, mask = dataset[i]
-        image = image.to(device).unsqueeze(0)
-        with torch.no_grad():
-            output = unet_model(image)
-        features.append(output.cpu().numpy().flatten())
-        labels.append(mask.numpy().flatten())
-    features = np.array(features)
-    labels = np.array(labels).flatten().astype(int)  # Flatten and convert labels to integers
-    labels = labels[:len(features)]  # Ensure labels have the same length as features
+    features, labels = extract_features_and_labels(dataset, unet_model)
     ic(f"Extracted {len(features)} features and {len(labels)} labels.")
     ic(f"Unique labels: {np.unique(labels)}")
     ic(f"Label distribution: {np.bincount(labels, minlength=NUM_CLASSES)}")
