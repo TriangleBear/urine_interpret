@@ -15,7 +15,7 @@ from config import get_model_folder  # Import get_model_folder
 def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, patience=PATIENCE, pre_trained_weights=None):
     # Create datasets
     train_dataset = UrineStripDataset(TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER)
-    val_dataset = UrineStripDataset(VAL_IMAGE_FOLDER, VAL_MASK_FOLDER)
+    val_dataset = UrineStripDataset(VALID_IMAGE_FOLDER, VALID_MASK_FOLDER)  # Changed from VAL to VALID
     test_dataset = UrineStripDataset(TEST_IMAGE_FOLDER, TEST_MASK_FOLDER)
     
     # Create data loaders
