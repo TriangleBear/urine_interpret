@@ -69,3 +69,12 @@ def train_svm_classifier(features, labels):
 
 def save_svm_model(svm_model, filename):
     joblib.dump(svm_model, filename)
+
+def compute_class_weights(dataset):
+    class_counts = torch.zeros(NUM_CLASSES)
+    for _, masks in dataset:
+        class_counts += torch.bincount(masks.flatten(), minlength=NUM_CLASSES)
+    class_weights = 1.0 / (class_counts + 1e-6)  # Avoid division by zero
+    class_weights[class_counts == 0] = 0  # Set weights of classes with no samples to 0
+    class_weights = class_weights / class_weights.sum()  # Normalize weights to sum to 1
+    return class_weights.to(device)
