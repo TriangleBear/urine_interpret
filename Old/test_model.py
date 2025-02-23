@@ -13,18 +13,16 @@ from tkinter import ttk, filedialog
 import joblib  # Import joblib to load the SVM model
 from skimage import color  # Import color from skimage
 
-# Global variables
-predictions = {}
-image_path = None
+# Device configuration
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 CONFIDENCE = 0.5
 IOU_THRESHOLD = 0.5
 
-# Define the UNetYOLO model
-class UNetEncoder(nn.Module):
-    def __init__(self, in_channels, dropout_prob=0.3):
-        super(UNetEncoder, self).__init__()
+# Define the UNet model
+class UNet(nn.Module):
+    def __init__(self, in_channels, out_channels=11, dropout_prob=0.3):
+        super(UNet, self).__init__()
         self.enc1 = nn.Sequential(
             nn.Conv2d(in_channels, 32, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(32),
@@ -55,6 +53,28 @@ class UNetEncoder(nn.Module):
             nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.Dropout(p=dropout_prob)
         )
+        self.upconv3 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
+        self.upconv2 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
+        self.upconv1 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
+        self.conv_up3 = nn.Sequential(
+            nn.Conv2d(512, 256, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+            nn.Dropout(p=dropout_prob)
+        )
+        self.conv_up2 = nn.Sequential(
+            nn.Conv2d(256, 128, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+            nn.Dropout(p=dropout_prob)
+        )
+        self.conv_up1 = nn.Sequential(
+            nn.Conv2d(128, 64, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+            nn.Dropout(p=dropout_prob)
+        )
+        self.output = nn.Conv2d(64, out_channels, kernel_size=1, bias=False)
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -68,36 +88,45 @@ class UNetEncoder(nn.Module):
         enc3 = self.enc3(enc2)
         enc4 = self.enc4(enc3)
         bottleneck = self.bottleneck(enc4)
-        return bottleneck, enc1, enc2, enc3, enc4
+        
+        up3 = self.upconv3(bottleneck)
+        up3 = F.interpolate(up3, size=enc4.size()[2:], mode='bilinear', align_corners=False)
+        up3 = torch.cat([up3, enc4], dim=1)
+        up3 = self.conv_up3(up3)
 
-class YOLODecoder(nn.Module):
-    def __init__(self, num_classes):
-        super(YOLODecoder, self).__init__()
-        self.conv1 = nn.Conv2d(512, 256, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(256, 128, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(128, 64, kernel_size=3, padding=1)
-        self.conv4 = nn.Conv2d(64, num_classes, kernel_size=1)
+        up2 = self.upconv2(up3)
+        up2 = F.interpolate(up2, size=enc3.size()[2:], mode='bilinear', align_corners=False)
+        up2 = torch.cat([up2, enc3], dim=1)
+        up2 = self.conv_up2(up2)
 
-    def forward(self, x):
-        x = F.leaky_relu(self.conv1(x), 0.1)
-        x = F.leaky_relu(self.conv2(x), 0.1)
-        x = F.leaky_relu(self.conv3(x), 0.1)
-        x = self.conv4(x)
-        return x
+        up1 = self.upconv1(up2)
+        up1 = F.interpolate(up1, size=enc2.size()[2:], mode='bilinear', align_corners=False)
+        up1 = torch.cat([up1, enc2], dim=1)
+        up1 = self.conv_up1(up1)
 
-class UNetYOLO(nn.Module):
-    def __init__(self, in_channels, num_classes, dropout_prob=0.3):
-        super(UNetYOLO, self).__init__()
-        self.encoder = UNetEncoder(in_channels, dropout_prob)
-        self.decoder = YOLODecoder(num_classes)
-
-    def forward(self, x):
-        bottleneck, enc1, enc2, enc3, enc4 = self.encoder(x)
-        output = self.decoder(bottleneck)
+        output = self.output(up1)
         return output
 
+# Dynamic normalization: computes per-image mean and std.
+def dynamic_normalization(image):
+    image = image.resize((256, 256))
+    tensor_image = T.ToTensor()(image)
+    mean = torch.mean(tensor_image, dim=[1, 2], keepdim=True)
+    std = torch.std(tensor_image, dim=[1, 2], keepdim=True)
+    std = torch.clamp(std, min=1e-6)
+    normalize = T.Normalize(mean.squeeze().tolist(), std.squeeze().tolist())
+    return normalize(tensor_image)
+
+# Fixed normalization: using fixed mean/std (e.g., ImageNet values)
+def fixed_normalization(image):
+    image = image.resize((256, 256))
+    tensor_image = T.ToTensor()(image)
+    normalize = T.Normalize(mean=[0.485, 0.456, 0.406], 
+                            std=[0.229, 0.224, 0.225])
+    return normalize(tensor_image)
+
 def load_model(model_path):
-    model = UNetYOLO(in_channels=3, num_classes=11)
+    model = UNet(in_channels=3, out_channels=11)
     torch.serialization.add_safe_globals([DetectionModel])  # Add DetectionModel to safe globals
     state_dict = torch.load(model_path, map_location=device, weights_only=False)  # Set weights_only to False
     model.load_state_dict(state_dict, strict=False)
@@ -106,7 +135,6 @@ def load_model(model_path):
     return model
 
 def load_svm_model(svm_model_path):
-    # Load the SVM model with RBF kernel
     return joblib.load(svm_model_path)
 
 def draw_bounding_boxes(image_np, mask, confidence_map, confidence_threshold):
@@ -179,7 +207,6 @@ def predict_and_visualize(model, svm_model, image_path, norm_method='dynamic'):
         if np.any(mask == class_id):
             region = lab_image[mask == class_id]
             features.append(region.mean(axis=0))
-            features.append(region.std(axis=0))  # Add standard deviation as a feature
         else:
             features.append(np.zeros(3))  # Use zeros instead of random values
     features = np.array(features).flatten().reshape(1, -1)
@@ -199,7 +226,7 @@ def predict_and_visualize(model, svm_model, image_path, norm_method='dynamic'):
 
 def preload_predictions(model, svm_model, image_path, norm_method='dynamic'):
     global predictions
-    predictions.clear()
+    predictions = {}  # Initialize predictions
     mask, confidence_map, svm_prediction = predict_and_visualize(model, svm_model, image_path, norm_method)
     for threshold in np.arange(0.0, 1.01, 0.01):
         image_np = np.array(Image.open(image_path).resize((256, 256)))
@@ -208,9 +235,9 @@ def preload_predictions(model, svm_model, image_path, norm_method='dynamic'):
         predictions[threshold] = image_np
 
 def update_confidence_threshold(val):
-    global predictions  # Declare global variable
+    global predictions
     confidence_threshold = float(val)
-    if predictions == {}:  # Check if dictionary is empty
+    if not predictions:
         print("No predictions available yet.")
         return
     if confidence_threshold in predictions:
@@ -220,8 +247,8 @@ def update_confidence_threshold(val):
         print(f"Confidence threshold {confidence_threshold} not found in predictions.")
 
 def select_image():
-    global predictions, image_path
-    predictions.clear()
+    global image_path, predictions
+    predictions = {}  # Ensure predictions is defined
     image_path = filedialog.askopenfilename(filetypes=[("Image files", "*.jpg;*.jpeg;*.png")])
     if image_path:
         preload_predictions(model, svm_model, image_path, norm_method='fixed')
