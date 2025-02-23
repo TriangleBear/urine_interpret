@@ -21,14 +21,17 @@ PATIENCE = 15  # Increased patience for early stopping
 IMAGE_SIZE = (256, 256)  # Slightly larger for better feature extraction
 
 # Model Saving
-def get_model_filename():
+def get_model_folder():
     models_dir = os.path.join(BASE_PATH, "models")
-    os.makedirs(models_dir, exist_ok=True)  # Ensure the directory exists
     timestamp = time.strftime("%Y%m%d-%H%M%S")
-    return os.path.join(models_dir, f"unet_model_{timestamp}.pt")
+    model_folder = os.path.join(models_dir, timestamp)
+    os.makedirs(model_folder, exist_ok=True)  # Ensure the directory exists
+    return model_folder
+
+def get_model_filename():
+    model_folder = get_model_folder()
+    return os.path.join(model_folder, "unet_model.pt")
 
 def get_svm_filename():
-    models_dir = os.path.join(BASE_PATH, "models")
-    os.makedirs(models_dir, exist_ok=True)  # Ensure the directory exists
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
-    return os.path.join(models_dir, f"svm_model_{timestamp}.pkl")
+    model_folder = get_model_folder()
+    return os.path.join(model_folder, "svm_model.pkl")

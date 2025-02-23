@@ -14,6 +14,7 @@ from sklearn.preprocessing import StandardScaler  # Import StandardScaler
 from sklearn.pipeline import Pipeline  # Import Pipeline
 from sklearn.model_selection import GridSearchCV  # Import GridSearchCV
 from imblearn.over_sampling import SMOTE  # Import SMOTE for oversampling
+from config import get_model_folder  # Import get_model_folder
 
 def train_svm_rbf(unet_model_path, svm_model_path=None):
     ic("Loading dataset...")
@@ -74,7 +75,8 @@ def train_svm_rbf(unet_model_path, svm_model_path=None):
         
         # Save the SVM model
         if svm_model_path is None:
-            svm_model_path = get_svm_filename()
+            model_folder = get_model_folder()  # Create model folder once
+            svm_model_path = os.path.join(model_folder, "svm_model.pkl")
         save_svm_model(svm_model, svm_model_path)
         ic(f"SVM model saved to {svm_model_path}")
     else:

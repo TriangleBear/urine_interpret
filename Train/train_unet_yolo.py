@@ -10,6 +10,7 @@ from datasets import UrineStripDataset, RandomTrainTransformations
 from losses import dice_loss, focal_loss
 from utils import compute_mean_std, dynamic_normalization, compute_class_weights  # Import compute_class_weights
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts  # Import the scheduler
+from config import get_model_folder  # Import get_model_folder
 
 def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, patience=PATIENCE, pre_trained_weights=None):
     # Compute dataset statistics
@@ -52,7 +53,8 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
     # Training loop
     best_loss = float('inf')
     early_stop_counter = 0
-    model_filename = get_model_filename().replace(".pth", ".pt")  # Change extension to .pt
+    model_folder = get_model_folder()  # Create model folder once
+    model_filename = os.path.join(model_folder, "unet_model.pt")  # Use the model folder for saving models
 
     for epoch in range(NUM_EPOCHS):
         model.train()
@@ -125,7 +127,7 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
             print(f"No improvement in validation loss for {early_stop_counter} epochs.")
         
         # Save model checkpoint
-        torch.save(model, f"{model_filename}_epoch_{epoch+1}.pth")  # Save the entire model
+        torch.save(model, os.path.join(model_folder, f"unet_model_epoch_{epoch+1}.pth"))  # Save the entire model
         
         # Check early stopping
         if early_stop_counter >= patience:
