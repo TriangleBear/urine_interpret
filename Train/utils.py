@@ -1,12 +1,13 @@
 import torch
 import numpy as np
 import cv2
-from skimage import color
+from skimage import color, feature
 from sklearn.svm import SVC
 from sklearn.model_selection import train_test_split, GridSearchCV
 import joblib
 from config import device, NUM_CLASSES
 import torchvision.transforms as T
+from scipy import stats
 
 def compute_mean_std(dataset):
     loader = torch.utils.data.DataLoader(dataset, batch_size=64, shuffle=False)
@@ -32,27 +33,89 @@ def dynamic_normalization(tensor_images):
     normalize = T.Normalize(mean.flatten().tolist(), std.flatten().tolist())
     return normalize(tensor_images)
 
-def extract_features_and_labels(dataset, model):
-    features = []
-    labels = []
-    model.eval()
-    for img, mask in dataset:
-        with torch.no_grad():
-            output = model(img.unsqueeze(0).to(device))
-            pred_mask = output.argmax(1).squeeze().cpu().numpy()
+def extract_features_and_labels(dataset, unet_model):
+    features_list = []
+    labels_list = []
+    
+    for image, label in dataset:
+        # Ensure label is a single integer
+        if isinstance(label, (list, tuple, np.ndarray, torch.Tensor)):
+            label = int(label[0]) if len(label) > 0 else 0
+        else:
+            label = int(label)
         
-        # Feature extraction logic
-        lab_image = color.rgb2lab(img.permute(1, 2, 0).numpy())
-        for class_id in range(NUM_CLASSES):
-            if np.any(pred_mask == class_id):
-                region = lab_image[pred_mask == class_id]
-                features.append(region.mean(axis=0))
-                labels.append(class_id)
+        # Convert tensor to numpy and change format from (C,H,W) to (H,W,C)
+        if isinstance(image, torch.Tensor):
+            image_np = image.permute(1, 2, 0).numpy()
+        else:
+            image_np = np.array(image)
+        
+        # Ensure the image is in the correct format
+        if image_np.shape[2] != 3:
+            image_np = np.transpose(image_np, (1, 2, 0))
+        
+        # Convert to different color spaces
+        lab_image = color.rgb2lab(image_np)
+        hsv_image = cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)
+        gray_image = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
+        
+        # Get UNet predictions
+        with torch.no_grad():
+            if isinstance(image, torch.Tensor):
+                image_tensor = image.unsqueeze(0)
             else:
-                # Add a small random feature for classes not present in the image
-                features.append(np.random.rand(3))
-                labels.append(class_id)
-    return np.array(features), np.array(labels)
+                image_tensor = T.ToTensor()(image).unsqueeze(0)
+            image_tensor = image_tensor.to(device)
+            
+            pred = unet_model(image_tensor)
+            pred = torch.softmax(pred, dim=1)
+            pred_np = pred.squeeze().cpu().numpy()
+        
+        # Calculate features
+        features = []
+        
+        # Color statistics in multiple color spaces
+        for img in [lab_image, hsv_image]:
+            for channel in range(img.shape[2]):
+                channel_data = img[:, :, channel]
+                features.extend([
+                    np.mean(channel_data),
+                    np.std(channel_data),
+                    stats.skew(channel_data.flatten()),
+                    stats.kurtosis(channel_data.flatten()),
+                    np.percentile(channel_data, 25),
+                    np.percentile(channel_data, 75)
+                ])
+        
+        # Texture features using GLCM
+        glcm = feature.graycomatrix(
+            (gray_image * 255).astype(np.uint8), 
+            distances=[1, 2], 
+            angles=[0, np.pi/4, np.pi/2, 3*np.pi/4], 
+            levels=256,
+            symmetric=True, 
+            normed=True
+        )
+        
+        # Calculate GLCM properties
+        glcm_props = ['contrast', 'dissimilarity', 'homogeneity', 'energy', 'correlation']
+        for prop in glcm_props:
+            features.extend(feature.graycoprops(glcm, prop).flatten())
+        
+        # Add UNet prediction distribution statistics
+        for class_idx in range(NUM_CLASSES):
+            class_pred = pred_np[class_idx]
+            features.extend([
+                np.mean(class_pred),
+                np.std(class_pred),
+                np.max(class_pred),
+                np.sum(class_pred > 0.5)  # Area of high confidence predictions
+            ])
+        
+        features_list.append(features)
+        labels_list.append(label)
+    
+    return np.array(features_list, dtype=np.float32), np.array(labels_list, dtype=np.int32)
 
 def post_process_mask(mask):
     # Apply morphological operations to remove noise and fill gaps
@@ -69,12 +132,3 @@ def train_svm_classifier(features, labels):
 
 def save_svm_model(svm_model, filename):
     joblib.dump(svm_model, filename)
-
-def compute_class_weights(dataset):
-    class_counts = torch.zeros(NUM_CLASSES)
-    for _, masks in dataset:
-        class_counts += torch.bincount(masks.flatten(), minlength=NUM_CLASSES)
-    class_weights = 1.0 / (class_counts + 1e-6)  # Avoid division by zero
-    class_weights[class_counts == 0] = 0  # Set weights of classes with no samples to 0
-    class_weights = class_weights / class_weights.sum()  # Normalize weights to sum to 1
-    return class_weights.to(device)

@@ -8,39 +8,40 @@ from torchvision import transforms
 from PIL import Image
 import cv2
 import matplotlib.pyplot as plt
+import torchvision.transforms as T
 
 
 class UrineStripDataset(Dataset):
-    def __init__(self, image_folder, mask_folder, transform=None):
-        self.image_folder = image_folder
-        self.mask_folder = mask_folder
-        self.image_files = sorted(os.listdir(image_folder))
-        self.txt_files = sorted(os.listdir(mask_folder))
-        self.transform = transform
-        self.image_size = (224, 224)  # Reduced from 256x256
-        self.visualization_count = 0  # Add a counter for visualizations
+    def __init__(self, image_dir, mask_dir):
+        self.image_dir = image_dir
+        self.mask_dir = mask_dir
+        self.images = sorted([f for f in os.listdir(image_dir) if f.endswith(('.png', '.jpg', '.jpeg'))])
         
-        if len(self.image_files) != len(self.txt_files):
-            raise ValueError("Mismatch between number of images and masks")
-
+        # Standard transforms
+        self.transform = T.Compose([
+            T.Resize((224, 224)),
+            T.ToTensor(),
+        ])
+    
     def __len__(self):
-        return len(self.image_files)
-
+        return len(self.images)
+    
     def __getitem__(self, idx):
-        # Load image with reduced size
-        image_path = os.path.join(self.image_folder, self.image_files[idx])
-        image = Image.open(image_path).convert("RGB").resize(self.image_size, Image.BILINEAR)
-        image = transforms.ToTensor()(image)
+        img_name = self.images[idx]
+        img_path = os.path.join(self.image_dir, img_name)
         
-        # Load and process mask
-        txt_path = os.path.join(self.mask_folder, self.txt_files[idx])
-        mask = self._create_mask_from_yolo(txt_path, image_size=self.image_size)
-        mask = torch.from_numpy(mask).long()
+        # Extract class from filename (assuming format like "class_1_image.jpg")
+        try:
+            label = int(img_name.split('_')[1])
+        except (IndexError, ValueError):
+            # If filename doesn't contain class, assume class 0
+            label = 0
         
-        # Clear references to free memory
-        del image_path, txt_path
+        # Load and transform image
+        image = Image.open(img_path).convert('RGB')
+        image = self.transform(image)
         
-        return image, mask
+        return image, label
 
     def _create_mask_from_yolo(self, txt_path, image_size=(256, 256)):
         mask = np.zeros(image_size, dtype=np.uint8)
