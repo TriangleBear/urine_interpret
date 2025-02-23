@@ -13,7 +13,9 @@ from tkinter import ttk, filedialog
 import joblib  # Import joblib to load the SVM model
 from skimage import color  # Import color from skimage
 
-# Device configuration
+# Global variables
+predictions = {}
+image_path = None
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 CONFIDENCE = 0.5
@@ -135,6 +137,7 @@ def load_model(model_path):
     return model
 
 def load_svm_model(svm_model_path):
+    # Load the SVM model with RBF kernel
     return joblib.load(svm_model_path)
 
 def draw_bounding_boxes(image_np, mask, confidence_map, confidence_threshold):
@@ -207,6 +210,7 @@ def predict_and_visualize(model, svm_model, image_path, norm_method='dynamic'):
         if np.any(mask == class_id):
             region = lab_image[mask == class_id]
             features.append(region.mean(axis=0))
+            features.append(region.std(axis=0))  # Add standard deviation as a feature
         else:
             features.append(np.zeros(3))  # Use zeros instead of random values
     features = np.array(features).flatten().reshape(1, -1)
@@ -226,7 +230,7 @@ def predict_and_visualize(model, svm_model, image_path, norm_method='dynamic'):
 
 def preload_predictions(model, svm_model, image_path, norm_method='dynamic'):
     global predictions
-    predictions = {}  # Initialize predictions
+    predictions.clear()
     mask, confidence_map, svm_prediction = predict_and_visualize(model, svm_model, image_path, norm_method)
     for threshold in np.arange(0.0, 1.01, 0.01):
         image_np = np.array(Image.open(image_path).resize((256, 256)))
@@ -235,9 +239,9 @@ def preload_predictions(model, svm_model, image_path, norm_method='dynamic'):
         predictions[threshold] = image_np
 
 def update_confidence_threshold(val):
-    global predictions
+    global predictions  # Declare global variable
     confidence_threshold = float(val)
-    if not predictions:
+    if predictions == {}:  # Check if dictionary is empty
         print("No predictions available yet.")
         return
     if confidence_threshold in predictions:
@@ -247,8 +251,8 @@ def update_confidence_threshold(val):
         print(f"Confidence threshold {confidence_threshold} not found in predictions.")
 
 def select_image():
-    global image_path, predictions
-    predictions = {}  # Ensure predictions is defined
+    global predictions, image_path
+    predictions.clear()
     image_path = filedialog.askopenfilename(filetypes=[("Image files", "*.jpg;*.jpeg;*.png")])
     if image_path:
         preload_predictions(model, svm_model, image_path, norm_method='fixed')
