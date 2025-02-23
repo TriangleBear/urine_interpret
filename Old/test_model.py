@@ -121,8 +121,8 @@ def dynamic_normalization(image):
 def fixed_normalization(image):
     image = image.resize((256, 256))
     tensor_image = T.ToTensor()(image)
-    normalize = T.Normalize(mean=[0.485, 0.456, 0.406], 
-                            std=[0.229, 0.224, 0.225])
+    normalize = T.Normalize(mean=[0.417, 0.391, 0.346], 
+                            std=[0.252, 0.249, 0.245])
     return normalize(tensor_image)
 
 def load_model(model_path):
