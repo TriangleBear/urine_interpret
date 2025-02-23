@@ -15,4 +15,4 @@ def focal_loss(outputs, targets, alpha=0.25, gamma=2):
     targets_one_hot = F.one_hot(targets, outputs.shape[1]).permute(0, 3, 1, 2).float()
     bce_loss = F.binary_cross_entropy_with_logits(outputs, targets_one_hot, reduction='none')
     pt = torch.exp(-bce_loss)
-    return (alpha * (1 - pt) ** gamma * bce_loss).mean()
+    return (alpha * (1 - pt) ** gamma * bce_loss).mean()  # Ensure the loss is a scalar
