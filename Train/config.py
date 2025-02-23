@@ -7,8 +7,20 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Path Configuration
 BASE_PATH = r"/content/urine_interpret/"
-IMAGE_FOLDER = os.path.join(BASE_PATH, r"Datasets/Final Dataset I think/images")
-MASK_FOLDER = os.path.join(BASE_PATH, r"Datasets/Final Dataset I think/labels")
+DATA_ROOT = os.path.join(BASE_PATH, r"Datasets/Final Dataset I think")
+TRAIN_IMAGE_FOLDER = os.path.join(DATA_ROOT, "train/images")
+TRAIN_MASK_FOLDER = os.path.join(DATA_ROOT, "train/labels")
+VAL_IMAGE_FOLDER = os.path.join(DATA_ROOT, "valid/images")
+VAL_MASK_FOLDER = os.path.join(DATA_ROOT, "valid/labels")
+TEST_IMAGE_FOLDER = os.path.join(DATA_ROOT, "test/images")
+TEST_MASK_FOLDER = os.path.join(DATA_ROOT, "test/labels")
+
+# Create directories if they don't exist
+for dir_path in [TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER, 
+                VAL_IMAGE_FOLDER, VAL_MASK_FOLDER,
+                TEST_IMAGE_FOLDER, TEST_MASK_FOLDER]:
+    os.makedirs(dir_path, exist_ok=True)
+
 
 # Training Hyperparameters
 BATCH_SIZE = 8  # Increased batch size for better gradient estimation
