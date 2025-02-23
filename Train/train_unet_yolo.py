@@ -13,21 +13,18 @@ from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts  # Import the s
 from config import get_model_folder  # Import get_model_folder
 
 def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, patience=PATIENCE, pre_trained_weights=None):
-    # Compute dataset statistics
-    dataset = UrineStripDataset(IMAGE_FOLDER, MASK_FOLDER)
-    mean, std = compute_mean_std(dataset)
+    # Create datasets
+    train_dataset = UrineStripDataset(TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER)
+    val_dataset = UrineStripDataset(VAL_IMAGE_FOLDER, VAL_MASK_FOLDER)
+    test_dataset = UrineStripDataset(TEST_IMAGE_FOLDER, TEST_MASK_FOLDER)
     
-    # Dataset and DataLoader
-    dataset = UrineStripDataset(IMAGE_FOLDER, MASK_FOLDER, transform=RandomTrainTransformations(mean, std))
-    train_size = int(0.8 * len(dataset))
-    val_size = len(dataset) - train_size
-    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
-    
+    # Create data loaders
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=8, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, num_workers=8, pin_memory=True)
 
-    # Compute class weights
-    class_weights = compute_class_weights(dataset)
+    # Compute class weights using only training data
+    class_weights = compute_class_weights(train_dataset)
     print(f"Class weights: {class_weights}")
 
     # Model and Optimizer
@@ -134,7 +131,30 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
             print("Early stopping triggered. Training stopped.")
             break
     
-    return model, train_losses, val_losses, val_accuracies
+    # Add final test evaluation
+    model.eval()
+    test_loss = 0
+    test_correct = 0
+    test_total = 0
+    
+    print("\nEvaluating on test set...")
+    with torch.no_grad():
+        for images, masks in tqdm(test_loader, desc="Testing"):
+            images, masks = images.to(device), masks.to(device)
+            outputs = model(images)
+            loss = criterion(outputs, masks)
+            test_loss += loss.item()
+            
+            _, predicted = torch.max(outputs, 1)
+            test_total += masks.numel()
+            test_correct += (predicted == masks).sum().item()
+    
+    test_accuracy = 100 * test_correct / test_total
+    print(f"\nTest Set Results:")
+    print(f"Average Loss: {test_loss/len(test_loader):.4f}")
+    print(f"Accuracy: {test_accuracy:.2f}%")
+    
+    return model, train_losses, val_losses, val_accuracies, test_accuracy
 
 if __name__ == "__main__":
     pre_trained_weights_path = r"D:\Programming\urine_interpret\models\weights.pt"  # Replace with the actual path to weights.pt
