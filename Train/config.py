@@ -6,7 +6,7 @@ import time
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Path Configuration
-BASE_PATH = r"D:/Programming/urine_interpret"
+BASE_PATH = r"/content/urine_interpret"
 DATA_ROOT = os.path.join(BASE_PATH, r"Datasets/Final Dataset I think")
 TRAIN_IMAGE_FOLDER = os.path.join(DATA_ROOT, "train/images")
 TRAIN_MASK_FOLDER = os.path.join(DATA_ROOT, "train/labels")
@@ -22,14 +22,19 @@ for dir_path in [TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER,
     os.makedirs(dir_path, exist_ok=True)
 
 # Training Hyperparameters
-BATCH_SIZE = 8  # Increased batch size for better gradient estimation
-NUM_EPOCHS = 150  # Increased number of epochs for better convergence
-LEARNING_RATE = 5e-5  # Adjusted learning rate for more stable training
-WEIGHT_DECAY = 1e-5  # Adjusted weight decay to prevent overfitting
-ACCUMULATION_STEPS = 4  # Increased accumulation steps to simulate larger batch size
+BATCH_SIZE = 4  # Reduced batch size to save memory
+NUM_EPOCHS = 150
+LEARNING_RATE = 5e-5
+WEIGHT_DECAY = 1e-5
+ACCUMULATION_STEPS = 8  # Increased to compensate for smaller batch size
 NUM_CLASSES = 11
-PATIENCE = 15  # Increased patience for early stopping
-IMAGE_SIZE = (256, 256)  # Slightly larger for better feature extraction
+PATIENCE = 15
+IMAGE_SIZE = (256, 256)  # Keep image size moderate
+
+# Memory Management
+torch.cuda.empty_cache()  # Clear CUDA cache
+import os
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:512,expandable_segments:True'
 
 # Model Saving
 def get_model_folder():

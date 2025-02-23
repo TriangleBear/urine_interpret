@@ -9,7 +9,6 @@ from PIL import Image
 import cv2
 import matplotlib.pyplot as plt
 
-IMAGE_SIZE = (516, 516)
 
 class UrineStripDataset(Dataset):
     def __init__(self, image_folder, mask_folder, transform=None):
@@ -18,7 +17,7 @@ class UrineStripDataset(Dataset):
         self.image_files = sorted(os.listdir(image_folder))
         self.txt_files = sorted(os.listdir(mask_folder))
         self.transform = transform
-        self.image_size = IMAGE_SIZE  # Use the new image size
+        self.image_size = (256, 256)  # Ensure consistent moderate size
         self.visualization_count = 0  # Add a counter for visualizations
         
         if len(self.image_files) != len(self.txt_files):
@@ -32,12 +31,17 @@ class UrineStripDataset(Dataset):
         txt_path = os.path.join(self.mask_folder, self.txt_files[idx])
         
         image = Image.open(image_path).convert("RGB").resize(self.image_size)
+        image = np.array(image)  # Convert to numpy array
+        del image_path  # Free up memory
+        
         mask = self._create_mask_from_yolo(txt_path, image_size=self.image_size)
+        del txt_path  # Free up memory
         
         sample = {'image': image, 'mask': mask}
         
         if self.transform:
             sample = self.transform(sample)
+            del image, mask  # Free up memory
             return sample['image'], sample['mask']
             
         return transforms.ToTensor()(image), torch.from_numpy(mask).long()

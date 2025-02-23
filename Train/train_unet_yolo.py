@@ -18,10 +18,17 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
     val_dataset = UrineStripDataset(VALID_IMAGE_FOLDER, VALID_MASK_FOLDER)  # Changed from VAL to VALID
     test_dataset = UrineStripDataset(TEST_IMAGE_FOLDER, TEST_MASK_FOLDER)
     
-    # Create data loaders
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=8, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, num_workers=8, pin_memory=True)
+    # Memory optimization
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        
+    # Create data loaders with pin_memory=False to reduce memory usage
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, 
+                            num_workers=4, pin_memory=False)  # Reduced num_workers
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, 
+                          num_workers=4, pin_memory=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, 
+                           num_workers=4, pin_memory=False)
 
     # Compute class weights using only training data
     class_weights = compute_class_weights(train_dataset)
@@ -61,7 +68,7 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                 images, masks = images.to(device, non_blocking=True), masks.to(device, non_blocking=True)
                 images = dynamic_normalization(images)  # Normalize the input images
                 
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
                 with autocast():
                     outputs = model(images)
                     focal_loss_value = focal_loss(outputs, masks)
@@ -75,7 +82,8 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                 if (i + 1) % accumulation_steps == 0:
                     scaler.step(optimizer)
                     scaler.update()
-                    optimizer.zero_grad()
+                    optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
+                    torch.cuda.empty_cache()  # Clear cache periodically
                 
                 epoch_loss += loss.item()
                 torch.cuda.empty_cache()  # Clear cache after each batch
@@ -130,6 +138,9 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
         if early_stop_counter >= patience:
             print("Early stopping triggered. Training stopped.")
             break
+        
+        # Clear cache after each epoch
+        torch.cuda.empty_cache()
     
     # Add final test evaluation
     model.eval()
