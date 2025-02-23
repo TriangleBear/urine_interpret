@@ -8,7 +8,7 @@ from config import *
 from models import UNetYOLO
 from datasets import UrineStripDataset, RandomTrainTransformations
 from losses import dice_loss, focal_loss
-from utils import compute_mean_std, dynamic_normalization
+from utils import compute_mean_std, dynamic_normalization, compute_class_weights  # Import compute_class_weights
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts  # Import the scheduler
 
 def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, patience=PATIENCE, pre_trained_weights=None):
@@ -26,14 +26,7 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
     val_loader = DataLoader(val_dataset, batch_size=batch_size, num_workers=8, pin_memory=True)
 
     # Compute class weights
-    class_counts = torch.zeros(NUM_CLASSES)
-    for _, masks in dataset:
-        class_counts += torch.bincount(masks.flatten(), minlength=NUM_CLASSES)
-    class_weights = 1.0 / (class_counts + 1e-6)  # Avoid division by zero
-    class_weights[class_counts == 0] = 0  # Set weights of classes with no samples to 0
-    class_weights = class_weights / class_weights.sum()  # Normalize weights to sum to 1
-    class_weights = class_weights.to(device)
-    print(f"Class counts: {class_counts}")
+    class_weights = compute_class_weights(dataset)
     print(f"Class weights: {class_weights}")
 
     # Model and Optimizer
@@ -132,7 +125,7 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
             print(f"No improvement in validation loss for {early_stop_counter} epochs.")
         
         # Save model checkpoint
-        torch.save(model, f"{model_filename}_epoch_{epoch+1}.pt")  # Save the entire model
+        torch.save(model, f"{model_filename}_epoch_{epoch+1}.pth")  # Save the entire model
         
         # Check early stopping
         if early_stop_counter >= patience:
