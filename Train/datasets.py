@@ -17,7 +17,7 @@ class UrineStripDataset(Dataset):
         self.image_files = sorted(os.listdir(image_folder))
         self.txt_files = sorted(os.listdir(mask_folder))
         self.transform = transform
-        self.image_size = (256, 256)  # Ensure consistent moderate size
+        self.image_size = (224, 224)  # Reduced from 256x256
         self.visualization_count = 0  # Add a counter for visualizations
         
         if len(self.image_files) != len(self.txt_files):
@@ -27,24 +27,20 @@ class UrineStripDataset(Dataset):
         return len(self.image_files)
 
     def __getitem__(self, idx):
+        # Load image with reduced size
         image_path = os.path.join(self.image_folder, self.image_files[idx])
+        image = Image.open(image_path).convert("RGB").resize(self.image_size, Image.BILINEAR)
+        image = transforms.ToTensor()(image)
+        
+        # Load and process mask
         txt_path = os.path.join(self.mask_folder, self.txt_files[idx])
-        
-        image = Image.open(image_path).convert("RGB").resize(self.image_size)
-        image = np.array(image)  # Convert to numpy array
-        del image_path  # Free up memory
-        
         mask = self._create_mask_from_yolo(txt_path, image_size=self.image_size)
-        del txt_path  # Free up memory
+        mask = torch.from_numpy(mask).long()
         
-        sample = {'image': image, 'mask': mask}
+        # Clear references to free memory
+        del image_path, txt_path
         
-        if self.transform:
-            sample = self.transform(sample)
-            del image, mask  # Free up memory
-            return sample['image'], sample['mask']
-            
-        return transforms.ToTensor()(image), torch.from_numpy(mask).long()
+        return image, mask
 
     def _create_mask_from_yolo(self, txt_path, image_size=(256, 256)):
         mask = np.zeros(image_size, dtype=np.uint8)

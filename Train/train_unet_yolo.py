@@ -11,31 +11,34 @@ from losses import dice_loss, focal_loss
 from utils import compute_mean_std, dynamic_normalization, compute_class_weights  # Import compute_class_weights
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts  # Import the scheduler
 from config import get_model_folder  # Import get_model_folder
+import gc  # Import garbage collector
 
 def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, patience=PATIENCE, pre_trained_weights=None):
+    # Aggressive memory cleanup
+    torch.cuda.empty_cache()
+    gc.collect()
+    
     # Create datasets
     train_dataset = UrineStripDataset(TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER)
     val_dataset = UrineStripDataset(VALID_IMAGE_FOLDER, VALID_MASK_FOLDER)  # Changed from VAL to VALID
     test_dataset = UrineStripDataset(TEST_IMAGE_FOLDER, TEST_MASK_FOLDER)
     
-    # Memory optimization
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        
-    # Create data loaders with pin_memory=False to reduce memory usage
+    # Create data loaders with memory optimizations
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, 
-                            num_workers=4, pin_memory=False)  # Reduced num_workers
+                            num_workers=2, pin_memory=False)  # Reduced workers
     val_loader = DataLoader(val_dataset, batch_size=batch_size, 
-                          num_workers=4, pin_memory=False)
+                          num_workers=2, pin_memory=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, 
-                           num_workers=4, pin_memory=False)
+                           num_workers=2, pin_memory=False)
 
     # Compute class weights using only training data
     class_weights = compute_class_weights(train_dataset)
     print(f"Class weights: {class_weights}")
 
-    # Model and Optimizer
+    # Model initialization with memory optimization
     model = UNetYOLO(3, NUM_CLASSES, dropout_prob=0.5).to(device)  # Use UNetYOLO model
+    if torch.cuda.device_count() > 1:
+        model = nn.DataParallel(model)
 
     # Load pre-trained weights if provided
     if pre_trained_weights:
@@ -61,14 +64,21 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
     model_filename = os.path.join(model_folder, "unet_model.pt")  # Use the model folder for saving models
 
     for epoch in range(NUM_EPOCHS):
+        # Clear memory at start of each epoch
+        torch.cuda.empty_cache()
+        gc.collect()
+        
         model.train()
         epoch_loss = 0
+        optimizer.zero_grad(set_to_none=True)  # More memory efficient
+        
         with tqdm(total=len(train_loader), desc=f"Training Epoch {epoch+1}") as pbar:  # Add tqdm progress bar
             for i, (images, masks) in enumerate(train_loader):
-                images, masks = images.to(device, non_blocking=True), masks.to(device, non_blocking=True)
+                # Move to GPU and free CPU memory
+                images = images.to(device, non_blocking=True)
+                masks = masks.to(device, non_blocking=True)
                 images = dynamic_normalization(images)  # Normalize the input images
                 
-                optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
                 with autocast():
                     outputs = model(images)
                     focal_loss_value = focal_loss(outputs, masks)
@@ -76,6 +86,8 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                     loss = 0.3 * focal_loss_value + 0.7 * dice_loss_value  # Combine custom losses
                     loss = loss.mean()  # Ensure the loss is a scalar
                 
+                # Scale loss and backward pass
+                loss = loss / accumulation_steps
                 scaler.scale(loss).backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # Gradient clipping
                 
@@ -85,23 +97,26 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                     optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
                     torch.cuda.empty_cache()  # Clear cache periodically
                 
-                epoch_loss += loss.item()
-                torch.cuda.empty_cache()  # Clear cache after each batch
+                # Free up memory
+                del images, masks, outputs
+                torch.cuda.empty_cache()
                 
+                epoch_loss += loss.item() * accumulation_steps
                 pbar.update(1)  # Update tqdm progress bar
 
         avg_loss = epoch_loss / len(train_loader)
         train_losses.append(avg_loss)
         print(f"Epoch {epoch+1} Train Loss: {avg_loss:.4f}")
 
-        # Validation
+        # Validation with memory optimization
         val_loss = 0
         correct = 0
         total = 0
         model.eval()
         with torch.no_grad():
             for images, masks in tqdm(val_loader, desc="Validation"):
-                images, masks = images.to(device, non_blocking=True), masks.to(device, non_blocking=True)
+                images = images.to(device, non_blocking=True)
+                masks = masks.to(device, non_blocking=True)
                 images = dynamic_normalization(images)  # Normalize the input images
                 outputs = model(images)
                 dice_loss_value = dice_loss(outputs, masks)
@@ -111,6 +126,10 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                 _, predicted = torch.max(outputs, 1)
                 total += masks.numel()
                 correct += (predicted == masks).sum().item()
+                
+                # Free memory
+                del images, masks, outputs, predicted
+                torch.cuda.empty_cache()
         
         avg_val_loss = val_loss / len(val_loader)
         val_losses.append(avg_val_loss)
@@ -159,6 +178,10 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
             _, predicted = torch.max(outputs, 1)
             test_total += masks.numel()
             test_correct += (predicted == masks).sum().item()
+            
+            # Free memory
+            del images, masks, outputs, predicted
+            torch.cuda.empty_cache()
     
     test_accuracy = 100 * test_correct / test_total
     print(f"\nTest Set Results:")

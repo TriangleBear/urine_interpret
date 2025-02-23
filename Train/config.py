@@ -22,19 +22,19 @@ for dir_path in [TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER,
     os.makedirs(dir_path, exist_ok=True)
 
 # Training Hyperparameters
-BATCH_SIZE = 4  # Reduced batch size to save memory
+BATCH_SIZE = 2  # Reduced from 4 to 2
 NUM_EPOCHS = 150
 LEARNING_RATE = 5e-5
 WEIGHT_DECAY = 1e-5
-ACCUMULATION_STEPS = 8  # Increased to compensate for smaller batch size
+ACCUMULATION_STEPS = 16  # Increased from 8 to 16
 NUM_CLASSES = 11
 PATIENCE = 15
-IMAGE_SIZE = (256, 256)  # Keep image size moderate
+IMAGE_SIZE = (224, 224)  # Reduced from 256x256
 
 # Memory Management
 torch.cuda.empty_cache()  # Clear CUDA cache
-import os
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:512,expandable_segments:True'
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128,expandable_segments:True'
+torch.backends.cudnn.benchmark = True
 
 # Model Saving
 def get_model_folder():
