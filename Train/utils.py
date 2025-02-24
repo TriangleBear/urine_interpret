@@ -143,7 +143,8 @@ def compute_class_weights(dataset):
     total_samples = len(dataset)
     if total_samples == 0:
         raise ValueError("Dataset is empty.")
-    # Avoid division by zero    class_weights = total_samples / (NUM_CLASSES * np.where(class_counts == 0, 1, class_counts))
+    # Avoid division by zero
+    class_weights = total_samples / (NUM_CLASSES * np.where(class_counts == 0, 1, class_counts))
     class_weights_tensor = torch.tensor(class_weights, dtype=torch.float).to(device)
     if class_weights_tensor.dim() == 0:
         class_weights_tensor = class_weights_tensor.unsqueeze(0)
