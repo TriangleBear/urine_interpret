@@ -49,7 +49,7 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
             ic(f"Failed to load pre-trained weights: {e}")
 
     optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)  # Adjust learning rate and weight decay
-    scaler = GradScaler()
+    scaler = GradScaler('cuda')  # Update GradScaler usage
     criterion = torch.nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)  # Add class weights
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2, eta_min=1e-6)  # Use CosineAnnealingWarmRestarts scheduler
 
@@ -79,7 +79,7 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                 masks = masks.to(device, non_blocking=True)
                 images = dynamic_normalization(images)  # Normalize the input images
                 
-                with autocast():
+                with autocast():  # Update autocast usage
                     outputs = model(images)
                     focal_loss_value = focal_loss(outputs, masks)
                     dice_loss_value = dice_loss(outputs, masks)
@@ -185,7 +185,7 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
     
     test_accuracy = 100 * test_correct / test_total
     print(f"\nTest Set Results:")
-    print(f"Average Loss: {test_loss/len(test_loader):.4f}")
+    print(f"Average Loss: {test_loss/len(test_loader): .4f}")
     print(f"Accuracy: {test_accuracy:.2f}%")
     
     return model, train_losses, val_losses, val_accuracies, test_accuracy
