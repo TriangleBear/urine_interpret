@@ -33,7 +33,7 @@ IMAGE_SIZE = (224, 224)  # Reduced from 256x256
 
 # Memory Management
 torch.cuda.empty_cache()  # Clear CUDA cache
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128,expandable_segments:True'
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'  # Remove expandable_segments
 torch.backends.cudnn.benchmark = True
 
 # Model Saving
