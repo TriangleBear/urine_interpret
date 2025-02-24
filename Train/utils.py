@@ -13,13 +13,16 @@ def compute_mean_std(dataset):
     loader = torch.utils.data.DataLoader(dataset, batch_size=64, shuffle=False)
     mean = 0.
     std = 0.
+    total_images = len(loader.dataset)
+    if total_images == 0:
+        raise ValueError("Dataset is empty.")
     for images, _ in loader:
         batch_samples = images.size(0)
         images = images.view(batch_samples, images.size(1), -1)
         mean += images.mean(2).sum(0)
         std += images.std(2).sum(0)
-    mean /= len(loader.dataset)
-    std /= len(loader.dataset)
+    mean /= total_images
+    std /= total_images
     return mean.tolist(), std.tolist()
 
 def dynamic_normalization(tensor_images):
@@ -141,6 +144,8 @@ def compute_class_weights(dataset):
     labels = np.array(labels_list)
     class_counts = np.bincount(labels, minlength=NUM_CLASSES)
     total_samples = len(dataset)
+    if total_samples == 0:
+        raise ValueError("Dataset is empty.")
     # Avoid division by zero
     class_weights = total_samples / (NUM_CLASSES * np.where(class_counts == 0, 1, class_counts))
     class_weights_tensor = torch.tensor(class_weights, dtype=torch.float).to(device)
