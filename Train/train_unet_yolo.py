@@ -79,7 +79,7 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                 masks = masks.to(device, non_blocking=True)
                 images = dynamic_normalization(images)  # Normalize the input images
                 
-                with autocast():  # Update autocast usage
+                with autocast(device):  # Update autocast usage
                     outputs = model(images)
                     focal_loss_value = focal_loss(outputs, masks)
                     dice_loss_value = dice_loss(outputs, masks)
