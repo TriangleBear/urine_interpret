@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import DataLoader, random_split
 from torch.optim import AdamW
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler  # Update import statement
 from tqdm import tqdm
 from icecream import ic
 from config import *
@@ -49,7 +49,7 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
             ic(f"Failed to load pre-trained weights: {e}")
 
     optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)  # Adjust learning rate and weight decay
-    scaler = GradScaler('cuda')  # Update GradScaler usage
+    scaler = GradScaler()  # Update GradScaler usage
     criterion = torch.nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)  # Add class weights
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2, eta_min=1e-6)  # Use CosineAnnealingWarmRestarts scheduler
 
@@ -79,7 +79,7 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                 masks = masks.to(device, non_blocking=True)
                 images = dynamic_normalization(images)  # Normalize the input images
                 
-                with autocast():  # Update autocast usage
+                with autocast(device_type='cuda'):  # Update autocast usage
                     outputs = model(images)
                     focal_loss_value = focal_loss(outputs, masks)
                     dice_loss_value = dice_loss(outputs, masks)
@@ -94,7 +94,7 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                 if (i + 1) % accumulation_steps == 0:
                     scaler.step(optimizer)
                     scaler.update()
-                    optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
+                    optimizer.zero_grad(set_to_none(True))  # More efficient than zero_grad()
                     torch.cuda.empty_cache()  # Clear cache periodically
                 
                 # Free up memory
