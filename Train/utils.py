@@ -132,3 +132,18 @@ def train_svm_classifier(features, labels):
 
 def save_svm_model(svm_model, filename):
     joblib.dump(svm_model, filename)
+
+def compute_class_weights(dataset):
+    """Compute class weights for the dataset."""
+    labels_list = []
+    for _, label in dataset:
+        labels_list.append(label)
+    labels = np.array(labels_list)
+    class_counts = np.bincount(labels, minlength=NUM_CLASSES)
+    total_samples = len(dataset)
+    # Avoid division by zero
+    class_weights = total_samples / (NUM_CLASSES * np.where(class_counts == 0, 1, class_counts))
+    class_weights_tensor = torch.tensor(class_weights, dtype=torch.float).to(device)
+    if class_weights_tensor.dim() == 0:
+        class_weights_tensor = class_weights_tensor.unsqueeze(0)
+    return class_weights_tensor
