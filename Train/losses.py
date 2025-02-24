@@ -18,12 +18,15 @@ def focal_loss(outputs, targets, alpha=0.25, gamma=2):
     if targets.dim() == 4:
         targets = targets.squeeze(1)  # Remove extra channel dim if exists
     elif targets.dim() == 2:  
-        # If targets are (batch_size, height * width), reshape it to (batch_size, height, width)
+        # If targets are (B, H * W), reshape it to (B, H, W)
         batch_size = outputs.shape[0]
         height, width = outputs.shape[2], outputs.shape[3]
         targets = targets.view(batch_size, height, width)
     elif targets.dim() == 3:
         targets = targets.unsqueeze(1)  # Convert (B, H, W) to (B, 1, H, W)
+
+    # Debugging print
+    print(f"After processing: targets.shape = {targets.shape}")
 
     # Convert to one-hot encoding
     targets_one_hot = F.one_hot(targets.long(), num_classes=outputs.shape[1]).permute(0, 3, 1, 2).float()
