@@ -24,9 +24,13 @@ def focal_loss(outputs, targets, alpha=0.25, gamma=2):
         targets = targets.view(batch_size, height, width)
     elif targets.dim() == 3:
         targets = targets.unsqueeze(1)  # Convert (B, H, W) to (B, 1, H, W)
+    elif targets.dim() == 1:
+        # If targets are (B,), reshape it to (B, 1, 1, 1)
+        targets = targets.unsqueeze(1).unsqueeze(2).unsqueeze(3)
 
-    # Debugging print
-    print(f"After processing: targets.shape = {targets.shape}")
+    # Ensure targets have 4 dimensions before one-hot encoding
+    if targets.dim() != 4:
+        raise ValueError(f"Expected targets to have 4 dimensions, but got {targets.dim()} dimensions")
 
     # Convert to one-hot encoding
     targets_one_hot = F.one_hot(targets.long(), num_classes=outputs.shape[1]).permute(0, 3, 1, 2).float()
@@ -34,4 +38,4 @@ def focal_loss(outputs, targets, alpha=0.25, gamma=2):
     # Compute Focal Loss
     bce_loss = F.binary_cross_entropy_with_logits(outputs, targets_one_hot, reduction='none')
     pt = torch.exp(-bce_loss)
-    return (alpha * (1 - pt) ** gamma * bce_loss).mean()
+    return (alpha * (1 - pt) ** gamma * bce_loss).mean()  # Ensure the loss is a scalar
