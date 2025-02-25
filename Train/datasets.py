@@ -1,6 +1,5 @@
 # datasets.py
 import os
-import random
 import numpy as np
 import torch
 from torch.utils.data import Dataset
@@ -24,7 +23,8 @@ class UrineStripDataset(Dataset):
         ])
     
     def __len__(self):
-        return len(self.images)
+        return len(self.images)  # Return the number of images
+
     
     def __getitem__(self, idx):
         img_name = self.images[idx]
