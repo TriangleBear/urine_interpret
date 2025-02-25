@@ -12,7 +12,6 @@ if __name__ == "__main__":
     print(f"Dataset mean: {mean}, std: {std}")
     
     # Visualize the training dataset
-    # visualize_dataset(train_dataset)
     
     # Train UNetYOLO
     unet_model, train_losses, val_losses, val_accuracies, test_accuracy = train_unet_yolo()
