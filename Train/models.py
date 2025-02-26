@@ -170,19 +170,28 @@ class UNetYOLO(nn.Module):
         self.unet = UNet(in_channels, 64, bilinear=False, dropout_prob=dropout_prob)
         self.yolo_head = YOLOHead(64, out_channels)
         
-        # Add batch normalization and additional classifier
+        # Add batch normalization after UNet for better stability
         self.bn = nn.BatchNorm2d(64)
         
-        # Add a classifier head specific for reagent pad classification
+        # Improved classifier with batch norm and better architecture
         self.classifier = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
-            nn.Dropout(0.3),
             nn.Linear(64, 128),
+            nn.BatchNorm1d(128),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.2),
-            nn.Linear(128, out_channels)
+            nn.Dropout(dropout_prob),
+            nn.Linear(128, 64),
+            nn.BatchNorm1d(64),
+            nn.ReLU(inplace=True),
+            nn.Linear(64, out_channels),
         )
+        
+        # Apply special initialization to final layer to prevent initial bias
+        with torch.no_grad():
+            # Initialize the final layer with zeros to start from a neutral position
+            nn.init.zeros_(self.classifier[-1].weight)
+            nn.init.zeros_(self.classifier[-1].bias)
         
         self._init_weights()
     
@@ -198,19 +207,15 @@ class UNetYOLO(nn.Module):
                 nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.Linear):
                 nn.init.normal_(m.weight, 0, 0.01)
-                nn.init.constant_(m.bias, 0)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
     
     def forward(self, x):
         # Get UNet features
         features = self.unet(x)
         features = self.bn(features)
         
-        # Get YOLO head output for segmentation
-        yolo_output = self.yolo_head(features)
-        
-        # Use the classifier for the final class prediction
-        # This is essential for achieving better accuracy
-        # class_output = self.classifier(features)
-        
-        # Return segmentation output only
-        return yolo_output
+        # Use dedicated classifier for classification task
+        # This is the key change - actually use the classifier
+        # instead of adapting the segmentation output
+        return self.classifier(features)
