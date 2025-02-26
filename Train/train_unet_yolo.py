@@ -34,20 +34,20 @@ def train_unet_yolo(batch_size=1, accumulation_steps=64, patience=PATIENCE, pre_
     # Create data loaders with memory optimizations
     train_loader = DataLoader(
         train_dataset, 
-        batch_size=max(1, batch_size // 2),  # Reduce batch size to alleviate memory issues
+        batch_size=1,  # Set batch size to 1 to manage memory effectively
         shuffle=True, 
         num_workers=1,  # Reduced workers
         pin_memory=False
     )
     val_loader = DataLoader(
         val_dataset, 
-        batch_size=max(1, batch_size // 2), 
+        batch_size=1, 
         num_workers=1, 
         pin_memory=False
     )
     test_loader = DataLoader(
         test_dataset, 
-        batch_size=max(1, batch_size // 2), 
+        batch_size=1, 
         num_workers=1, 
         pin_memory=False
     )
@@ -118,7 +118,7 @@ def train_unet_yolo(batch_size=1, accumulation_steps=64, patience=PATIENCE, pre_
                         new_h, new_w = int(images.shape[2] * scale_factor), int(images.shape[3] * scale_factor)
                         images = F.interpolate(images, size=(new_h, new_w), mode='bilinear', align_corners=False)
                     
-                    # Use autocast for mixed precision to save memory
+                    # Use autocast for mixed precision to further reduce memory usage
                     with autocast(device_type="cuda"):
                         outputs = model(images)
                         
@@ -142,7 +142,7 @@ def train_unet_yolo(batch_size=1, accumulation_steps=64, patience=PATIENCE, pre_
                         optimizer.zero_grad(set_to_none=True)
                         torch.cuda.empty_cache()
                     
-                    # Free up memory after processing
+                    # Free up memory after each operation
                     del images, labels, outputs, pooled_outputs
                     torch.cuda.empty_cache()
                     
@@ -162,7 +162,8 @@ def train_unet_yolo(batch_size=1, accumulation_steps=64, patience=PATIENCE, pre_
         train_losses.append(avg_loss)
         print(f"Epoch {epoch+1} Train Loss: {avg_loss:.4f}")
 
-        # Validation with memory optimization to handle OOM
+        # Validation with memory optimization to prevent out-of-memory errors
+
         val_loss = 0
         correct = 0
         total = 0
