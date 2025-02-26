@@ -94,4 +94,4 @@ def get_model_filename():
 
 def get_svm_filename():
     model_folder = get_model_folder()
-    return os.path.join(model_folder, "svm_model.pkl")
+    return os.path.join(model_folder, "svm_rbf_model.pkl")
