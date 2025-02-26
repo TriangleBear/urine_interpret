@@ -35,17 +35,22 @@ class UrineStripDataset(Dataset):
         image = Image.open(img_path).convert('RGB')
         
         # Extract class from filename directly
-        # Format: class_X.jpg where X is the class ID
+        # Format could be: class_X.jpg or IMG_XXXX.jpg
         try:
-            # First try to extract from filename
+            # First try to extract using underscore pattern (class_X.jpg)
             parts = os.path.splitext(img_name)[0].split('_')
-            if len(parts) >= 2:
+            if len(parts) >= 2 and parts[0].lower() == "class":
+                # Format: class_X.jpg
                 label = int(parts[1])
+            elif len(parts) >= 2 and parts[0] == "IMG":
+                # Format: IMG_XXXX.jpg - these appear to be getting misinterpreted
+                # For IMG_XXXX files, default to strip (class 10)
+                label = 10
             else:
                 # Default to strip class (10) if can't extract
                 label = 10
         except ValueError:
-            # Default to strip class (10)
+            # Default to strip class (10) for any parsing errors
             label = 10
         
         # Apply transform if provided
@@ -53,7 +58,9 @@ class UrineStripDataset(Dataset):
         
         # Ensure label is in valid range
         if label < 0 or label >= NUM_CLASSES:
-            print(f"Warning: Invalid label {label} for {img_name}, defaulting to 10")
+            # Only print warning if not an IMG_ file (to reduce noise)
+            if not img_name.startswith("IMG_"):
+                print(f"Warning: Invalid label {label} for {img_name}, defaulting to 10")
             label = 10
         
         # Print the first few samples for debugging
