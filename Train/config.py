@@ -27,7 +27,7 @@ NUM_EPOCHS = 150
 LEARNING_RATE = 5e-5
 WEIGHT_DECAY = 1e-5
 ACCUMULATION_STEPS = 16  # Increased from 8 to 16
-NUM_CLASSES = 10
+NUM_CLASSES = 11  # Ensure this matches the number of classes in your dataset
 PATIENCE = 15
 IMAGE_SIZE = (224, 224)  # Reduced from 256x256
 

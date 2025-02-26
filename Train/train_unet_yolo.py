@@ -54,8 +54,14 @@ def train_unet_yolo(batch_size=1, accumulation_steps=32, patience=PATIENCE, pre_
 
     # Compute class weights using the training dataset
     class_weights = compute_class_weights(train_dataset)
-    class_weights = torch.tensor(class_weights, dtype=torch.float32).to(device)
+    class_weights = class_weights.clone().detach().to(device)
+
     print(f"Computed class weights: {class_weights}")
+
+    # Ensure the criterion uses the correct number of classes
+    if class_weights.shape[0] != NUM_CLASSES:
+        raise ValueError(f"Expected class weights tensor of shape ({NUM_CLASSES},) but got {class_weights.shape}")
+    criterion = torch.nn.CrossEntropyLoss(weight=class_weights[:NUM_CLASSES], label_smoothing=0.1, reduction='mean')
 
     # Model initialization with memory optimization
     model = UNetYOLO(3, NUM_CLASSES, dropout_prob=0.5).to(device)
@@ -72,7 +78,6 @@ def train_unet_yolo(batch_size=1, accumulation_steps=32, patience=PATIENCE, pre_
     # Use a smaller learning rate
     optimizer = AdamW(model.parameters(), lr=1e-5, weight_decay=1e-6)
     scaler = GradScaler()
-    criterion = torch.nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2, eta_min=1e-7)
 
     train_losses = []
@@ -121,7 +126,7 @@ def train_unet_yolo(batch_size=1, accumulation_steps=32, patience=PATIENCE, pre_
                         pooled_outputs = F.adaptive_avg_pool2d(outputs, 1).squeeze(-1).squeeze(-1)
                         
                         # Use cross entropy loss for classification
-                        loss = criterion(pooled_outputs, labels)
+                        loss = criterion(pooled_outputs[:, 5:], labels)  # Only use class scores for loss
                     
                     # Scale loss and backward pass
                     loss = loss / accumulation_steps
@@ -179,11 +184,11 @@ def train_unet_yolo(batch_size=1, accumulation_steps=32, patience=PATIENCE, pre_
                     # Global Average Pooling for classification
                     pooled_outputs = F.adaptive_avg_pool2d(outputs, 1).squeeze(-1).squeeze(-1)
                     
-                    loss_val = criterion(pooled_outputs, labels)
+                    loss_val = criterion(pooled_outputs[:, 5:], labels)  # Only use class scores for loss
                     val_loss += loss_val.item()
                     
                     # Calculate accuracy
-                    _, predicted = torch.max(pooled_outputs, 1)
+                    _, predicted = torch.max(pooled_outputs[:, 5:], 1)  # Only use class scores for accuracy
                     total += labels.size(0)
                     correct += (predicted == labels).sum().item()
                     
@@ -261,11 +266,11 @@ def train_unet_yolo(batch_size=1, accumulation_steps=32, patience=PATIENCE, pre_
                 # Global Average Pooling for classification
                 pooled_outputs = F.adaptive_avg_pool2d(outputs, 1).squeeze(-1).squeeze(-1)
                 
-                loss = criterion(pooled_outputs, labels)
+                loss = criterion(pooled_outputs[:, 5:], labels)  # Only use class scores for loss
                 test_loss += loss.item()
                 
                 # Calculate accuracy
-                _, predicted = torch.max(pooled_outputs, 1)
+                _, predicted = torch.max(pooled_outputs[:, 5:], 1)  # Only use class scores for accuracy
                 test_total += labels.size(0)
                 test_correct += (predicted == labels).sum().item()
                 

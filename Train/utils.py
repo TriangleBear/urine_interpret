@@ -142,11 +142,16 @@ def compute_class_weights(dataset):
     for _, label in dataset:
         labels_list.append(label)
     labels = np.array(labels_list)
-    class_counts = np.bincount(labels, minlength=NUM_CLASSES)
+    class_counts = np.bincount(labels, minlength=NUM_CLASSES)  # Use NUM_CLASSES directly
+
+
     total_samples = len(dataset)
     if total_samples == 0:
         raise ValueError("Dataset is empty.")
     # Avoid division by zero
-    class_weights = total_samples / (NUM_CLASSES * np.where(class_counts == 0, 1, class_counts))
-    class_weights_tensor = torch.tensor(class_weights, dtype=torch.float).to(device)
+    class_weights = total_samples / (NUM_CLASSES * np.where(class_counts == 0, 1, class_counts))  # Use NUM_CLASSES directly
+
+
+    class_weights_tensor = torch.tensor(class_weights, dtype=torch.float32).to(device)
+
     return class_weights_tensor

@@ -30,13 +30,24 @@ class UrineStripDataset(Dataset):
         img_name = self.images[idx]
         img_path = os.path.join(self.image_dir, img_name)
         
-        # Extract class from filename (assuming format like "class_1_image.jpg")
-        try:
-            label = int(img_name.split('_')[1])
-        except (IndexError, ValueError):
-            # If filename doesn't contain class, assume class 0
-            label = 0
-        
+        # Extract class label from the corresponding mask file
+        mask_path = os.path.join(self.mask_dir, img_name.replace('.jpg', '.txt').replace('.png', '.txt').replace('.jpeg', '.txt'))
+        if os.path.exists(mask_path):
+            with open(mask_path, 'r') as f:
+                lines = f.readlines()
+                if lines:
+                    # Assuming the first line contains the class ID
+                    label = int(lines[0].strip().split()[0])
+                else:
+                    label = 0  # Default to class 0 if no lines are found
+                # Ensure label is within valid range
+                if label < 1 or label > 11:
+                    label = 0  # Default to class 0 if label is out of range
+
+        else:
+            label = 0  # Default to class 0 if mask file does not exist
+
+
         # Load and transform image
         image = Image.open(img_path).convert('RGB')
         image = self.transform(image)
@@ -65,13 +76,6 @@ class UrineStripDataset(Dataset):
                     polygon_points = polygon_points.astype(np.int32)
                     cv2.fillPoly(mask, [polygon_points], class_id)
 
-        # Comment out the mask visualization
-        # if self.visualization_count < 5:
-        #     plt.imshow(mask, cmap='gray')
-        #     plt.title("YOLO Mask")
-        #     plt.show()
-        #     self.visualization_count += 1
-        
         return mask
 
 # Add a function to visualize the dataset
