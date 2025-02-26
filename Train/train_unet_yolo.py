@@ -15,7 +15,7 @@ from config import get_model_folder
 import gc
 import os
 
-def train_unet_yolo(batch_size=1, accumulation_steps=32, patience=PATIENCE, pre_trained_weights=None):
+def train_unet_yolo(batch_size=1, accumulation_steps=64, patience=PATIENCE, pre_trained_weights=None):
     # Set environment variables for memory management
     os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:64'
     
@@ -34,27 +34,27 @@ def train_unet_yolo(batch_size=1, accumulation_steps=32, patience=PATIENCE, pre_
     # Create data loaders with memory optimizations
     train_loader = DataLoader(
         train_dataset, 
-        batch_size=batch_size,  # Using batch_size=1
+        batch_size=max(1, batch_size // 2),  # Reduce batch size to alleviate memory issues
         shuffle=True, 
         num_workers=1,  # Reduced workers
         pin_memory=False
     )
     val_loader = DataLoader(
         val_dataset, 
-        batch_size=batch_size, 
+        batch_size=max(1, batch_size // 2), 
         num_workers=1, 
         pin_memory=False
     )
     test_loader = DataLoader(
         test_dataset, 
-        batch_size=batch_size, 
+        batch_size=max(1, batch_size // 2), 
         num_workers=1, 
         pin_memory=False
     )
 
     # Compute class weights using the training dataset
     class_weights = compute_class_weights(train_dataset)
-    class_weights = class_weights.clone().detach().to(device)
+    class_weights = class_weights.clone().detach().to(device)  # Updated to avoid warning
 
     print(f"Computed class weights: {class_weights}")
 
@@ -90,12 +90,13 @@ def train_unet_yolo(batch_size=1, accumulation_steps=32, patience=PATIENCE, pre_
     model_folder = get_model_folder()
     model_filename = os.path.join(model_folder, "unet_model.pt")
 
-    for epoch in range(NUM_EPOCHS):
-        # Clear memory at the start of each epoch
+    for epoch in range(NUM_EPOCHS):  # Start training loop
+
+        # Clear memory at the start of each epoch to prevent OOM
         torch.cuda.empty_cache()
         gc.collect()
         
-        # First 5 epochs: train only decoder to save memory
+        # First 5 epochs: train only decoder to save memory and reduce GPU load
         if epoch == 5:
             model.encoder.train()  # Start training encoder after 5 epochs
         
@@ -117,12 +118,11 @@ def train_unet_yolo(batch_size=1, accumulation_steps=32, patience=PATIENCE, pre_
                         new_h, new_w = int(images.shape[2] * scale_factor), int(images.shape[3] * scale_factor)
                         images = F.interpolate(images, size=(new_h, new_w), mode='bilinear', align_corners=False)
                     
-                    # Use autocast for mixed precision
+                    # Use autocast for mixed precision to save memory
                     with autocast(device_type="cuda"):
                         outputs = model(images)
                         
                         # Global Average Pooling for classification
-                        # Average over spatial dimensions to get [batch, classes]
                         pooled_outputs = F.adaptive_avg_pool2d(outputs, 1).squeeze(-1).squeeze(-1)
                         
                         # Use cross entropy loss for classification
@@ -142,7 +142,7 @@ def train_unet_yolo(batch_size=1, accumulation_steps=32, patience=PATIENCE, pre_
                         optimizer.zero_grad(set_to_none=True)
                         torch.cuda.empty_cache()
                     
-                    # Free up memory
+                    # Free up memory after processing
                     del images, labels, outputs, pooled_outputs
                     torch.cuda.empty_cache()
                     
@@ -162,7 +162,7 @@ def train_unet_yolo(batch_size=1, accumulation_steps=32, patience=PATIENCE, pre_
         train_losses.append(avg_loss)
         print(f"Epoch {epoch+1} Train Loss: {avg_loss:.4f}")
 
-        # Validation with memory optimization
+        # Validation with memory optimization to handle OOM
         val_loss = 0
         correct = 0
         total = 0
@@ -211,10 +211,10 @@ def train_unet_yolo(batch_size=1, accumulation_steps=32, patience=PATIENCE, pre_
         val_accuracies.append(val_accuracy)
         print(f"Epoch {epoch+1}: Train Loss {avg_loss:.4f}, Val Loss {avg_val_loss:.4f}, Val Accuracy {val_accuracy:.2f}%")
         
-        # Adjust learning rate
+        # Adjust learning rate based on validation loss
         scheduler.step(epoch + avg_val_loss)
 
-        # Save the best model based on validation loss
+        # Save the best model based on validation loss to prevent overfitting
         if avg_val_loss < best_loss:
             best_loss = avg_val_loss
             early_stop_counter = 0
@@ -233,7 +233,7 @@ def train_unet_yolo(batch_size=1, accumulation_steps=32, patience=PATIENCE, pre_
             torch.save(cpu_model, os.path.join(model_folder, f"unet_model_epoch_{epoch+1}.pth"))
             del cpu_model  # Free memory
         
-        # Check early stopping
+        # Check early stopping criteria
         if early_stop_counter >= patience:
             print("Early stopping triggered. Training stopped.")
             break
