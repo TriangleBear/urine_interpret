@@ -85,13 +85,17 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
     for class_id in range(NUM_CLASSES):
         count = label_counts.get(class_id, 0)
         if count > 0:
-            # Inverse frequency weighting with smoothing
-            weight = 1.0 / (count / total_samples)
-            # Cap weights to avoid extreme values
-            weight = min(weight, 10.0)
+            # Use stronger inverse frequency weighting to emphasize minority classes
+            weight = total_samples / (count * NUM_CLASSES)
+            # Cap weights to prevent numerical instability, but use higher cap for rare classes
+            weight = min(weight, 25.0)  # Increased from 10.0 to 25.0
         else:
-            weight = 1.0
+            weight = 15.0  # Default weight for classes with no samples
         class_weights.append(weight)
+    
+    # Further boost weights of non-strip classes (0-9) to fight class 10 dominance
+    for class_id in range(NUM_CLASSES - 1):  # All classes except strip (class 10)
+        class_weights[class_id] *= 2.0  # Double the weight of non-strip classes
     
     class_weights_tensor = torch.tensor(class_weights, device=device)
     print(f"Class weights: {class_weights_tensor}")
@@ -126,7 +130,7 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
         # Use class weights in loss function to address class imbalance
         criterion = torch.nn.CrossEntropyLoss(
             weight=class_weights_tensor,  # Use calculated weights
-            label_smoothing=0.05,  # Reduce label smoothing
+            label_smoothing=0.1,  # Increased from 0.05 to 0.1 for better regularization
             reduction='mean'
         )
     
@@ -374,13 +378,13 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                     
                     # Use autocast for mixed precision to fully utilize tensor cores
                     with autocast(device_type="cuda", dtype=torch.float16):
-                        # Get outputs directly from model - no pooling needed now
-                        outputs = model(images)
+                        # Get outputs from model - include segmentation map
+                        outputs, segmentation_maps = model(images, return_segmentation=True)
                         
-                        # No need for GAP since the model already does that
                         # Debug info in first batch
                         if i == 0 and epoch == 0:
                             print(f"Output shape: {outputs.shape}")
+                            print(f"Segmentation map shape: {segmentation_maps.shape}")
                             print(f"Labels shape: {labels.shape}")
                             print(f"Labels: {labels}")
                         
@@ -455,8 +459,8 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                         new_h, new_w = int(images.shape[2] * scale_factor), int(images.shape[3] * scale_factor)
                         images = F.interpolate(images, size=(new_h, new_w), mode='bilinear', align_corners=False)
                     
-                    # Get outputs directly
-                    outputs = model(images)
+                    # Get outputs directly - with segmentation maps
+                    outputs, segmentation_maps = model(images, return_segmentation=True)
                     
                     # No pooling needed
                     labels = labels.long()
@@ -517,21 +521,37 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                 predicted_classes.extend(preds.cpu().numpy())
         
         unique_predictions = set(predicted_classes)
-        if len(unique_predictions) <= 1 and epoch > 5:
-            print(f"WARNING: Model is stuck predicting only {unique_predictions}. Restarting with higher learning rate.")
+        if len(unique_predictions) <= 2 and epoch > 3:  # Changed from 1 to 2 and from 5 to 3
+            print(f"WARNING: Model is stuck predicting only {unique_predictions}. Implementing recovery strategy.")
             
+            # More aggressive recovery strategy
             # Re-initialize model if it's stuck
             del model
             torch.cuda.empty_cache()
             
-            # Create new model with different initialization
+            # Create new model with different initialization and lower dropout
             model = UNetYOLO(3, NUM_CLASSES, dropout_prob=0.1).to(device)
             
-            # Increase learning rate and use different optimizer
-            optimizer = torch.optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
+            # Use SGD with momentum and higher learning rate
+            optimizer = torch.optim.SGD(model.parameters(), lr=0.005, momentum=0.9, weight_decay=1e-4)
+            
+            # Temporarily increase class weights even further for minority classes
+            temp_class_weights = class_weights.copy()
+            for class_id in range(NUM_CLASSES - 1):  # All classes except strip (class 10)
+                temp_class_weights[class_id] *= 3.0  # Triple weights temporarily
+            
+            temp_class_weights_tensor = torch.tensor(temp_class_weights, device=device)
+            criterion = torch.nn.CrossEntropyLoss(
+                weight=temp_class_weights_tensor,
+                label_smoothing=0.0,  # Remove label smoothing temporarily
+                reduction='mean'
+            )
             
             # Reset early stopping counter
             early_stop_counter = 0
+            
+            # Apply batch sampling to focus on minority classes in the next few epochs
+            print("Applying focused training on minority classes...")
 
         # Save the best model based on validation loss to prevent overfitting
         if avg_val_loss < best_loss:

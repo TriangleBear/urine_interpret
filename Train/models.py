@@ -164,7 +164,7 @@ class YOLOHead(nn.Module):
         return features
 
 class UNetYOLO(nn.Module):
-    """Combined UNet with YOLO detection head."""
+    """Combined UNet with YOLO detection head for segmentation."""
     def __init__(self, in_channels, out_channels, dropout_prob=0.5):
         super(UNetYOLO, self).__init__()
         self.unet = UNet(in_channels, 64, bilinear=False, dropout_prob=dropout_prob)
@@ -173,24 +173,24 @@ class UNetYOLO(nn.Module):
         # Add batch normalization after UNet for better stability
         self.bn = nn.BatchNorm2d(64)
         
-        # Improved feature extractor with proper handling for single batch items
+        # Keep feature extractor for later use with SVM
         self.feature_extractor = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
             nn.Linear(64, 128),
-            # Replace BatchNorm1d with LayerNorm which works with any batch size
             nn.LayerNorm(128),
             nn.ReLU(inplace=True),
             nn.Dropout(dropout_prob),
         )
         
-        # Final classification layer
+        # Final classification layer - useful for training supervision
         self.classifier = nn.Linear(128, out_channels)
         
-        # Apply special initialization to final layer
+        # Apply initialization to final layer
         with torch.no_grad():
             nn.init.zeros_(self.classifier.weight)
-            nn.init.zeros_(self.classifier.bias)
+            # Use balanced initialization for all classes
+            self.classifier.bias.data.fill_(0.0)
         
         self._init_weights()
     
@@ -209,15 +209,29 @@ class UNetYOLO(nn.Module):
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
     
-    def forward(self, x):
+    def forward(self, x, return_segmentation=False):
+        """
+        Forward pass with option to return segmentation map.
+        
+        Args:
+            x: Input tensor
+            return_segmentation: If True, return (logits, segmentation_map),
+                                otherwise just return logits
+        """
         # Get UNet features
         features = self.unet(x)
         features = self.bn(features)
         
-        # Extract features first
+        # Get segmentation map from YOLO head
+        segmentation_map = self.yolo_head(features)
+        
+        # Extract features for classification
         extracted = self.feature_extractor(features)
         
-        # Final classification
+        # Final classification logits
         logits = self.classifier(extracted)
         
-        return logits
+        if return_segmentation:
+            return logits, segmentation_map
+        else:
+            return logits
