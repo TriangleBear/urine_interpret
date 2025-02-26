@@ -12,11 +12,12 @@ from losses import dice_loss, focal_loss
 from utils import compute_mean_std, dynamic_normalization, compute_class_weights
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from config import get_model_folder
+from config import BATCH_SIZE, ACCUMULATION_STEPS, PATIENCE  # Import configuration variables
 import gc
 import os
 
-def train_unet_yolo(batch_size=1, accumulation_steps=32, patience=PATIENCE, pre_trained_weights=None):  # Reduced accumulation steps
-    # Set environment variables for memory management
+def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, patience=PATIENCE, pre_trained_weights=None):
+
     os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:64'
     
     # Clear memory at start
@@ -34,20 +35,20 @@ def train_unet_yolo(batch_size=1, accumulation_steps=32, patience=PATIENCE, pre_
     # Create data loaders with memory optimizations
     train_loader = DataLoader(
         train_dataset, 
-        batch_size=1,  # Set batch size to 1 consistently for memory management
+        batch_size=BATCH_SIZE,  # Set batch size to 1 consistently for memory management
         shuffle=True, 
         num_workers=0,  # Set workers to 0 to reduce memory overhead
         pin_memory=False
     )
     val_loader = DataLoader(
         val_dataset, 
-        batch_size=1, 
+        batch_size=BATCH_SIZE, 
         num_workers=0, 
         pin_memory=False
     )
     test_loader = DataLoader(
         test_dataset, 
-        batch_size=1, 
+        batch_size=BATCH_SIZE, 
         num_workers=0, 
         pin_memory=False
     )
