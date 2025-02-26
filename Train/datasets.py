@@ -34,45 +34,32 @@ class UrineStripDataset(Dataset):
         # Load image
         image = Image.open(img_path).convert('RGB')
         
-        # Get base name without extension for finding corresponding label file
-        base_name = os.path.splitext(img_name)[0]
-        label_path = os.path.join(self.mask_dir, f"{base_name}.txt")
-        
-        # Check if label file exists and parse it
-        if os.path.exists(label_path):
-            # Parse YOLO format labels
-            with open(label_path, 'r') as f:
-                lines = f.readlines()
-            
-            # If there are any labels, use the first one's class ID as the image label
-            if lines:
-                try:
-                    # YOLO format: class_id x_center y_center width height
-                    first_line = lines[0].strip().split()
-                    label = int(first_line[0])  # Get the class ID
-                except (IndexError, ValueError):
-                    print(f"Warning: Invalid label format in {label_path}")
-                    label = 0  # Default to class 0 if format is invalid
+        # Extract class from filename directly
+        # Format: class_X.jpg where X is the class ID
+        try:
+            # First try to extract from filename
+            parts = os.path.splitext(img_name)[0].split('_')
+            if len(parts) >= 2:
+                label = int(parts[1])
             else:
-                label = 0  # Default to class 0 if no labels
-        else:
-            # If no label file, try to extract from filename (fallback)
-            try:
-                # Assuming filename format: class_X_Y.jpg where X is class ID
-                label = int(img_name.split('_')[1])
-            except (IndexError, ValueError):
-                print(f"Warning: No label file found for {img_name}")
-                label = 0  # Default to class 0
+                # Default to strip class (10) if can't extract
+                label = 10
+        except ValueError:
+            # Default to strip class (10)
+            label = 10
         
-        # Ensure label is within valid range
-        if label < 0 or label >= NUM_CLASSES:
-            print(f"Warning: Label {label} out of valid range [0, {NUM_CLASSES-1}]")
-            label = 0  # Default to class 0 if out of range
-        
-        # Transform image
+        # Apply transform if provided
         image_tensor = self.transform(image)
         
-        # Return both the image tensor and single class label
+        # Ensure label is in valid range
+        if label < 0 or label >= NUM_CLASSES:
+            print(f"Warning: Invalid label {label} for {img_name}, defaulting to 10")
+            label = 10
+        
+        # Print the first few samples for debugging
+        if idx < 5:
+            print(f"Sample {idx}: {img_name} -> Class {label}")
+        
         return image_tensor, label
 
     def _create_mask_from_yolo(self, txt_path, image_size=(256, 256)):
