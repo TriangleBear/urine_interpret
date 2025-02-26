@@ -162,8 +162,161 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
         print(f"Warning: Model warm-up failed: {e}")
         # Continue anyway
     
-    # Two-stage training: first binary (strip vs non-strip), then multi-class
-    print("\n=== Stage 1: Binary Classification (Strip vs Non-Strip) ===")
+    # Three-stage training strategy:
+    # 1. Train on classes 0-9 only (reagent pads)
+    # 2. Binary classification (strip vs non-strip)
+    # 3. Full multi-class with all classes
+    
+    print("\n=== Stage 1: Reagent Pads Only Training (Classes 0-9) ===")
+    
+    # Create a filtered dataset containing only reagent pad classes (0-9)
+    def filter_reagent_pad_classes(dataset):
+        filtered_dataset = []
+        for image, label in dataset:
+            # Only include classes 0-9 (reagent pads)
+            if label < 10:  
+                filtered_dataset.append((image, label))
+        return filtered_dataset
+    
+    reagent_train_dataset = filter_reagent_pad_classes(train_dataset)
+    reagent_val_dataset = filter_reagent_pad_classes(val_dataset)
+    
+    # Check if we have enough samples
+    if len(reagent_train_dataset) < 10:
+        print("WARNING: Not enough reagent pad samples for Stage 1. Skipping to Stage 2.")
+    else:
+        # Create data loaders for reagent pad classes
+        reagent_train_loader = DataLoader(
+            reagent_train_dataset, 
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=2,
+            pin_memory=True,
+            persistent_workers=True
+        )
+        reagent_val_loader = DataLoader(
+            reagent_val_dataset, 
+            batch_size=batch_size,
+            num_workers=2,
+            pin_memory=True,
+            persistent_workers=True
+        )
+        
+        # Create model for reagent pad classes only (10 output classes)
+        reagent_model = UNetYOLO(3, 10, dropout_prob=0.2).to(device)
+        
+        # Class weights for reagent pad classes
+        reagent_class_weights = class_weights[:10]  # Take only the first 10 class weights
+        reagent_class_weights_tensor = torch.tensor(reagent_class_weights, device=device)
+        
+        # Loss function for reagent pad classes
+        reagent_criterion = torch.nn.CrossEntropyLoss(
+            weight=reagent_class_weights_tensor,
+            label_smoothing=0.1,
+            reduction='mean'
+        )
+        
+        # Higher learning rate for reagent pad training
+        reagent_optimizer = torch.optim.Adam(reagent_model.parameters(), lr=0.001)
+        reagent_scheduler = CosineAnnealingWarmRestarts(reagent_optimizer, T_0=5, T_mult=2, eta_min=1e-6)
+        reagent_scaler = GradScaler()
+        
+        # Train reagent pad model for fewer epochs
+        reagent_epochs = 15
+        best_reagent_acc = 0.0
+        reagent_model_path = os.path.join(model_folder, "reagent_model.pt")
+        
+        # Training loop for reagent pad classes
+        for epoch in range(reagent_epochs):
+            reagent_model.train()
+            epoch_loss = 0
+            reagent_optimizer.zero_grad(set_to_none=True)
+            
+            with tqdm(total=len(reagent_train_loader), desc=f"Reagent Training Epoch {epoch+1}") as pbar:
+                for i, (images, labels) in enumerate(reagent_train_loader):
+                    try:
+                        images = images.to(device, non_blocking=True)
+                        labels = labels.to(device, non_blocking=True)
+                        
+                        # Apply normalization
+                        if torch.max(images) > 1.0:
+                            images = images / 255.0
+                        images = dynamic_normalization(images)
+                        
+                        # Resize images if needed
+                        if images.shape[2] > max_size or images.shape[3] > max_size:
+                            scale_factor = max_size / max(images.shape[2], images.shape[3])
+                            new_h, new_w = int(images.shape[2] * scale_factor), int(images.shape[3] * scale_factor)
+                            images = F.interpolate(images, size=(new_h, new_w), mode='bilinear', align_corners=False)
+                        
+                        with autocast(device_type="cuda", dtype=torch.float16):
+                            outputs = reagent_model(images)
+                            labels = labels.long()
+                            loss = reagent_criterion(outputs, labels)
+                        
+                        loss = loss / accumulation_steps
+                        reagent_scaler.scale(loss).backward()
+                        
+                        if (i + 1) % accumulation_steps == 0:
+                            reagent_scaler.unscale_(reagent_optimizer)
+                            torch.nn.utils.clip_grad_norm_(reagent_model.parameters(), max_norm=0.5)
+                            reagent_scaler.step(reagent_optimizer)
+                            reagent_scaler.update()
+                            reagent_optimizer.zero_grad(set_to_none=True)
+                        
+                        # Display batch accuracy
+                        if i % 10 == 0:
+                            _, predicted = torch.max(outputs, 1)
+                            accuracy = (predicted == labels).float().mean() * 100
+                            pbar.set_postfix({'batch_acc': f"{accuracy.item():.2f}%"})
+                        
+                        epoch_loss += loss.item() * accumulation_steps
+                        pbar.update(1)
+                    
+                    except RuntimeError as e:
+                        if "out of memory" in str(e):
+                            print(f"OOM error in batch {i}, skipping...")
+                            torch.cuda.empty_cache()
+                            continue
+                        else:
+                            raise e
+            
+            avg_loss = epoch_loss / len(reagent_train_loader)
+            print(f"Reagent Epoch {epoch+1} Train Loss: {avg_loss:.4f}")
+            
+            # Validation for reagent pad classes
+            reagent_model.eval()
+            val_loss = 0
+            correct = 0
+            total = 0
+            
+            with torch.no_grad():
+                for images, labels in tqdm(reagent_val_loader, desc="Reagent Validation"):
+                    images = images.to(device, non_blocking=True)
+                    labels = labels.to(device, non_blocking=True)
+                    
+                    outputs = reagent_model(images)
+                    _, predicted = torch.max(outputs, 1)
+                    
+                    loss = reagent_criterion(outputs, labels)
+                    val_loss += loss.item()
+                    
+                    total += labels.size(0)
+                    correct += (predicted == labels).sum().item()
+            
+            val_accuracy = 100 * correct / total if total > 0 else 0
+            print(f"Reagent Validation Loss: {val_loss/len(reagent_val_loader):.4f}, Accuracy: {val_accuracy:.2f}%")
+            
+            reagent_scheduler.step()
+            
+            # Save the best reagent model
+            if val_accuracy > best_reagent_acc:
+                best_reagent_acc = val_accuracy
+                torch.save(reagent_model.state_dict(), reagent_model_path)
+                print(f"Reagent model saved with accuracy {val_accuracy:.2f}%")
+    
+    # Continue with Stage 2: Binary Classification (Strip vs Non-Strip)
+    print("\n=== Stage 2: Binary Classification (Strip vs Non-Strip) ===")
     
     # Create a binary version of the dataset
     def create_binary_labels(dataset):
@@ -313,22 +466,46 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
             torch.save(binary_model.state_dict(), binary_model_path)
             print(f"Binary model saved with accuracy {val_accuracy:.2f}%")
     
-    print("\n=== Stage 2: Multi-class Classification (All Classes) ===")
+    print("\n=== Stage 3: Multi-class Classification (All Classes) ===")
     
     # Load the best binary model to initialize multi-class model
     model = UNetYOLO(3, NUM_CLASSES, dropout_prob=0.2).to(device)
-    
-    # Transfer weights from binary model to multi-class model
-    # Only transfer feature extraction layers, not the final classification layer
-    binary_state_dict = torch.load(binary_model_path)
     model_state_dict = model.state_dict()
     
-    # Copy matching parameters
-    for name, param in binary_state_dict.items():
-        if name in model_state_dict and "classifier" not in name:
-            if param.shape == model_state_dict[name].shape:
-                model_state_dict[name].copy_(param)
-                print(f"Transferred weights for {name}")
+    # Transfer weights from binary model
+    binary_state_dict = torch.load(binary_model_path)
+    
+    # Also try to load weights from reagent model if available
+    try:
+        if os.path.exists(reagent_model_path):
+            reagent_state_dict = torch.load(reagent_model_path)
+            print("Transferring weights from reagent model...")
+            
+            # First transfer weights from reagent model (for classes 0-9 recognition)
+            for name, param in reagent_state_dict.items():
+                if name in model_state_dict and "classifier" not in name:
+                    if param.shape == model_state_dict[name].shape:
+                        model_state_dict[name].copy_(param)
+                        print(f"Transferred from reagent model: {name}")
+            
+            # Then transfer remaining weights from binary model (strip recognition)
+            for name, param in binary_state_dict.items():
+                if name in model_state_dict and "classifier" not in name and "yolo_head" not in name:
+                    if param.shape == model_state_dict[name].shape:
+                        # Use weighted average for overlapping features
+                        model_state_dict[name].copy_(0.5 * param + 0.5 * model_state_dict[name])
+                        print(f"Merged from binary model: {name}")
+        else:
+            # If reagent model doesn't exist, just use binary model weights
+            print("Reagent model not found, using binary model weights only...")
+            for name, param in binary_state_dict.items():
+                if name in model_state_dict and "classifier" not in name:
+                    if param.shape == model_state_dict[name].shape:
+                        model_state_dict[name].copy_(param)
+                        print(f"Transferred from binary model: {name}")
+    except Exception as e:
+        print(f"Error transferring weights: {e}")
+        print("Starting with fresh weights")
     
     model.load_state_dict(model_state_dict)
     
@@ -603,24 +780,30 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                     new_h, new_w = int(images.shape[2] * scale_factor), int(images.shape[3] * scale_factor)
                     images = F.interpolate(images, size=(new_h, new_w), mode='bilinear', align_corners=False)
                 
-                # Get outputs directly - this will return classification logits
-                # No need for additional pooling since the model already does that
-                outputs = model(images)
+                # Get segmentation maps only
+                segmentation_maps = model(images, segmentation_only=True)
+                segmentation_maps = torch.argmax(segmentation_maps, dim=1).cpu().numpy()
                 
-                # Make sure labels are long type for CrossEntropyLoss
-                labels = labels.long()
+                # Extract features for SVM classification
+                features_list = []
+                for i in range(images.size(0)):
+                    image_np = images[i].permute(1, 2, 0).cpu().numpy()
+                    segmentation_map = segmentation_maps[i]
+                    features = extract_features_from_segmentation(image_np, segmentation_map)
+                    features_list.append(features)
                 
-                # Calculate loss directly with outputs (already pooled inside model)
-                loss = criterion(outputs, labels)
-                test_loss += loss.item()
+                features = np.array(features_list)
+                features_scaled = scaler.transform(features)
+                
+                # Predict using SVM
+                predictions = svm_model.predict(features_scaled)
                 
                 # Calculate accuracy
-                _, predicted = torch.max(outputs, 1)
                 test_total += labels.size(0)
-                test_correct += (predicted == labels).sum().item()
+                test_correct += (predictions == labels.cpu().numpy()).sum()
                 
                 # Free memory
-                del images, labels, outputs, predicted, loss
+                del images, labels, segmentation_maps, features, features_scaled, predictions
                 torch.cuda.empty_cache()
             
             except RuntimeError as e:
@@ -634,7 +817,6 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
     
     test_accuracy = 100 * test_correct / test_total if test_total > 0 else 0
     print(f"\nTest Set Results:")
-    print(f"Average Loss: {test_loss/len(test_loader):.4f}")
     print(f"Accuracy: {test_accuracy:.2f}%")
     
     # Clear final memory before returning
