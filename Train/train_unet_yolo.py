@@ -68,8 +68,33 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
     print(f"Computed class weights: {class_weights}")
     print(f"Number of classes: {NUM_CLASSES}")
 
+    # Check class distribution in train dataset
+    train_labels = [label for _, label in train_dataset]
+    label_counts = {i: train_labels.count(i) for i in range(NUM_CLASSES)}
+    print(f"Training set class distribution:")
+    for class_id, count in label_counts.items():
+        class_name = CLASS_NAMES.get(class_id, f"Class-{class_id}")
+        print(f"  Class {class_id} ({class_name}): {count} samples ({count/len(train_labels)*100:.2f}%)")
+    
+    # Calculate class weights based on inverse frequency
+    total_samples = len(train_dataset)
+    class_weights = []
+    for class_id in range(NUM_CLASSES):
+        count = label_counts.get(class_id, 0)
+        if count > 0:
+            # Inverse frequency weighting with smoothing
+            weight = 1.0 / (count / total_samples)
+            # Cap weights to avoid extreme values
+            weight = min(weight, 10.0)
+        else:
+            weight = 1.0
+        class_weights.append(weight)
+    
+    class_weights_tensor = torch.tensor(class_weights, device=device)
+    print(f"Class weights: {class_weights_tensor}")
+
     # Model initialization with memory optimization
-    model = UNetYOLO(3, NUM_CLASSES, dropout_prob=0.3).to(device)  # Reduced dropout
+    model = UNetYOLO(3, NUM_CLASSES, dropout_prob=0.2).to(device)  # Reduce dropout further
     
     # Test model with a small batch to ensure it works - with error handling
     try:
@@ -95,20 +120,20 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
         print("Adjusting CrossEntropyLoss to use no weights")
         criterion = torch.nn.CrossEntropyLoss(reduction='mean')
     else:
-        # Use CrossEntropyLoss for classification task
+        # Use class weights in loss function to address class imbalance
         criterion = torch.nn.CrossEntropyLoss(
-            weight=class_weights,
-            label_smoothing=0.05,  # Reduced label smoothing
+            weight=class_weights_tensor,  # Use calculated weights
+            label_smoothing=0.05,  # Reduce label smoothing
             reduction='mean'
         )
     
-    # Train the full model from the beginning for better convergence
-    model.train()  # Set the entire model to train mode
+    # Train the entire model from the beginning
+    model.train()
     
-    # Use higher learning rate for better convergence
-    optimizer = AdamW(model.parameters(), lr=1e-4, weight_decay=1e-5)  # Higher learning rate
+    # Use a higher learning rate for faster convergence
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
     scaler = GradScaler()
-    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=2, eta_min=1e-6)  # Adjusted scheduler
+    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2, eta_min=1e-6)
 
     train_losses = []
     val_losses = []
@@ -168,22 +193,27 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                     
                     # Use autocast for mixed precision to fully utilize tensor cores
                     with autocast(device_type="cuda", dtype=torch.float16):
+                        # Get outputs directly from model - no pooling needed now
                         outputs = model(images)
                         
-                        # Global Average Pooling for classification
-                        pooled_outputs = F.adaptive_avg_pool2d(outputs, 1).squeeze(-1).squeeze(-1)
-                        
-                        # DEBUG: Print output for diagnosis
+                        # No need for GAP since the model already does that
+                        # Debug info in first batch
                         if i == 0 and epoch == 0:
                             print(f"Output shape: {outputs.shape}")
-                            print(f"Pooled output shape: {pooled_outputs.shape}")
-                            print(f"Pooled outputs: {pooled_outputs}")
-                            
+                            print(f"Labels shape: {labels.shape}")
+                            print(f"Labels: {labels}")
+                        
                         # Convert labels to long for CrossEntropyLoss
                         labels = labels.long()
                         
-                        # Use cross entropy loss for classification
-                        loss = criterion(pooled_outputs, labels)
+                        # Cross entropy loss for classification
+                        loss = criterion(outputs, labels)
+                        
+                        # Monitor predicted classes during training
+                        if i % 50 == 0:  # Every 50 batches
+                            _, predicted = torch.max(outputs, 1)
+                            accuracy = (predicted == labels).float().mean() * 100
+                            pbar.set_postfix({'batch_acc': f"{accuracy.item():.2f}%"})
                     
                     # Scale loss and backward pass
                     loss = loss / accumulation_steps
@@ -201,7 +231,7 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                         torch.cuda.empty_cache()
                     
                     # Free up memory after each operation
-                    del images, labels, outputs, pooled_outputs
+                    del images, labels, outputs
                     torch.cuda.empty_cache()
                     
                     epoch_loss += loss.item() * accumulation_steps
@@ -228,8 +258,8 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
         val_loss = 0
         correct = 0
         total = 0
-        all_preds = []
-        all_labels = []
+        class_correct = torch.zeros(NUM_CLASSES, device=device)
+        class_total = torch.zeros(NUM_CLASSES, device=device)
         
         model.eval()
         with torch.no_grad():
@@ -244,29 +274,28 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                         new_h, new_w = int(images.shape[2] * scale_factor), int(images.shape[3] * scale_factor)
                         images = F.interpolate(images, size=(new_h, new_w), mode='bilinear', align_corners=False)
                     
+                    # Get outputs directly
                     outputs = model(images)
                     
-                    # Global Average Pooling for classification
-                    pooled_outputs = F.adaptive_avg_pool2d(outputs, 1).squeeze(-1).squeeze(-1)
-                    
-                    # Ensure labels are long tensors for loss calculation
+                    # No pooling needed
                     labels = labels.long()
                     
-                    loss_val = criterion(pooled_outputs, labels)
+                    loss_val = criterion(outputs, labels)
                     val_loss += loss_val.item()
                     
                     # Calculate accuracy
-                    _, predicted = torch.max(pooled_outputs, 1)
-                    
-                    # Collect for confusion matrix
-                    all_preds.extend(predicted.cpu().numpy())
-                    all_labels.extend(labels.cpu().numpy())
-                    
+                    _, predicted = torch.max(outputs, 1)
                     total += labels.size(0)
                     correct += (predicted == labels).sum().item()
                     
+                    # Calculate per-class accuracy
+                    for c in range(NUM_CLASSES):
+                        class_mask = (labels == c)
+                        class_total[c] += class_mask.sum().item()
+                        class_correct[c] += (class_mask & (predicted == c)).sum().item()
+                    
                     # Free memory
-                    del images, labels, outputs, pooled_outputs, predicted, loss_val
+                    del images, labels, outputs, predicted, loss_val
                     torch.cuda.empty_cache()
                 
                 except RuntimeError as e:
@@ -283,27 +312,45 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
         val_accuracy = 100 * correct / max(1, total)  # Avoid division by zero
         val_accuracies.append(val_accuracy)
         
-        # Print confusion matrix every 5 epochs to diagnose classification issues
-        if epoch % 5 == 0 and len(all_preds) > 0:
-            from sklearn.metrics import confusion_matrix
-            cm = confusion_matrix(all_labels, all_preds, labels=list(range(NUM_CLASSES)))
-            print("\nConfusion Matrix:")
-            print(cm)
-            
-            # Calculate and print class-wise accuracy
-            print("\nClass-wise accuracy:")
-            for cls in range(NUM_CLASSES):
-                cls_total = np.sum(np.array(all_labels) == cls)
-                if cls_total > 0:
-                    cls_correct = np.sum((np.array(all_preds) == cls) & (np.array(all_labels) == cls))
-                    print(f"Class {cls}: {100 * cls_correct / cls_total:.2f}% ({cls_correct}/{cls_total})")
-                else:
-                    print(f"Class {cls}: No samples")
+        # Print per-class accuracy for better diagnostics
+        print("\nPer-class validation accuracy:")
+        for c in range(NUM_CLASSES):
+            if class_total[c] > 0:
+                class_acc = 100 * class_correct[c] / class_total[c]
+                print(f"Class {c}: {class_acc:.2f}% ({int(class_correct[c])}/{int(class_total[c])})")
+            else:
+                print(f"Class {c}: No samples")
         
         print(f"Epoch {epoch+1}: Train Loss {avg_loss:.4f}, Val Loss {avg_val_loss:.4f}, Val Accuracy {val_accuracy:.2f}%")
         
         # Adjust learning rate based on validation loss
         scheduler.step(epoch + avg_val_loss)
+
+        # After validation, detect if the model is stuck predicting one class
+        predicted_classes = []
+        with torch.no_grad():
+            for images, _ in val_loader:
+                images = images.to(device)
+                outputs = model(images)
+                _, preds = torch.max(outputs, 1)
+                predicted_classes.extend(preds.cpu().numpy())
+        
+        unique_predictions = set(predicted_classes)
+        if len(unique_predictions) <= 1 and epoch > 5:
+            print(f"WARNING: Model is stuck predicting only {unique_predictions}. Restarting with higher learning rate.")
+            
+            # Re-initialize model if it's stuck
+            del model
+            torch.cuda.empty_cache()
+            
+            # Create new model with different initialization
+            model = UNetYOLO(3, NUM_CLASSES, dropout_prob=0.1).to(device)
+            
+            # Increase learning rate and use different optimizer
+            optimizer = torch.optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
+            
+            # Reset early stopping counter
+            early_stop_counter = 0
 
         # Save the best model based on validation loss to prevent overfitting
         if avg_val_loss < best_loss:
