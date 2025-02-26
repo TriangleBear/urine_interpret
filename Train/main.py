@@ -1,11 +1,11 @@
 import matplotlib.pyplot as plt
-from config import *
+from config import *  # This will now print CUDA info only once
 import numpy as np
 from train_unet_yolo import train_unet_yolo
 from utils import compute_mean_std, dynamic_normalization, post_process_mask
 from datasets import UrineStripDataset, visualize_dataset
 
-if __name__ == "__main__":
+if __name__ == "__main__":  
     # Compute dataset statistics using training dataset
     train_dataset = UrineStripDataset(TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER)
     mean, std = compute_mean_std(train_dataset)

@@ -1,71 +1,216 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from config import NUM_CLASSES
 
-class UNetEncoder(nn.Module):
-    def __init__(self, in_channels, dropout_prob=0.3):
-        super(UNetEncoder, self).__init__()
-        self.enc1 = self.conv_block(in_channels, 32, dropout_prob)
-        self.enc2 = self.conv_block(32, 64, dropout_prob)
-        self.enc3 = self.conv_block(64, 128, dropout_prob)
-        self.enc4 = self.conv_block(128, 256, dropout_prob)
-        self.bottleneck = self.conv_block(256, 512, dropout_prob)
-
-    def conv_block(self, in_channels, out_channels, dropout_prob):
-        return nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
+class DoubleConv(nn.Module):
+    """Standard double convolution block used in UNet."""
+    def __init__(self, in_channels, out_channels, mid_channels=None):
+        super().__init__()
+        if not mid_channels:
+            mid_channels = out_channels
+        self.double_conv = nn.Sequential(
+            nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(mid_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(out_channels),
-            nn.LeakyReLU(negative_slope=0.01, inplace=True),
-            nn.Dropout(p=dropout_prob)
+            nn.ReLU(inplace=True)
         )
 
     def forward(self, x):
-        enc1 = self.enc1(x)
-        enc2 = self.enc2(enc1)
-        enc3 = self.enc3(enc2)
-        enc4 = self.enc4(enc3)
-        bottleneck = self.bottleneck(enc4)
-        return bottleneck, enc1, enc2, enc3, enc4
+        return self.double_conv(x)
 
-class YOLODecoder(nn.Module):
-    def __init__(self, num_classes):
-        super(YOLODecoder, self).__init__()
-        
-        self.upconv1 = self.upconv_block(512 + 256, 256)  # Skip connection with enc4
-        self.upconv2 = self.upconv_block(256 + 128, 128)  # Skip connection with enc3
-        self.upconv3 = self.upconv_block(128 + 64, 64)    # Skip connection with enc2
-        self.upconv4 = self.upconv_block(64 + 32, 32)     # Skip connection with enc1
-        
-        self.final_conv = nn.Conv2d(32, num_classes + 5, kernel_size=1)  # (x, y, w, h, conf) + class scores
-
-    def upconv_block(self, in_channels, out_channels):
-        return nn.Sequential(
-            nn.ConvTranspose2d(in_channels, out_channels, kernel_size=3, stride=2, padding=1, output_padding=1),
-            nn.BatchNorm2d(out_channels),
-            nn.LeakyReLU(0.1, inplace=True)
+class Down(nn.Module):
+    """Downscaling with maxpool then double conv"""
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.maxpool_conv = nn.Sequential(
+            nn.MaxPool2d(2),
+            DoubleConv(in_channels, out_channels)
         )
 
-    def forward(self, x, enc1, enc2, enc3, enc4):
-        x = self.upconv1(torch.cat([x, enc4], dim=1))
-        x = self.upconv2(torch.cat([x, F.interpolate(enc3, size=x.size()[2:], mode='bilinear', align_corners=True)], dim=1))
-        x = self.upconv3(torch.cat([x, F.interpolate(enc2, size=x.size()[2:], mode='bilinear', align_corners=True)], dim=1))
-        x = self.upconv4(torch.cat([x, F.interpolate(enc1, size=x.size()[2:], mode='bilinear', align_corners=True)], dim=1))
-        x = self.final_conv(x)
+    def forward(self, x):
+        return self.maxpool_conv(x)
 
-        # Apply YOLO-style activations
-        x[:, 0:2, :, :] = torch.sigmoid(x[:, 0:2, :, :])  # (x, y) -> range [0,1]
-        x[:, 2:4, :, :] = torch.exp(x[:, 2:4, :, :])      # (w, h) -> positive values
-        x[:, 4:, :, :] = torch.sigmoid(x[:, 4:, :, :])    # (conf + class scores) -> range [0,1]
+class Up(nn.Module):
+    """Upscaling then double conv"""
+    def __init__(self, in_channels, out_channels, bilinear=False):
+        super().__init__()
 
+        # if bilinear, use the normal convolutions to reduce the number of channels
+        if (bilinear):
+            self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+            self.conv = DoubleConv(in_channels, out_channels, in_channels // 2)
+        else:
+            self.up = nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2)
+            self.conv = DoubleConv(in_channels, out_channels)
+
+    def forward(self, x1, x2):
+        x1 = self.up(x1)
+        # input is CHW
+        diffY = x2.size()[2] - x1.size()[2]
+        diffX = x2.size()[3] - x1.size()[3]
+
+        x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2,
+                        diffY // 2, diffY - diffY // 2])
+        x = torch.cat([x2, x1], dim=1)
+        return self.conv(x)
+
+class UNet(nn.Module):
+    def __init__(self, in_channels, out_channels, bilinear=False, dropout_prob=0.5):
+        super(UNet, self).__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.bilinear = bilinear
+        
+        # Initialize with lower number of features to save memory
+        factor = 2 if bilinear else 1
+        
+        # Encoder path
+        self.inc = DoubleConv(in_channels, 64)
+        self.down1 = Down(64, 128)
+        self.down2 = Down(128, 256)
+        self.down3 = Down(256, 512)
+        self.down4 = Down(512, 1024 // factor)
+        
+        # Dropout for regularization
+        self.dropout = nn.Dropout2d(p=dropout_prob)
+        
+        # Decoder path with skip connections
+        self.up1 = Up(1024, 512 // factor, bilinear)
+        self.up2 = Up(512, 256 // factor, bilinear)
+        self.up3 = Up(256, 128 // factor, bilinear)
+        self.up4 = Up(128, 64, bilinear)
+        
+        # Output layer
+        self.outc = nn.Conv2d(64, out_channels, kernel_size=1)
+        
+        # Initialize weights to avoid exploding losses
+        self._init_weights()
+    
+    def _init_weights(self):
+        """Initialize model weights for stable training."""
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.ConvTranspose2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        # Store features from encoder path for skip connections
+        x1 = self.inc(x)
+        x2 = self.down1(x1)
+        x3 = self.down2(x2)
+        x4 = self.down3(x3)
+        x5 = self.down4(x4)
+        
+        # Apply dropout at the bottleneck
+        x5 = self.dropout(x5)
+        
+        # Decoder path with skip connections
+        x = self.up1(x5, x4)
+        x = self.up2(x, x3)
+        x = self.up3(x, x2)
+        x = self.up4(x, x1)
+        
+        # Final output layer
+        x = self.outc(x)
+        
         return x
 
-class UNetYOLO(nn.Module):
-    def __init__(self, in_channels, num_classes, dropout_prob=0.3):
-        super(UNetYOLO, self).__init__()
-        self.encoder = UNetEncoder(in_channels, dropout_prob)
-        self.decoder = YOLODecoder(num_classes)
-
+class YOLOHead(nn.Module):
+    """YOLO-style detection head to apply on top of UNet features."""
+    def __init__(self, in_channels, num_classes):
+        super(YOLOHead, self).__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channels, in_channels*2, kernel_size=3, padding=1),
+            nn.BatchNorm2d(in_channels*2),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Dropout2d(0.2),
+            nn.Conv2d(in_channels*2, in_channels*2, kernel_size=3, padding=1),
+            nn.BatchNorm2d(in_channels*2),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Conv2d(in_channels*2, num_classes, kernel_size=1)
+        )
+        
+        # Add global average pooling for better classification
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(num_classes, num_classes)
+        )
+        
+        # Initialize weights with Kaiming initialization
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu', a=0.2)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+    
     def forward(self, x):
-        bottleneck, enc1, enc2, enc3, enc4 = self.encoder(x)
-        output = self.decoder(bottleneck, enc1, enc2, enc3, enc4)
-        return output  # YOLO-style detection output
+        features = self.conv(x)
+        # Return segmentation features (not using classifier here)
+        return features
+
+class UNetYOLO(nn.Module):
+    """Combined UNet with YOLO detection head."""
+    def __init__(self, in_channels, out_channels, dropout_prob=0.5):
+        super(UNetYOLO, self).__init__()
+        self.unet = UNet(in_channels, 64, bilinear=False, dropout_prob=dropout_prob)
+        self.yolo_head = YOLOHead(64, out_channels)
+        
+        # Add batch normalization and additional classifier
+        self.bn = nn.BatchNorm2d(64)
+        
+        # Add a classifier head specific for reagent pad classification
+        self.classifier = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Dropout(0.3),
+            nn.Linear(64, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
+            nn.Linear(128, out_channels)
+        )
+        
+        self._init_weights()
+    
+    def _init_weights(self):
+        # More careful initialization for better convergence
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
+    
+    def forward(self, x):
+        # Get UNet features
+        features = self.unet(x)
+        features = self.bn(features)
+        
+        # Get YOLO head output for segmentation
+        yolo_output = self.yolo_head(features)
+        
+        # Use the classifier for the final class prediction
+        # This is essential for achieving better accuracy
+        # class_output = self.classifier(features)
+        
+        # Return segmentation output only
+        return yolo_output

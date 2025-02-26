@@ -8,51 +8,72 @@ from PIL import Image
 import cv2
 import matplotlib.pyplot as plt
 import torchvision.transforms as T
-
+from config import NUM_CLASSES, IMAGE_SIZE
 
 class UrineStripDataset(Dataset):
-    def __init__(self, image_dir, mask_dir):
+    def __init__(self, image_dir, mask_dir, transform=None):
         self.image_dir = image_dir
         self.mask_dir = mask_dir
         self.images = sorted([f for f in os.listdir(image_dir) if f.endswith(('.png', '.jpg', '.jpeg'))])
+        self.transform = transform
         
-        # Standard transforms
-        self.transform = T.Compose([
-            T.Resize((224, 224)),
-            T.ToTensor(),
-        ])
+        # Default transform if none provided
+        if self.transform is None:
+            self.transform = T.Compose([
+                T.Resize(IMAGE_SIZE),
+                T.ToTensor(),
+            ])
     
     def __len__(self):
-        return len(self.images)  # Return the number of images
-
+        return len(self.images)
     
     def __getitem__(self, idx):
         img_name = self.images[idx]
         img_path = os.path.join(self.image_dir, img_name)
         
-        # Extract class label from the corresponding mask file
-        mask_path = os.path.join(self.mask_dir, img_name.replace('.jpg', '.txt').replace('.png', '.txt').replace('.jpeg', '.txt'))
-        if os.path.exists(mask_path):
-            with open(mask_path, 'r') as f:
-                lines = f.readlines()
-                if lines:
-                    # Assuming the first line contains the class ID
-                    label = int(lines[0].strip().split()[0])
-                else:
-                    label = 0  # Default to class 0 if no lines are found
-                # Ensure label is within valid range
-                if label < 1 or label > 11:
-                    label = 0  # Default to class 0 if label is out of range
-
-        else:
-            label = 0  # Default to class 0 if mask file does not exist
-
-
-        # Load and transform image
+        # Load image
         image = Image.open(img_path).convert('RGB')
-        image = self.transform(image)
         
-        return image, label
+        # Get base name without extension for finding corresponding label file
+        base_name = os.path.splitext(img_name)[0]
+        label_path = os.path.join(self.mask_dir, f"{base_name}.txt")
+        
+        # Check if label file exists and parse it
+        if os.path.exists(label_path):
+            # Parse YOLO format labels
+            with open(label_path, 'r') as f:
+                lines = f.readlines()
+            
+            # If there are any labels, use the first one's class ID as the image label
+            if lines:
+                try:
+                    # YOLO format: class_id x_center y_center width height
+                    first_line = lines[0].strip().split()
+                    label = int(first_line[0])  # Get the class ID
+                except (IndexError, ValueError):
+                    print(f"Warning: Invalid label format in {label_path}")
+                    label = 0  # Default to class 0 if format is invalid
+            else:
+                label = 0  # Default to class 0 if no labels
+        else:
+            # If no label file, try to extract from filename (fallback)
+            try:
+                # Assuming filename format: class_X_Y.jpg where X is class ID
+                label = int(img_name.split('_')[1])
+            except (IndexError, ValueError):
+                print(f"Warning: No label file found for {img_name}")
+                label = 0  # Default to class 0
+        
+        # Ensure label is within valid range
+        if label < 0 or label >= NUM_CLASSES:
+            print(f"Warning: Label {label} out of valid range [0, {NUM_CLASSES-1}]")
+            label = 0  # Default to class 0 if out of range
+        
+        # Transform image
+        image_tensor = self.transform(image)
+        
+        # Return both the image tensor and single class label
+        return image_tensor, label
 
     def _create_mask_from_yolo(self, txt_path, image_size=(256, 256)):
         mask = np.zeros(image_size, dtype=np.uint8)
@@ -76,6 +97,13 @@ class UrineStripDataset(Dataset):
                     polygon_points = polygon_points.astype(np.int32)
                     cv2.fillPoly(mask, [polygon_points], class_id)
 
+        # Comment out the mask visualization
+        # if self.visualization_count < 5:
+        #     plt.imshow(mask, cmap='gray')
+        #     plt.title("YOLO Mask")
+        #     plt.show()
+        #     self.visualization_count += 1
+        
         return mask
 
 # Add a function to visualize the dataset

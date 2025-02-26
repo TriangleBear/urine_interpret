@@ -115,10 +115,29 @@ def extract_features_and_labels(dataset, unet_model):
                 np.sum(class_pred > 0.5)  # Area of high confidence predictions
             ])
         
+        # Handle polygon-shaped bounding boxes for class ID 10
+        if label == 10:
+            polygon_features = extract_polygon_features(image_np, pred_np, class_idx)
+            features.extend(polygon_features)
+        
         features_list.append(features)
         labels_list.append(label)
     
     return np.array(features_list, dtype=np.float32), np.array(labels_list, dtype=np.int32)
+
+def extract_polygon_features(image, mask, class_id):
+    """Extract features for polygon-shaped bounding boxes."""
+    binary_mask = (mask == class_id).astype(np.uint8) * 255
+    contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    features = []
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        region = image[y:y+h, x:x+w]
+        features.append(region.mean(axis=(0, 1)))  # Mean color in the region
+    if features:
+        return np.mean(features, axis=0)  # Average features across all polygons
+    else:
+        return np.zeros(3)  # Return zeros if no polygons are found
 
 def post_process_mask(mask):
     # Apply morphological operations to remove noise and fill gaps
@@ -140,18 +159,24 @@ def compute_class_weights(dataset):
     """Compute class weights for the dataset."""
     labels_list = []
     for _, label in dataset:
+        # Ensure label is a single integer and within the range [0, NUM_CLASSES-1]
+        if isinstance(label, (list, tuple, np.ndarray, torch.Tensor)):
+            label = int(label[0]) if len(label) > 0 else 0
+        else:
+            label = int(label)
+        if label < 0 or label >= NUM_CLASSES:
+            raise ValueError(f"Label {label} is out of range [0, {NUM_CLASSES-1}]")
         labels_list.append(label)
+    
     labels = np.array(labels_list)
-    class_counts = np.bincount(labels, minlength=NUM_CLASSES)  # Use NUM_CLASSES directly
-
-
+    class_counts = np.bincount(labels, minlength=NUM_CLASSES)
     total_samples = len(dataset)
     if total_samples == 0:
         raise ValueError("Dataset is empty.")
     # Avoid division by zero
-    class_weights = total_samples / (NUM_CLASSES * np.where(class_counts == 0, 1, class_counts))  # Use NUM_CLASSES directly
-
-
-    class_weights_tensor = torch.tensor(class_weights, dtype=torch.float32).to(device)
-
+    class_weights = total_samples / (NUM_CLASSES * np.where(class_counts == 0, 1, class_counts))
+    class_weights_tensor = torch.tensor(class_weights, dtype=torch.float).to(device)
+    # Ensure the class weights tensor has the correct shape
+    if class_weights_tensor.shape[0] != NUM_CLASSES:
+        raise ValueError(f"Expected class weights tensor of shape ({NUM_CLASSES},) but got {class_weights_tensor.shape}")
     return class_weights_tensor
