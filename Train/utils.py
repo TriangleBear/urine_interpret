@@ -180,3 +180,37 @@ def compute_class_weights(dataset):
     if class_weights_tensor.shape[0] != NUM_CLASSES:
         raise ValueError(f"Expected class weights tensor of shape ({NUM_CLASSES},) but got {class_weights_tensor.shape}")
     return class_weights_tensor
+
+def extract_features_from_segmentation(image, segmentation_map):
+    """Extract features from segmentation map for SVM classification."""
+    features = []
+    
+    # Get unique classes in the segmentation map
+    unique_classes = np.unique(segmentation_map)
+    
+    # For each class, extract region properties
+    for class_id in range(NUM_CLASSES):
+        # Create binary mask for this class
+        class_mask = (segmentation_map == class_id)
+        
+        # Skip if class not present
+        if not class_mask.any():
+            # Add zeros for absent classes
+            features.extend([0, 0, 0, 0, 0, 0])
+            continue
+            
+        # Calculate region properties
+        # 1. Area ratio (area of class / total area)
+        area_ratio = np.sum(class_mask) / segmentation_map.size
+        features.append(area_ratio)
+        
+        # 3. Mean position (center of mass)
+        y_indices, x_indices = np.where(class_mask)
+        if len(y_indices) > 0 and len(x_indices) > 0:
+            mean_y = np.mean(y_indices) / segmentation_map.shape[0]
+            mean_x = np.mean(x_indices) / segmentation_map.shape[1]
+            features.extend([mean_y, mean_x])
+        else:
+            features.extend([0, 0])
+    
+    return np.array(features, dtype=np.float32)
