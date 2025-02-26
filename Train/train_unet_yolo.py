@@ -603,21 +603,24 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                     new_h, new_w = int(images.shape[2] * scale_factor), int(images.shape[3] * scale_factor)
                     images = F.interpolate(images, size=(new_h, new_w), mode='bilinear', align_corners=False)
                 
+                # Get outputs directly - this will return classification logits
+                # No need for additional pooling since the model already does that
                 outputs = model(images)
                 
-                # Global Average Pooling for classification
-                pooled_outputs = F.adaptive_avg_pool2d(outputs, 1).squeeze(-1).squeeze(-1)
+                # Make sure labels are long type for CrossEntropyLoss
+                labels = labels.long()
                 
-                loss = criterion(pooled_outputs, labels)
+                # Calculate loss directly with outputs (already pooled inside model)
+                loss = criterion(outputs, labels)
                 test_loss += loss.item()
                 
                 # Calculate accuracy
-                _, predicted = torch.max(pooled_outputs, 1)
+                _, predicted = torch.max(outputs, 1)
                 test_total += labels.size(0)
                 test_correct += (predicted == labels).sum().item()
                 
                 # Free memory
-                del images, labels, outputs, pooled_outputs, predicted, loss
+                del images, labels, outputs, predicted, loss
                 torch.cuda.empty_cache()
             
             except RuntimeError as e:
