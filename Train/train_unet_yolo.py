@@ -15,7 +15,7 @@ from config import get_model_folder
 import gc
 import os
 
-def train_unet_yolo(batch_size=1, accumulation_steps=64, patience=PATIENCE, pre_trained_weights=None):
+def train_unet_yolo(batch_size=1, accumulation_steps=32, patience=PATIENCE, pre_trained_weights=None):  # Reduced accumulation steps
     # Set environment variables for memory management
     os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:64'
     
@@ -34,21 +34,21 @@ def train_unet_yolo(batch_size=1, accumulation_steps=64, patience=PATIENCE, pre_
     # Create data loaders with memory optimizations
     train_loader = DataLoader(
         train_dataset, 
-        batch_size=1,  # Set batch size to 1 to manage memory effectively
+        batch_size=1,  # Set batch size to 1 consistently for memory management
         shuffle=True, 
-        num_workers=1,  # Reduced workers
+        num_workers=0,  # Set workers to 0 to reduce memory overhead
         pin_memory=False
     )
     val_loader = DataLoader(
         val_dataset, 
         batch_size=1, 
-        num_workers=1, 
+        num_workers=0, 
         pin_memory=False
     )
     test_loader = DataLoader(
         test_dataset, 
         batch_size=1, 
-        num_workers=1, 
+        num_workers=0, 
         pin_memory=False
     )
 
@@ -138,7 +138,7 @@ def train_unet_yolo(batch_size=1, accumulation_steps=64, patience=PATIENCE, pre_
                     
                     if (i + 1) % accumulation_steps == 0:
                         scaler.step(optimizer)
-                        scaler.update()
+                        scaler.update()  # Ensure update is called after step
                         optimizer.zero_grad(set_to_none=True)
                         torch.cuda.empty_cache()
                     
@@ -162,7 +162,7 @@ def train_unet_yolo(batch_size=1, accumulation_steps=64, patience=PATIENCE, pre_
         train_losses.append(avg_loss)
         print(f"Epoch {epoch+1} Train Loss: {avg_loss:.4f}")
 
-        # Validation with memory optimization to prevent out-of-memory errors
+        # Validation with memory optimization to handle OOM
 
         val_loss = 0
         correct = 0
