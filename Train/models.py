@@ -173,25 +173,24 @@ class UNetYOLO(nn.Module):
         # Add batch normalization after UNet for better stability
         self.bn = nn.BatchNorm2d(64)
         
-        # Improved classifier with batch norm and better architecture
-        self.classifier = nn.Sequential(
+        # Improved feature extractor with proper handling for single batch items
+        self.feature_extractor = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
             nn.Linear(64, 128),
-            nn.BatchNorm1d(128),
+            # Replace BatchNorm1d with LayerNorm which works with any batch size
+            nn.LayerNorm(128),
             nn.ReLU(inplace=True),
             nn.Dropout(dropout_prob),
-            nn.Linear(128, 64),
-            nn.BatchNorm1d(64),
-            nn.ReLU(inplace=True),
-            nn.Linear(64, out_channels),
         )
         
-        # Apply special initialization to final layer to prevent initial bias
+        # Final classification layer
+        self.classifier = nn.Linear(128, out_channels)
+        
+        # Apply special initialization to final layer
         with torch.no_grad():
-            # Initialize the final layer with zeros to start from a neutral position
-            nn.init.zeros_(self.classifier[-1].weight)
-            nn.init.zeros_(self.classifier[-1].bias)
+            nn.init.zeros_(self.classifier.weight)
+            nn.init.zeros_(self.classifier.bias)
         
         self._init_weights()
     
@@ -215,7 +214,10 @@ class UNetYOLO(nn.Module):
         features = self.unet(x)
         features = self.bn(features)
         
-        # Use dedicated classifier for classification task
-        # This is the key change - actually use the classifier
-        # instead of adapting the segmentation output
-        return self.classifier(features)
+        # Extract features first
+        extracted = self.feature_extractor(features)
+        
+        # Final classification
+        logits = self.classifier(extracted)
+        
+        return logits
