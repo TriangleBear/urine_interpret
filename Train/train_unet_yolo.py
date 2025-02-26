@@ -133,7 +133,9 @@ def train_unet_yolo(batch_size=1, accumulation_steps=64, patience=PATIENCE, pre_
                     scaler.scale(loss).backward()
                     
                     # Gradient clipping
-                    scaler.unscale_(optimizer)
+                    if scaler.get_scale() != 1.0:
+                        scaler.unscale_(optimizer)
+
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
                     
                     if (i + 1) % accumulation_steps == 0:
@@ -142,7 +144,8 @@ def train_unet_yolo(batch_size=1, accumulation_steps=64, patience=PATIENCE, pre_
                         optimizer.zero_grad(set_to_none=True)
                         torch.cuda.empty_cache()
                     
-                    # Free up memory after each operation
+                        # Free up memory after processing
+
                     del images, labels, outputs, pooled_outputs
                     torch.cuda.empty_cache()
                     
