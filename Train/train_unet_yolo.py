@@ -14,6 +14,9 @@ from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 import gc
 import os
 
+# Adding CLASS_NAMES definition at the module level (first line of code in the file)
+CLASS_NAMES = {0: 'Bilirubin', 1: 'Blood', 2: 'Glucose', 3: 'Ketone', 4: 'Leukocytes', 5: 'Nitrite', 6: 'Protein', 7: 'SpGravity', 8: 'Urobilinogen', 9: 'pH', 10: 'strip'}
+
 # Configure CUDA for maximum performance
 torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.enabled = True
@@ -155,6 +158,184 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
         print(f"Warning: Model warm-up failed: {e}")
         # Continue anyway
     
+    # Two-stage training: first binary (strip vs non-strip), then multi-class
+    print("\n=== Stage 1: Binary Classification (Strip vs Non-Strip) ===")
+    
+    # Create a binary version of the dataset
+    def create_binary_labels(dataset):
+        binary_dataset = []
+        for image, label in dataset:
+            # Convert to binary: 0 for reagent pads (classes 0-9), 1 for strip (class 10)
+            binary_label = 1 if label == 10 else 0
+            binary_dataset.append((image, binary_label))
+        return binary_dataset
+    
+    binary_train_dataset = create_binary_labels(train_dataset)
+    binary_val_dataset = create_binary_labels(val_dataset)
+    
+    # Create new data loaders for binary classification
+    binary_train_loader = DataLoader(
+        binary_train_dataset, 
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=2,
+        pin_memory=True,
+        persistent_workers=True
+    )
+    binary_val_loader = DataLoader(
+        binary_val_dataset, 
+        batch_size=batch_size,
+        num_workers=2,
+        pin_memory=True,
+        persistent_workers=True
+    )
+    
+    # Create binary model (2 output classes: non-strip and strip)
+    binary_model = UNetYOLO(3, 2, dropout_prob=0.2).to(device)
+    
+    # Simple CrossEntropyLoss for binary classification
+    binary_criterion = torch.nn.CrossEntropyLoss()
+    
+    # Use higher learning rate for binary task
+    binary_optimizer = torch.optim.Adam(binary_model.parameters(), lr=0.001)
+    binary_scheduler = CosineAnnealingWarmRestarts(binary_optimizer, T_0=5, T_mult=2, eta_min=1e-6)
+    binary_scaler = GradScaler()
+    
+    # Train binary model for fewer epochs
+    binary_epochs = 20
+    best_binary_acc = 0.0
+    binary_model_path = os.path.join(model_folder, "binary_model.pt")
+    
+    for epoch in range(binary_epochs):
+        # Training
+        binary_model.train()
+        epoch_loss = 0
+        binary_optimizer.zero_grad(set_to_none=True)
+        
+        with tqdm(total=len(binary_train_loader), desc=f"Binary Training Epoch {epoch+1}") as pbar:
+            for i, (images, labels) in enumerate(binary_train_loader):
+                try:
+                    images = images.to(device, non_blocking=True)
+                    labels = labels.to(device, non_blocking=True)
+                    
+                    # Apply normalization
+                    if torch.max(images) > 1.0:
+                        images = images / 255.0
+                    images = dynamic_normalization(images)
+                    
+                    # Resize images if needed
+                    if images.shape[2] > max_size or images.shape[3] > max_size:
+                        scale_factor = max_size / max(images.shape[2], images.shape[3])
+                        new_h, new_w = int(images.shape[2] * scale_factor), int(images.shape[3] * scale_factor)
+                        images = F.interpolate(images, size=(new_h, new_w), mode='bilinear', align_corners=False)
+                    
+                    with autocast(device_type="cuda", dtype=torch.float16):
+                        outputs = binary_model(images)
+                        labels = labels.long()
+                        loss = binary_criterion(outputs, labels)
+                    
+                    loss = loss / accumulation_steps
+                    binary_scaler.scale(loss).backward()
+                    
+                    if (i + 1) % accumulation_steps == 0:
+                        binary_scaler.unscale_(binary_optimizer)
+                        torch.nn.utils.clip_grad_norm_(binary_model.parameters(), max_norm=0.5)
+                        binary_scaler.step(binary_optimizer)
+                        binary_scaler.update()
+                        binary_optimizer.zero_grad(set_to_none=True)
+                    
+                    # Display batch accuracy
+                    if i % 10 == 0:
+                        _, predicted = torch.max(outputs, 1)
+                        accuracy = (predicted == labels).float().mean() * 100
+                        pbar.set_postfix({'batch_acc': f"{accuracy.item():.2f}%"})
+                    
+                    epoch_loss += loss.item() * accumulation_steps
+                    pbar.update(1)
+                
+                except RuntimeError as e:
+                    if "out of memory" in str(e):
+                        print(f"OOM error in batch {i}, skipping...")
+                        torch.cuda.empty_cache()
+                    else:
+                        raise e
+        
+        avg_loss = epoch_loss / len(binary_train_loader)
+        print(f"Binary Epoch {epoch+1} Train Loss: {avg_loss:.4f}")
+        
+        # Validation
+        binary_model.eval()
+        val_correct = 0
+        val_total = 0
+        strip_correct = 0
+        strip_total = 0
+        nonstrip_correct = 0
+        nonstrip_total = 0
+        
+        with torch.no_grad():
+            for images, labels in tqdm(binary_val_loader, desc="Binary Validation"):
+                images = images.to(device, non_blocking=True)
+                labels = labels.to(device, non_blocking=True)
+                
+                outputs = binary_model(images)
+                _, predicted = torch.max(outputs, 1)
+                
+                val_total += labels.size(0)
+                val_correct += (predicted == labels).sum().item()
+                
+                # Separate accuracy for strip vs non-strip
+                strip_mask = (labels == 1)
+                nonstrip_mask = (labels == 0)
+                
+                strip_total += strip_mask.sum().item()
+                nonstrip_total += nonstrip_mask.sum().item()
+                
+                strip_correct += (strip_mask & (predicted == 1)).sum().item()
+                nonstrip_correct += (nonstrip_mask & (predicted == 0)).sum().item()
+        
+        val_accuracy = 100 * val_correct / val_total if val_total > 0 else 0
+        strip_accuracy = 100 * strip_correct / strip_total if strip_total > 0 else 0
+        nonstrip_accuracy = 100 * nonstrip_correct / nonstrip_total if nonstrip_total > 0 else 0
+        
+        print(f"Binary Validation Accuracy: {val_accuracy:.2f}%")
+        print(f"  - Strip Class: {strip_accuracy:.2f}% ({strip_correct}/{strip_total})")
+        print(f"  - Non-Strip Classes: {nonstrip_accuracy:.2f}% ({nonstrip_correct}/{nonstrip_total})")
+        
+        binary_scheduler.step()
+        
+        # Save best binary model
+        if val_accuracy > best_binary_acc:
+            best_binary_acc = val_accuracy
+            torch.save(binary_model.state_dict(), binary_model_path)
+            print(f"Binary model saved with accuracy {val_accuracy:.2f}%")
+    
+    print("\n=== Stage 2: Multi-class Classification (All Classes) ===")
+    
+    # Load the best binary model to initialize multi-class model
+    model = UNetYOLO(3, NUM_CLASSES, dropout_prob=0.2).to(device)
+    
+    # Transfer weights from binary model to multi-class model
+    # Only transfer feature extraction layers, not the final classification layer
+    binary_state_dict = torch.load(binary_model_path)
+    model_state_dict = model.state_dict()
+    
+    # Copy matching parameters
+    for name, param in binary_state_dict.items():
+        if name in model_state_dict and "classifier" not in name:
+            if param.shape == model_state_dict[name].shape:
+                model_state_dict[name].copy_(param)
+                print(f"Transferred weights for {name}")
+    
+    model.load_state_dict(model_state_dict)
+    
+    # Use a slightly smaller learning rate for fine-tuning
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.0003)
+    
+    # Resume with normal training for all classes
+    scaler = GradScaler()
+    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2, eta_min=1e-6)
+
+    # Continue with the rest of the training as before
     for epoch in range(NUM_EPOCHS):  # Start training loop
 
         # Clear memory at the start of each epoch to prevent OOM
