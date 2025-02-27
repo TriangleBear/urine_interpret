@@ -44,11 +44,18 @@ class UrineStripDataset(Dataset):
         # Convert mask to tensor
         mask_tensor = torch.from_numpy(mask).long()
         
+        # Extract class label from mask
+        label = torch.unique(mask_tensor)
+        if len(label) == 1:
+            label = label.item()
+        else:
+            label = 10  # Default to strip class if multiple labels are found
+        
         # Print the first few samples for debugging
         if idx < 5:
-            print(f"Sample {idx}: {img_name} -> Mask {os.path.splitext(img_name)[0] + '.txt'}")
+            print(f"Sample {idx}: {img_name} -> Mask {os.path.splitext(img_name)[0] + '.txt'} -> Label {label}")
         
-        return image_tensor, mask_tensor
+        return image_tensor, label
 
     def _create_mask_from_yolo(self, txt_path, image_size=(256, 256)):
         mask = np.zeros(image_size, dtype=np.uint8)
