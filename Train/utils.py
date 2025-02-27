@@ -10,14 +10,26 @@ import torchvision.transforms as T
 from scipy import stats
 
 def compute_mean_std(dataset):
+    # Check if the dataset is empty
+    if len(dataset) == 0:
+        raise ValueError("Dataset is empty.")
+
     loader = torch.utils.data.DataLoader(dataset, batch_size=64, shuffle=False)
+    
+    # Verify image sizes
+    expected_size = (3, IMAGE_SIZE[0], IMAGE_SIZE[1])  # Assuming images are in (C, H, W) format
+
     mean = 0.
     std = 0.
     total_images = len(loader.dataset)
     if total_images == 0:
         raise ValueError("Dataset is empty.")
     for images, _ in loader:
+        if images.size() != expected_size:
+            raise ValueError(f"Image size {images.size()} does not match expected size {expected_size}.")
+        
         batch_samples = images.size(0)
+
         images = images.view(batch_samples, images.size(1), -1)
         mean += images.mean(2).sum(0)
         std += images.std(2).sum(0)
