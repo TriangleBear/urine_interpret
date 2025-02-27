@@ -134,18 +134,7 @@ class YOLOHead(nn.Module):
             nn.Conv2d(in_channels, in_channels*2, kernel_size=3, padding=1),
             nn.BatchNorm2d(in_channels*2),
             nn.LeakyReLU(0.1, inplace=True),
-            nn.Dropout2d(0.2),
-            nn.Conv2d(in_channels*2, in_channels*2, kernel_size=3, padding=1),
-            nn.BatchNorm2d(in_channels*2),
-            nn.LeakyReLU(0.1, inplace=True),
             nn.Conv2d(in_channels*2, num_classes, kernel_size=1)
-        )
-        
-        # Add global average pooling for better classification
-        self.gap = nn.AdaptiveAvgPool2d(1)
-        self.classifier = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(num_classes, num_classes)
         )
         
         # Initialize weights with Kaiming initialization
@@ -160,7 +149,6 @@ class YOLOHead(nn.Module):
     
     def forward(self, x):
         features = self.conv(x)
-        # Return segmentation features (not using classifier here)
         return features
 
 class UNetYOLO(nn.Module):
@@ -169,31 +157,17 @@ class UNetYOLO(nn.Module):
         super(UNetYOLO, self).__init__()
         self.unet = UNet(in_channels, 64, bilinear=False, dropout_prob=dropout_prob)
         
+        # Expose decoder layers
+        self.decoder = nn.ModuleList([self.unet.up1, self.unet.up2, self.unet.up3, self.unet.up4])
+        
         # Add batch normalization after UNet for better stability
         self.bn = nn.BatchNorm2d(64)
         
         # YOLO head for segmentation
         self.yolo_head = YOLOHead(64, out_channels)
         
-        # Feature extractor for classification that comes after segmentation
-        self.feature_extractor = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-            nn.Linear(64, 128),
-            nn.LayerNorm(128),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout_prob),
-        )
-        
-        # Final classification layer applied at the end
-        self.classifier = nn.Linear(128, out_channels)
-        
-        # Apply balanced initialization
-        with torch.no_grad():
-            nn.init.zeros_(self.classifier.weight)
-            self.classifier.bias.data.fill_(0.0)
-        
         self._init_weights()
+
     
     def _init_weights(self):
         # More careful initialization for better convergence
@@ -210,15 +184,7 @@ class UNetYOLO(nn.Module):
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
     
-    def forward(self, x, return_segmentation=False, segmentation_only=False):
-        """
-        Forward pass with options for different outputs.
-        
-        Args:
-            x: Input tensor
-            return_segmentation: If True, return both classification and segmentation
-            segmentation_only: If True, only perform segmentation (skips classification)
-        """
+    def forward(self, x):
         # Get UNet features
         features = self.unet(x)
         features = self.bn(features)
@@ -226,17 +192,4 @@ class UNetYOLO(nn.Module):
         # Get segmentation map from YOLO head
         segmentation_map = self.yolo_head(features)
         
-        # If only segmentation is needed, return early
-        if segmentation_only:
-            return segmentation_map
-        
-        # Extract features for classification (done last)
-        extracted = self.feature_extractor(features)
-        
-        # Final classification logits
-        logits = self.classifier(extracted)
-        
-        if return_segmentation:
-            return logits, segmentation_map
-        else:
-            return logits
+        return segmentation_map
