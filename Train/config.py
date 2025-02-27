@@ -74,6 +74,8 @@ NUM_EPOCHS = 100
 PATIENCE = 15
 IMAGE_SIZE = (224, 224)
 
+# New Learning Rate
+LEARNING_RATE = 1e-4  # Adjusted learning rate
 # Memory Management - safer approach
 torch.cuda.empty_cache()
 
