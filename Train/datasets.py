@@ -1,4 +1,3 @@
-# datasets.py
 import os
 import numpy as np
 import torch
@@ -17,12 +16,16 @@ class UrineStripDataset(Dataset):
         self.images = sorted([f for f in os.listdir(image_dir) if f.endswith(('.png', '.jpg', '.jpeg'))])
         self.transform = transform
         
-        # Default transform if none provided
+        # Default transform if none provided, ensuring images and masks are resized to 256x256
         if self.transform is None:
             self.transform = T.Compose([
-                T.Resize(IMAGE_SIZE),
+                T.Resize((256, 256)),
                 T.ToTensor(),
             ])
+        self.mask_transform = T.Compose([
+            T.Resize((256, 256), interpolation=Image.NEAREST),
+            T.ToTensor()
+        ])
     
     def __len__(self):
         return len(self.images)
@@ -38,25 +41,29 @@ class UrineStripDataset(Dataset):
         # Load mask
         mask = self._create_mask_from_yolo(mask_path)
         
-        # Apply transform if provided
+        # Resize mask to match expected image size
+        mask = Image.fromarray(mask)
+        mask = self.mask_transform(mask)
+        mask = mask.squeeze(0).numpy()  # Remove channel dimension added by T.ToTensor()
+
+        # Apply transform to the image
         image_tensor = self.transform(image)
-        
-        # Convert mask to tensor
-        mask_tensor = torch.from_numpy(mask).long()
-        
+
+        # Convert mask to tensor and add channel dimension
+        mask_tensor = torch.from_numpy(mask).unsqueeze(0).long()  # Ensure mask has a channel dimension
+
         # Extract class label from mask
         label = torch.unique(mask_tensor)
         if len(label) == 1:
             label = label.item()
         else:
-            label = torch.unique(mask_tensor).tolist()  # Return all unique labels
-
+            label = 10  # Default to strip class if multiple labels are found
         
-        # Debugging: Print the loaded image and label information
-        print(f"Loaded image: {img_name}, Label: {label}")
+        # Check if image and mask sizes match
+        if image_tensor.size(1) != mask_tensor.size(1) or image_tensor.size(2) != mask_tensor.size(2):
+            raise ValueError(f"Image size {image_tensor.size()} does not match mask size {mask_tensor.size()}. Expected mask size: ({image_tensor.size(1)}, {image_tensor.size(2)})")
         
         return image_tensor, label
-
 
     def _create_mask_from_yolo(self, txt_path, image_size=(256, 256)):
         mask = np.zeros(image_size, dtype=np.uint8)
