@@ -79,6 +79,11 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
         class_name = CLASS_NAMES.get(class_id, f"Class-{class_id}")
         print(f"  Class {class_id} ({class_name}): {count} samples ({count/len(train_labels)*100:.2f}%)")
     
+    # Debugging: Print the first few samples to verify labels
+    for i in range(min(5, len(train_dataset))):
+        image, label = train_dataset[i]
+        print(f"Sample {i}: Label {label}")
+    
     # Calculate class weights based on inverse frequency
     total_samples = len(train_dataset)
     class_weights = []
