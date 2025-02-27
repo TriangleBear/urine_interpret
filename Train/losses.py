@@ -16,13 +16,15 @@ def fix_target_indices(targets, num_classes):
         Tensor with indices clamped to valid range
     """
     if targets.max() >= num_classes:
-        print(f"Fixing invalid target indices: max value {targets.max().item()} >= {num_classes}")
+    # print(f"Fixing invalid target indices: max value {targets.max().item()} >= {num_classes}")
+
         # Option 1: Clamp to the last valid class
         targets = torch.clamp(targets, 0, num_classes-1)
         
         # Option 2: Use a mapping approach for better debugging
         value_counts = torch.bincount(targets.flatten())
-        print(f"Value counts after clamping: {value_counts}")
+    # print(f"Value counts after clamping: {value_counts}")
+
     
     return targets
 
@@ -104,7 +106,8 @@ def focal_loss(outputs, targets, alpha=0.25, gamma=2, max_size=512):
         targets = targets.unsqueeze(1).unsqueeze(2).unsqueeze(3)
     
     # Debug info
-    print(f"Targets shape before processing: {targets.shape}")
+    # print(f"Targets shape before processing: {targets.shape}")
+
     
     # Handle polygon-shaped bounding boxes for class 10
     if targets.dim() == 4 and targets.shape[1] == 1 and targets[0, 0, 0, 0] == 10:
@@ -126,14 +129,16 @@ def focal_loss(outputs, targets, alpha=0.25, gamma=2, max_size=512):
         targets = new_targets
     
     # Debug info
-    print(f"Targets shape after processing: {targets.shape}")
+    # print(f"Targets shape after processing: {targets.shape}")
+
     
     # Resize targets to match outputs size
     if targets.shape[2:] != outputs.shape[2:]:
         targets = F.interpolate(targets.float(), size=outputs.shape[2:], mode='nearest').long()
     
     # Debug info
-    print(f"Targets shape before one-hot: {targets.shape}")
+    # print(f"Targets shape before one-hot: {targets.shape}")
+
     
     # Fix any invalid target indices
     targets = fix_target_indices(targets, outputs.shape[1])
@@ -143,7 +148,8 @@ def focal_loss(outputs, targets, alpha=0.25, gamma=2, max_size=512):
     targets_one_hot = F.one_hot(targets.long(), num_classes=outputs.shape[1]).permute(0, 3, 1, 2).float()
     
     # Debug info
-    print(f"Outputs shape: {outputs.shape}, Targets one-hot shape: {targets_one_hot.shape}")
+    # print(f"Outputs shape: {outputs.shape}, Targets one-hot shape: {targets_one_hot.shape}")
+
     
     # Compute Focal Loss in batches to save memory
     batch_size = outputs.shape[0]
