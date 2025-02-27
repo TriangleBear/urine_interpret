@@ -49,9 +49,14 @@ class UrineStripDataset(Dataset):
         if len(label) == 1:
             label = label.item()
         else:
-            label = 10  # Default to strip class if multiple labels are found
+            label = torch.unique(mask_tensor).tolist()  # Return all unique labels
+
+        
+        # Debugging: Print the loaded image and label information
+        print(f"Loaded image: {img_name}, Label: {label}")
         
         return image_tensor, label
+
 
     def _create_mask_from_yolo(self, txt_path, image_size=(256, 256)):
         mask = np.zeros(image_size, dtype=np.uint8)
@@ -138,16 +143,16 @@ class RandomTrainTransformations:
     def __init__(self, mean, std):
         self.joint_transform = transforms.Compose([
             RandomFlip(horizontal=True, vertical=True),
-            RandomRotation(degrees=45),  # Increase rotation range
-            RandomAffine(translate=(0.5, 0.5)),  # Increase translation range
+            RandomRotation(degrees=30),  # Reduced rotation range
+            RandomAffine(translate=(0.1, 0.1)),  # Reduced translation range
         ])
         self.image_transform = transforms.Compose([
-            transforms.RandomResizedCrop(256, scale=(0.4, 1.0)),  # Increase scale range
-            transforms.ColorJitter(brightness=0.9, contrast=0.9, saturation=0.9, hue=0.5),  # Adjust hue range
-            transforms.RandomAffine(degrees=120, translate=(0.5, 0.5), scale=(0.4, 1.6), shear=40),  # Increase affine range
-            transforms.RandomGrayscale(p=0.5),  # Increase grayscale probability
+            transforms.RandomResizedCrop(256, scale=(0.6, 1.0)),  # Adjusted scale range
+            transforms.ColorJitter(brightness=0.8, contrast=0.8, saturation=0.8, hue=0.3),  # Adjusted hue range
+            transforms.RandomAffine(degrees=30, translate=(0.1, 0.1), scale=(0.8, 1.2), shear=10),  # Reduced affine range
+            transforms.RandomGrayscale(p=0.3),  # Adjusted grayscale probability
             transforms.ToTensor(),
-            transforms.RandomErasing(p=0.6, scale=(0.02, 0.1), ratio=(0.3, 3.3)),  # Increase erasing probability
+            transforms.RandomErasing(p=0.5, scale=(0.02, 0.1), ratio=(0.3, 3.3)),  # Adjusted erasing probability
             transforms.Normalize(mean=mean, std=std)
         ])
         self.mask_transform = transforms.Compose([
