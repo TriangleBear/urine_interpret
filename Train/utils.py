@@ -155,8 +155,8 @@ def train_svm_classifier(features, labels):
 def save_svm_model(svm_model, filename):
     joblib.dump(svm_model, filename)
 
-def compute_class_weights(dataset):
-    """Compute class weights for the dataset."""
+def compute_class_weights(dataset, max_weight=10.0):
+    """Compute class weights for the dataset and clip to a maximum value."""
     labels_list = []
     for _, label in dataset:
         # Ensure label is a single integer and within the range [0, NUM_CLASSES-1]
@@ -177,6 +177,7 @@ def compute_class_weights(dataset):
         raise ValueError("Dataset is empty.")
     # Avoid division by zero
     class_weights = total_samples / (NUM_CLASSES * np.where(class_counts == 0, 1, class_counts))
+    class_weights = np.clip(class_weights, 0, max_weight)  # Clip weights to a maximum value
     class_weights_tensor = torch.tensor(class_weights, dtype=torch.float).to(device)
     # Ensure the class weights tensor has the correct shape
     if class_weights_tensor.shape[0] != NUM_CLASSES:
