@@ -51,10 +51,6 @@ class UrineStripDataset(Dataset):
         else:
             label = 10  # Default to strip class if multiple labels are found
         
-        # Print the first few samples for debugging
-        if idx < 5:
-            print(f"Sample {idx}: {img_name} -> Mask {os.path.splitext(img_name)[0] + '.txt'} -> Label {label}")
-        
         return image_tensor, label
 
     def _create_mask_from_yolo(self, txt_path, image_size=(256, 256)):
