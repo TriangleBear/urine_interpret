@@ -133,12 +133,12 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
         with tqdm(total=len(train_loader), desc=f"Training Epoch {epoch+1}") as pbar:
             for i, (images, labels) in enumerate(train_loader):
                 try:
-                # Check if labels are empty and skip the batch if so
                     if labels.numel() == 0:
                         print(f"Skipping batch {i} due to empty labels.")
                         continue
                 
-                # Move to GPU and free CPU memory
+                    # Move to GPU and free CPU memory
+                    print(f"Batch {i}: images shape before moving to GPU: {images.shape}, labels shape: {labels.shape}")
 
                     images = images.to(device, non_blocking=True)
                     labels = labels.to(device, non_blocking=True)
@@ -167,6 +167,9 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                         loss_ce = criterion_ce(pooled_outputs, labels)  # Use pooled_outputs directly for loss
                         loss_dice = criterion_dice(outputs, labels)  # Use original outputs for dice loss
                         loss = loss_ce + loss_dice
+
+                        # Debugging: Print loss values
+                        print(f"Batch {i}: loss_ce: {loss_ce.item()}, loss_dice: {loss_dice.item()}, total_loss: {loss.item()}")
                     
                     # Scale loss and backward pass
                     loss = loss / accumulation_steps
@@ -182,7 +185,7 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                         torch.cuda.empty_cache()
                     
                     # Free up memory after each operation
-                    del images, labels, outputs
+                    del images, labels, outputs, pooled_outputs
                     torch.cuda.empty_cache()
                     
                     epoch_loss += loss.item() * accumulation_steps
@@ -229,6 +232,9 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                     
                     loss_val = criterion_ce(pooled_outputs, labels)  # Use pooled_outputs directly for loss
                     val_loss += loss_val.item()
+                    
+                    # Debugging: Print validation loss
+                    print(f"Validation Batch: loss_val: {loss_val.item()}")
                     
                     # Calculate accuracy
                     _, predicted = torch.max(pooled_outputs, 1)  # Use pooled_outputs directly for accuracy
