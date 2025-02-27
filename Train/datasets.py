@@ -30,44 +30,25 @@ class UrineStripDataset(Dataset):
     def __getitem__(self, idx):
         img_name = self.images[idx]
         img_path = os.path.join(self.image_dir, img_name)
+        mask_path = os.path.join(self.mask_dir, os.path.splitext(img_name)[0] + '.txt')
         
         # Load image
         image = Image.open(img_path).convert('RGB')
         
-        # Extract class from filename directly
-        # Format could be: class_X.jpg or IMG_XXXX.jpg
-        try:
-            # First try to extract using underscore pattern (class_X.jpg)
-            parts = os.path.splitext(img_name)[0].split('_')
-            if len(parts) >= 2 and parts[0].lower() == "class":
-                # Format: class_X.jpg
-                label = int(parts[1])
-            elif len(parts) >= 2 and parts[0] == "IMG":
-                # Format: IMG_XXXX.jpg - these appear to be getting misinterpreted
-                # For IMG_XXXX files, default to strip (class 10)
-                label = 10
-            else:
-                # Default to strip class (10) if can't extract
-                label = 10
-        except ValueError:
-            # Default to strip class (10) for any parsing errors
-            label = 10
+        # Load mask
+        mask = self._create_mask_from_yolo(mask_path)
         
         # Apply transform if provided
         image_tensor = self.transform(image)
         
-        # Ensure label is in valid range
-        if label < 0 or label >= NUM_CLASSES:
-            # Only print warning if not an IMG_ file (to reduce noise)
-            if not img_name.startswith("IMG_"):
-                print(f"Warning: Invalid label {label} for {img_name}, defaulting to 10")
-            label = 10
+        # Convert mask to tensor
+        mask_tensor = torch.from_numpy(mask).long()
         
         # Print the first few samples for debugging
         if idx < 5:
-            print(f"Sample {idx}: {img_name} -> Class {label}")
+            print(f"Sample {idx}: {img_name} -> Mask {os.path.splitext(img_name)[0] + '.txt'}")
         
-        return image_tensor, label
+        return image_tensor, mask_tensor
 
     def _create_mask_from_yolo(self, txt_path, image_size=(256, 256)):
         mask = np.zeros(image_size, dtype=np.uint8)
@@ -91,13 +72,6 @@ class UrineStripDataset(Dataset):
                     polygon_points = polygon_points.astype(np.int32)
                     cv2.fillPoly(mask, [polygon_points], class_id)
 
-        # Comment out the mask visualization
-        # if self.visualization_count < 5:
-        #     plt.imshow(mask, cmap='gray')
-        #     plt.title("YOLO Mask")
-        #     plt.show()
-        #     self.visualization_count += 1
-        
         return mask
 
 # Add a function to visualize the dataset
