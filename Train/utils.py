@@ -160,7 +160,9 @@ def compute_class_weights(dataset):
     labels_list = []
     for _, label in dataset:
         # Ensure label is a single integer and within the range [0, NUM_CLASSES-1]
-        if isinstance(label, (list, tuple, np.ndarray, torch.Tensor)):
+        if isinstance(label, torch.Tensor):
+            label = label.item()
+        elif isinstance(label, (list, tuple, np.ndarray)):
             label = int(label[0]) if len(label) > 0 else 0
         else:
             label = int(label)
