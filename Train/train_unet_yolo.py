@@ -309,8 +309,15 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                     total += labels.size(0)
                     correct += (predicted == labels).sum().item()
             
-            val_accuracy = 100 * correct / total if total > 0 else 0
-            print(f"Reagent Validation Loss: {val_loss/len(reagent_val_loader):.4f}, Accuracy: {val_accuracy:.2f}%")
+            # Ensure we don't divide by zero
+            if len(reagent_val_loader) > 0:
+                val_accuracy = 100 * correct / total if total > 0 else 0
+                avg_val_loss = val_loss / len(reagent_val_loader)
+                print(f"Reagent Validation Loss: {avg_val_loss:.4f}, Accuracy: {val_accuracy:.2f}%")
+            else:
+                val_accuracy = 0
+                avg_val_loss = 0
+                print("Reagent Validation: No samples available for validation.")
             
             reagent_scheduler.step()
             
