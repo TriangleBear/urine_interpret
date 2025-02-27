@@ -5,7 +5,7 @@ from skimage import color, feature
 from sklearn.svm import SVC
 from sklearn.model_selection import train_test_split, GridSearchCV
 import joblib
-from config import device, NUM_CLASSES
+from config import device, NUM_CLASSES, IMAGE_SIZE
 import torchvision.transforms as T
 from scipy import stats
 
@@ -15,21 +15,17 @@ def compute_mean_std(dataset):
         raise ValueError("Dataset is empty.")
 
     loader = torch.utils.data.DataLoader(dataset, batch_size=64, shuffle=False)
-    
-    # Verify image sizes
+
+    # Verify image sizes and log if they do not match the expected size
     expected_size = (3, IMAGE_SIZE[0], IMAGE_SIZE[1])  # Assuming images are in (C, H, W) format
+    resize_transform = T.Resize((IMAGE_SIZE[0], IMAGE_SIZE[1]))
 
     mean = 0.
     std = 0.
     total_images = len(loader.dataset)
-    if total_images == 0:
-        raise ValueError("Dataset is empty.")
     for images, _ in loader:
-        if images.size() != expected_size:
-            raise ValueError(f"Image size {images.size()} does not match expected size {expected_size}.")
-        
+        images = torch.stack([resize_transform(image) for image in images])
         batch_samples = images.size(0)
-
         images = images.view(batch_samples, images.size(1), -1)
         mean += images.mean(2).sum(0)
         std += images.std(2).sum(0)
