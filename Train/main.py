@@ -13,8 +13,11 @@ if __name__ == "__main__":
     
     # Visualize the training dataset
     
+    # Path to pre-trained weights
+    pre_trained_weights = r"D:\Programming\urine_interpret\models\weights.pt"
+    
     # Train UNetYOLO
-    result = train_unet_yolo()
+    result = train_unet_yolo(pre_trained_weights=pre_trained_weights)
     if result is None:
         print("Training was not completed due to an error.")
     else:
