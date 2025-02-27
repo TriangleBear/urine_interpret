@@ -155,7 +155,7 @@ def train_svm_classifier(features, labels):
 def save_svm_model(svm_model, filename):
     joblib.dump(svm_model, filename)
 
-def compute_class_weights(dataset, max_weight=10.0):
+def compute_class_weights(dataset, max_weight=20.0):
     """Compute class weights for the dataset and clip to a maximum value."""
     labels_list = []
     for _, label in dataset:
@@ -175,6 +175,8 @@ def compute_class_weights(dataset, max_weight=10.0):
     total_samples = len(dataset)
     if total_samples == 0:
         raise ValueError("Dataset is empty.")
+    # Print class counts for debugging
+    print(f"Class counts: {class_counts}")
     # Avoid division by zero
     class_weights = total_samples / (NUM_CLASSES * np.where(class_counts == 0, 1, class_counts))
     class_weights = np.clip(class_weights, 0, max_weight)  # Clip weights to a maximum value
