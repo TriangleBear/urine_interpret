@@ -41,7 +41,6 @@ if __name__ == "__main__":
         plt.plot(epochs_range, val_accuracies, label='Validation Accuracy')
         plt.xlabel('Epochs')
         plt.ylabel('Accuracy (%)')
-        plt.legend()
         plt.title('Validation Accuracy')
         
         # Add final test accuracy
