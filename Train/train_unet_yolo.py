@@ -78,16 +78,25 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
 
     # Analyze the dataset to understand class distribution
     class_counts = {}
-    for _, label in train_dataset:
+    for i in range(NUM_CLASSES):
+        class_counts[i] = 0  # Initialize all classes
+        
+    for _, label, _ in train_dataset:
         label_val = label.item() if isinstance(label, torch.Tensor) else label
         class_counts[label_val] = class_counts.get(label_val, 0) + 1
     
     # Identify missing classes and log the distribution
-
-    missing_classes = [i for i in range(NUM_CLASSES) if i not in class_counts or class_counts[i] == 0]
+    missing_classes = [i for i in range(NUM_CLASSES) if class_counts[i] == 0]
     if missing_classes:
         print(f"WARNING: Classes {missing_classes} have no samples in the training data.")
-        print("The model cannot learn to recognize these classes.")
+        print("The model may not learn to recognize these classes effectively.")
+        
+        # Option 1: Continue with missing classes, using default weights
+        print("Continuing training with default weights for missing classes.")
+        
+        # Option 2: Generate synthetic data for missing classes (commented out)
+        # print("Generating synthetic samples for missing classes...")
+        # Implement synthetic data generation here if needed
     
     # Standard multiclass approach using CrossEntropyLoss with class weights
     print(f"Using class weights: {class_weights[:NUM_CLASSES]}")
@@ -148,8 +157,9 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
         epoch_loss = 0
         optimizer.zero_grad(set_to_none=True)
 
+        # Training loop - update to unpack 3 values instead of 2
         with tqdm(total=len(train_loader), desc=f"Training Epoch {epoch+1}") as pbar:
-            for i, (images, labels) in enumerate(train_loader):
+            for i, (images, labels, _) in enumerate(train_loader):  # Added _ to unpack class_distribution
                 try:
                     if labels.numel() == 0:
                         print(f"Skipping batch {i} due to empty labels.")
@@ -222,8 +232,9 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
         class_correct = {i: 0 for i in range(NUM_CLASSES)}
         class_total = {i: 0 for i in range(NUM_CLASSES)}
         
+        # Validation with memory optimization - update to unpack 3 values 
         with torch.no_grad():
-            for images, labels in tqdm(val_loader, desc="Validation"):
+            for images, labels, _ in tqdm(val_loader, desc="Validation"):  # Added _ to unpack class_distribution
                 try:
                     images = images.to(device, non_blocking=True)
                     labels = labels.to(device, non_blocking=True)
@@ -286,9 +297,10 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
 
     test_total = 0
     
+    # Test loop - update to unpack 3 values
     print("\nEvaluating on test set...")
     with torch.no_grad():
-        for images, labels in tqdm(test_loader, desc="Testing"):
+        for images, labels, _ in tqdm(test_loader, desc="Testing"):  # Added _ to unpack class_distribution
             try:
                 images = images.to(device, non_blocking=True)
                 labels = labels.to(device, non_blocking=True)
@@ -332,10 +344,9 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
     
     # Create a confusion matrix at the end of training to analyze performance
     print("\nGenerating final confusion matrix...")
-    confmat = torch.zeros(NUM_CLASSES, NUM_CLASSES, dtype=torch.int64)
-    model.eval()
+    # Confusion matrix generation - update to unpack 3 values
     with torch.no_grad():
-        for images, labels in tqdm(val_loader, desc="Confusion Matrix"):
+        for images, labels, _ in tqdm(val_loader, desc="Confusion Matrix"):  # Added _ to unpack class_distribution
             images = images.to(device)
             labels = labels.to(device)
             outputs = model(images)
