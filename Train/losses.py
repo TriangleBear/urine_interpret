@@ -86,6 +86,16 @@ def dice_loss(outputs, targets, smooth=1e-6, max_size=512):
     return dice_sum / batch_size
 
 def focal_loss(outputs, targets, alpha=0.25, gamma=2, max_size=512):
+    """
+    Compute focal loss for multi-class segmentation with support for class indices.
+    
+    Args:
+        outputs: Model predictions [B, C, H, W]
+        targets: Ground truth labels [B] or [B, H, W]
+        alpha: Weighting factor for rare classes
+        gamma: Focusing parameter
+        max_size: Maximum size for resizing to save memory
+    """
     # Resize outputs to save memory if necessary
     original_size = outputs.shape[2:]
     if outputs.shape[2] > max_size or outputs.shape[3] > max_size:
@@ -93,84 +103,48 @@ def focal_loss(outputs, targets, alpha=0.25, gamma=2, max_size=512):
         new_h, new_w = int(outputs.shape[2] * scale_factor), int(outputs.shape[3] * scale_factor)
         outputs = F.interpolate(outputs, size=(new_h, new_w), mode='bilinear', align_corners=False)
     
-    # Handle target dimensions
-    if targets.dim() == 5:
-        targets = targets.squeeze(1)
-    elif targets.dim() == 2:  
-        batch_size = outputs.shape[0]
-        height, width = outputs.shape[2], outputs.shape[3]
-        targets = targets.view(batch_size, height, width)
-    elif targets.dim() == 3:
-        targets = targets.unsqueeze(1)
-    elif targets.dim() == 1:
-        targets = targets.unsqueeze(1).unsqueeze(2).unsqueeze(3)
-    
-    # Debug info
-    # print(f"Targets shape before processing: {targets.shape}")
-
-    
-    # Handle polygon-shaped bounding boxes for class 10
-    if targets.dim() == 4 and targets.shape[1] == 1 and targets[0, 0, 0, 0] == 10:
-        # Process polygon-shaped bounding boxes
-        batch_size = outputs.shape[0]
-        height, width = outputs.shape[2], outputs.shape[3]
-        polygon_targets = targets.view(batch_size, -1, 2)
-        new_targets = torch.zeros((batch_size, 1, height, width), dtype=torch.long, device=targets.device)
-        
-        for i in range(batch_size):
-            polygon_points = polygon_targets[i].cpu().detach().numpy().reshape(-1, 2)
-            polygon_points[:, 0] *= width
-            polygon_points[:, 1] *= height
-            polygon_points = polygon_points.astype(np.int32)
-            mask = np.zeros((height, width), dtype=np.uint8)
-            cv2.fillPoly(mask, [polygon_points], 10)
-            new_targets[i, 0] = torch.from_numpy(mask).to(targets.device)
-        
-        targets = new_targets
-    
-    # Debug info
-    # print(f"Targets shape after processing: {targets.shape}")
-
-    
-    # Resize targets to match outputs size
-    if targets.shape[2:] != outputs.shape[2:]:
-        targets = F.interpolate(targets.float(), size=outputs.shape[2:], mode='nearest').long()
-    
-    # Debug info
-    # print(f"Targets shape before one-hot: {targets.shape}")
-
-    
-    # Fix any invalid target indices
-    targets = fix_target_indices(targets, outputs.shape[1])
-    
-    # Convert to one-hot encoding more efficiently
-    targets = targets.squeeze(1)  # Remove channel dim for one-hot
-    targets_one_hot = F.one_hot(targets.long(), num_classes=outputs.shape[1]).permute(0, 3, 1, 2).float()
-    
-    # Debug info
-    # print(f"Outputs shape: {outputs.shape}, Targets one-hot shape: {targets_one_hot.shape}")
-
-    
-    # Compute Focal Loss in batches to save memory
+    # Get dimensions
     batch_size = outputs.shape[0]
-    loss_sum = 0
+    num_classes = outputs.shape[1]
+    height, width = outputs.shape[2], outputs.shape[3]
     
-    for i in range(batch_size):
-        # Process one sample at a time
-        output_i = outputs[i:i+1]
-        target_i = targets_one_hot[i:i+1]
+    # Handle target dimensions - support both segmentation masks and class indices
+    if targets.dim() == 1:  # [B] - class indices
+        # Convert class indices to one-hot encoded format
+        targets_one_hot = F.one_hot(targets, num_classes=num_classes).float()  # [B, C]
         
-        bce_loss = F.binary_cross_entropy_with_logits(output_i, target_i, reduction='none')
-        pt = torch.exp(-bce_loss)
-        focal_loss_i = (alpha * (1 - pt) ** gamma * bce_loss).mean()
-        loss_sum += focal_loss_i
+        # Compute binary cross entropy loss
+        outputs_pooled = F.adaptive_avg_pool2d(outputs, 1).squeeze(-1).squeeze(-1)  # [B, C]
+        bce_loss = F.binary_cross_entropy_with_logits(outputs_pooled, targets_one_hot, reduction='none')
         
-        # Clean up to save memory
-        del output_i, target_i, bce_loss, pt, focal_loss_i
+    else:  # Handle segmentation masks [B, H, W] or [B, 1, H, W]
+        # Handle 3D or 4D targets
+        if targets.dim() == 4:  # [B, 1, H, W]
+            targets = targets.squeeze(1)  # Convert to [B, H, W]
+        
+        # Resize targets to match outputs size if needed
+        if targets.shape[1:] != outputs.shape[2:]:
+            targets = F.interpolate(targets.unsqueeze(1).float(), size=outputs.shape[2:], mode='nearest').squeeze(1).long()
+        
+        # Fix any invalid target indices
+        targets = fix_target_indices(targets, num_classes)
+        
+        # Convert to one-hot encoding
+        targets_one_hot = F.one_hot(targets, num_classes=num_classes).permute(0, 3, 1, 2).float()  # [B, C, H, W]
+        
+        # Compute binary cross entropy loss per pixel
+        bce_loss = F.binary_cross_entropy_with_logits(outputs, targets_one_hot, reduction='none')
+        bce_loss = bce_loss.mean(dim=(2, 3))  # Average over spatial dimensions
+    
+    # Apply focal loss weighting
+    pt = torch.exp(-bce_loss)
+    focal_loss = alpha * (1 - pt) ** gamma * bce_loss
+    
+    # Average over batch and classes
+    focal_loss = focal_loss.mean()
     
     # Clean up memory
-    del outputs, targets, targets_one_hot
     torch.cuda.empty_cache()
     gc.collect()
     
-    return loss_sum / batch_size
+    return focal_loss
