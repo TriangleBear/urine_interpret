@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 from config import *  # This will now print CUDA info only once
 import numpy as np
 from train_unet_yolo import train_unet_yolo
-from utils import compute_mean_std, dynamic_normalization, post_process_mask
+from utils import compute_mean_std, dynamic_normalization, post_process_mask, post_process_segmentation
 from datasets import UrineStripDataset, visualize_dataset
 
 if __name__ == "__main__":  
@@ -60,6 +60,10 @@ if __name__ == "__main__":
                 images = images.unsqueeze(0).to(device)
                 images = dynamic_normalization(images)
                 outputs = unet_model(images)
-                predicted_mask = torch.argmax(outputs, dim=1).squeeze(0).cpu().numpy()
+                
+                # Use layered post-processing for better visualization
+                processed_outputs = post_process_segmentation(outputs, apply_layering=True)
+                predicted_mask = processed_outputs.squeeze(0).cpu().numpy()
+                
                 refined_mask = post_process_mask(predicted_mask)
                 cv2.imwrite(f"refined_mask_{i}.png", refined_mask)
