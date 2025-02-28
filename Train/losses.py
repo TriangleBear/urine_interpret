@@ -79,36 +79,54 @@ def dice_loss(outputs, targets, smooth=1e-6, max_size=512):
     # Fix any invalid target indices
     targets = fix_target_indices(targets, outputs.shape[1])
     
-    # Convert to one-hot encoding
-    targets_one_hot = F.one_hot(targets.long(), num_classes=outputs.shape[1]).permute(0, 3, 1, 2).float()
+    # Add an optimization for when targets are one-hot
+    if isinstance(targets, torch.Tensor) and targets.dim() == 2 and targets.shape[1] > 1:
+        # If targets are already one-hot encoded (B, C)
+        targets_one_hot = targets  # Use directly
+    else:
+        # Handle conversion as before
+        targets_one_hot = F.one_hot(targets.long(), num_classes=outputs.shape[1]).permute(0, 3, 1, 2).float()
     
-    # Compute dice loss in batches to save memory
-    batch_size = outputs.shape[0]
-    dice_sum = 0
-    
-    for i in range(batch_size):
-        # Process one sample at a time
-        output_i = outputs[i:i+1]
-        target_i = targets_one_hot[i:i+1]
-        
-        # Apply sigmoid to convert logits to probabilities (autocast safe)
-        probs_i = torch.sigmoid(output_i)
-        
-        intersection = (probs_i * target_i).sum(dim=(2,3))
-        union = probs_i.sum(dim=(2,3)) + target_i.sum(dim=(2,3))
-        dice_i = 1 - (2 * intersection + smooth) / (union + smooth)
-        dice_sum += dice_i.mean()
-        
-        # Clean up to save memory
-        del output_i, target_i, probs_i, intersection, union, dice_i
-    
-    # Clean up memory
-    del outputs, targets, targets_one_hot
-    torch.cuda.empty_cache()
-    gc.collect()
-    
-    return dice_sum / batch_size if batch_size > 0 else torch.tensor(0.0, device='cuda')
+    # Use vectorized operations when possible
+    with torch.no_grad():
+        # If the batch is small enough, process all at once
+        if outputs.shape[0] <= 2:  # For very small batches
+            # Apply sigmoid to convert logits to probabilities (autocast safe)
+            probs = torch.sigmoid(outputs)
+            
+            intersection = (probs * targets_one_hot).sum(dim=(2,3))
+            union = probs.sum(dim=(2,3)) + targets_one_hot.sum(dim=(2,3))
+            dice = 1 - (2 * intersection + smooth) / (union + smooth)
+            return dice.mean()
+        else:
+            # Otherwise, process batch by batch as before
+            batch_size = outputs.shape[0]
+            dice_sum = 0
+            
+            for i in range(batch_size):
+                # Process one sample at a time
+                output_i = outputs[i:i+1]
+                target_i = targets_one_hot[i:i+1]
+                
+                # Apply sigmoid to convert logits to probabilities (autocast safe)
+                probs_i = torch.sigmoid(output_i)
+                
+                intersection = (probs_i * target_i).sum(dim=(2,3))
+                union = probs_i.sum(dim=(2,3)) + target_i.sum(dim=(2,3))
+                dice_i = 1 - (2 * intersection + smooth) / (union + smooth)
+                dice_sum += dice_i.mean()
+                
+                # Clean up to save memory
+                del output_i, target_i, probs_i, intersection, union, dice_i
+            
+            # Clean up memory
+            del outputs, targets, targets_one_hot
+            torch.cuda.empty_cache()
+            gc.collect()
+            
+            return dice_sum / batch_size if batch_size > 0 else torch.tensor(0.0, device='cuda')
 
+# More optimized focal loss with better memory usage
 def focal_loss(outputs, targets, alpha=0.25, gamma=2, max_size=512):
     """
     Compute focal loss for multi-class segmentation with support for class indices.
@@ -149,6 +167,20 @@ def focal_loss(outputs, targets, alpha=0.25, gamma=2, max_size=512):
         # Compute binary cross entropy loss
         outputs_pooled = F.adaptive_avg_pool2d(outputs, 1).squeeze(-1).squeeze(-1)  # [B, C]
         bce_loss = F.binary_cross_entropy_with_logits(outputs_pooled, targets_one_hot, reduction='none')
+        
+        # Replace the main calculation with a more memory-efficient version
+        if targets.dim() == 1:  # [B] - class indices (one label per image)
+            # Gather only the relevant logits for each target
+            # This avoids computing unnecessary probabilities for all classes
+            batch_indices = torch.arange(batch_size, device=outputs.device)
+            logits_for_targets = outputs_pooled[batch_indices, targets]
+            
+            # Focal loss for the target class only
+            pt = torch.sigmoid(-logits_for_targets)  # Probability of being the target
+            focal = alpha * (1 - pt) ** gamma * F.binary_cross_entropy_with_logits(
+                logits_for_targets, torch.ones_like(logits_for_targets))
+                
+            return focal.mean()
         
     else:  # Handle segmentation masks [B, H, W] or [B, 1, H, W]
         # Handle 3D or 4D targets
