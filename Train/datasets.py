@@ -132,8 +132,8 @@ class UrineStripDataset(Dataset):
         unique_classes = np.unique(mask)
         if len(unique_classes) == 0:
             print(f"Warning: No classes found in {os.path.basename(txt_path)}")
-        elif len(unique_classes) > 5:  # Only log if there are unusually many classes
-            print(f"Classes found in {os.path.basename(txt_path)}: {unique_classes}")
+        # elif len(unique_classes) > 5:  # Only log if there are unusually many classes
+        #     print(f"Classes found in {os.path.basename(txt_path)}: {unique_classes}")
         
         # Optionally filter mask for target classes
         if target_classes is not None:

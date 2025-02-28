@@ -86,13 +86,13 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
         class_counts[label_val] = class_counts.get(label_val, 0) + 1
     
     # Identify missing classes and log the distribution
-    missing_classes = [i for i in range(NUM_CLASSES) if class_counts[i] == 0]
-    if missing_classes:
-        print(f"WARNING: Classes {missing_classes} have no samples in the training data.")
-        print("The model may not learn to recognize these classes effectively.")
+    # missing_classes = [i for i in range(NUM_CLASSES) if class_counts[i] == 0]
+    # if missing_classes:
+    #     print(f"WARNING: Classes {missing_classes} have no samples in the training data.")
+    #     print("The model may not learn to recognize these classes effectively.")
         
-        # Option 1: Continue with missing classes, using default weights
-        print("Continuing training with default weights for missing classes.")
+    #     # Option 1: Continue with missing classes, using default weights
+    #     print("Continuing training with default weights for missing classes.")
         
         # Option 2: Generate synthetic data for missing classes (commented out)
         # print("Generating synthetic samples for missing classes...")
