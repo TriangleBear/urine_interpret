@@ -178,7 +178,7 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                         if not torch.all(background_mask):
                             try:
                                 # Wrap these in try-except - if they fail, fallback to CE loss only
-                                with autocast(enabled=False):  # Temporarily disable autocast for dice_loss
+                                with autocast(device_type="cuda"):  # Temporarily disable autocast for dice_loss
                                     loss_dice = criterion_dice(outputs, labels)
                                     loss_focal = focal_loss(outputs, labels, gamma=2.0)
                                 
@@ -233,9 +233,9 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
         class_correct = {i: 0 for i in range(NUM_CLASSES)}
         class_total = {i: 0 for i in range(NUM_CLASSES)}
         
-        # Validation with memory optimization - update to unpack 3 values 
+        # Validation with memory optimization - update to use layered post-processing
         with torch.no_grad():
-            for images, labels, _ in tqdm(val_loader, desc="Validation"):  # Added _ to unpack class_distribution
+            for images, labels, _ in tqdm(val_loader, desc="Validation"):
                 try:
                     images = images.to(device, non_blocking=True)
                     labels = labels.to(device, non_blocking=True)
@@ -248,13 +248,16 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                     
                     outputs = model(images)
                     
+                    # Apply post-processing that respects class hierarchy
+                    processed_outputs = post_process_segmentation(outputs, apply_layering=True)
+                    
                     # Global Average Pooling for classification
                     pooled_outputs = F.adaptive_avg_pool2d(outputs, 1).squeeze(-1).squeeze(-1)
                     
                     loss_val = criterion_ce(pooled_outputs, labels)
                     val_loss += loss_val.item()
                     
-                    # Calculate accuracy
+                    # Calculate accuracy using hierarchical predictions
                     _, predicted = torch.max(pooled_outputs, 1)
                     total += labels.size(0)
                     correct += (predicted == labels).sum().item()

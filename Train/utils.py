@@ -152,6 +152,49 @@ def post_process_mask(mask, kernel_size=3):
     
     return mask_cleaned
 
+def post_process_segmentation(logits, apply_layering=True):
+    """
+    Post-process segmentation output to respect class hierarchy:
+    - Classes 0-9 (reagent pads) are in foreground
+    - Class 10 (strip) is behind reagent pads
+    - Class 11 (background) is at the very back
+    
+    Args:
+        logits: Raw model output tensor [B, C, H, W]
+        apply_layering: Whether to apply class layering hierarchy
+    
+    Returns:
+        Processed segmentation mask [B, H, W]
+    """
+    # Get predicted class (highest probability) for each pixel
+    probabilities = F.softmax(logits, dim=1)
+    
+    if not apply_layering:
+        # Standard argmax approach (highest probability wins)
+        return torch.argmax(probabilities, dim=1)
+    
+    # Apply class hierarchy with layering
+    batch_size, num_classes, height, width = logits.shape
+    masks = torch.zeros((batch_size, height, width), device=logits.device, dtype=torch.long)
+    
+    # Start with background probabilities
+    background_prob = probabilities[:, -1]  # Class 11 is background
+    
+    # Apply strip (class 10) where its probability exceeds background
+    strip_prob = probabilities[:, 10]
+    strip_mask = strip_prob > background_prob
+    masks[strip_mask] = 10
+    
+    # Apply reagent pads (classes 0-9) where their probability exceeds others
+    for class_id in range(10):
+        class_prob = probabilities[:, class_id]
+        # Compare against maximum of strip and background probabilities
+        competing_prob = torch.maximum(strip_prob, background_prob)
+        class_mask = class_prob > competing_prob
+        masks[class_mask] = class_id
+    
+    return masks
+
 def extract_features_and_labels(dataset, model):
     """Extract features from images using a trained model."""
     features = []
