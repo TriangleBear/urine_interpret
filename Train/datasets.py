@@ -56,10 +56,12 @@ class UrineStripDataset(Dataset):
             label = 10  # Default to strip class if multiple labels are found
         
         # Update class distribution
-        if label.item() in self.class_distribution:
-            self.class_distribution[label.item()] += 1
-        else:
-            self.class_distribution[label.item()] = 1
+        if isinstance(label, int):  # Check if label is already an integer
+            if label in self.class_distribution:
+                self.class_distribution[label] += 1
+            else:
+                self.class_distribution[label] = 1
+
         
         return image_tensor, label, self.class_distribution
 
