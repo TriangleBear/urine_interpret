@@ -64,64 +64,79 @@ def dynamic_normalization(images, epsilon=1e-5):
 
 def compute_class_weights(dataset, max_weight=50.0, min_weight=0.5):
     """
-    Compute class weights for handling imbalanced datasets with improved 
-    handling of missing classes and variable class distributions.
+    Compute class weights for handling imbalanced datasets, recognizing that
+    class 0 is a legitimate class (Bilirubin) and not a background class.
+    Empty labels are tracked separately.
     """
     class_counts = {}
+    empty_label_count = 0
     total_samples = 0
     
     # Initialize all classes with zero count
-    for i in range(NUM_CLASSES):
+    for i in range(NUM_CLASSES + 1):  # +1 to include the special empty label class
         class_counts[i] = 0
     
     # Count actual occurrences
     for _, label, _ in dataset:
         label_val = label.item() if isinstance(label, torch.Tensor) else label
-        if 0 <= label_val < NUM_CLASSES:  # Ensure label is within valid range
-            class_counts[label_val] = class_counts.get(label_val, 0) + 1
-            total_samples += 1
-        else:
-            print(f"Warning: Encountered invalid class label: {label_val}")
+        
+        # Count empty labels separately from class 0
+        class_counts[label_val] = class_counts.get(label_val, 0) + 1
+        total_samples += 1
+            
+        # Track empty labels for reporting
+        if label_val == NUM_CLASSES:  # NUM_CLASSES (11) indicates an empty label
+            empty_label_count += 1
     
-    # Print class distribution summary - more compact
+    # Print class distribution summary
     print("\nClass distribution in dataset:")
     valid_classes = []
     missing_classes = []
     
-    for cls in range(NUM_CLASSES):
+    for cls in range(NUM_CLASSES):  # Only iterate through valid classes (0-10)
         count = class_counts.get(cls, 0)
         if count > 0:
             valid_classes.append(cls)
-            print(f"Class {cls}: {count} samples ({count/total_samples*100:.1f}%)")
+            class_percentage = count/total_samples*100 if total_samples > 0 else 0
+            print(f"Class {cls}: {count} samples ({class_percentage:.1f}%)")
         else:
             missing_classes.append(cls)
+    
+    # Report empty labels separately
+    if empty_label_count > 0:
+        empty_percentage = empty_label_count/total_samples*100
+        print(f"Empty labels: {empty_label_count} samples ({empty_percentage:.1f}%)")
     
     if missing_classes:
         print(f"Missing classes: {missing_classes}")
     
-    # Calculate class weights with a minimum count to avoid division by zero
-    weights = torch.ones(NUM_CLASSES, device=device)
+    # Calculate class weights for actual classes
+    weights = torch.ones(NUM_CLASSES + 1, device=device)  # +1 for empty label class
     
-    for i in range(NUM_CLASSES):
+    for i in range(NUM_CLASSES + 1):  # Include the special empty label class
         if class_counts[i] > 0:
             # Inverse frequency weighting with smoothing
             weights[i] = 1.0 / (class_counts[i] / total_samples)
+            
+            # Special handling for empty labels (NUM_CLASSES)
+            if i == NUM_CLASSES:  # Empty label class
+                # Almost ignore empty labels by giving them very low weight
+                weights[i] *= 0.1  # Minimal emphasis on empty labels
         else:
-            # For missing classes, use a sensible default weight
-            # Use the average weight of present classes, or a default value
+            # For missing classes, use average weight of present classes
             if valid_classes:
                 avg_weight = sum(1.0 / (class_counts[c] / total_samples) for c in valid_classes) / len(valid_classes)
                 weights[i] = avg_weight
             else:
-                weights[i] = 1.0  # Default weight if no classes have samples
+                weights[i] = 1.0
     
-    # Normalize weights to have mean=1
-    if weights.sum() > 0:
-        avg_weight = weights.sum() / NUM_CLASSES
-        weights = weights / avg_weight
+    # Normalize weights
+    if weights[:NUM_CLASSES].sum() > 0:  # Only normalize actual classes (0-10)
+        avg_weight = weights[:NUM_CLASSES].sum() / NUM_CLASSES
+        weights[:NUM_CLASSES] = weights[:NUM_CLASSES] / avg_weight
     
-    # Cap minimum and maximum weights
-    weights = torch.clamp(weights, min_weight, max_weight)
+    # Cap minimum and maximum weights for actual classes
+    weights[:NUM_CLASSES] = torch.clamp(weights[:NUM_CLASSES], min_weight, max_weight)
     
     return weights
 

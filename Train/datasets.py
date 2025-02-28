@@ -36,8 +36,8 @@ class UrineStripDataset(Dataset):
         # Load image
         image = Image.open(img_path).convert('RGB')
         
-        # Load mask
-        mask = self._create_mask_from_yolo(mask_path)
+        # Load mask - check if file exists and has content
+        mask, is_empty_label = self._create_mask_from_yolo(mask_path)
         
         # Resize mask to match image size
         mask = cv2.resize(mask, (IMAGE_SIZE[1], IMAGE_SIZE[0]), interpolation=cv2.INTER_NEAREST)
@@ -49,11 +49,17 @@ class UrineStripDataset(Dataset):
         mask_tensor = torch.from_numpy(mask).unsqueeze(0).long()  # Ensure mask has a channel dimension
 
         # Extract class label from mask
-        label = torch.unique(mask_tensor)
-        if len(label) == 1:
-            label = label.item()
+        # IMPORTANT: We're not using class 0 for empty labels anymore!
+        if is_empty_label:
+            # Use a special value for empty labels (NUM_CLASSES = 11)
+            # This separates empty labels from actual class 0 (Bilirubin)
+            label = NUM_CLASSES  # Using NUM_CLASSES (11) as the empty/background indicator
         else:
-            label = 10  # Default to strip class if multiple labels are found
+            label = torch.unique(mask_tensor)
+            if len(label) == 1:
+                label = label.item()
+            else:
+                label = 10  # Default to strip class if multiple labels are found
         
         # Update class distribution
         if isinstance(label, int):  # Check if label is already an integer
@@ -62,25 +68,35 @@ class UrineStripDataset(Dataset):
             else:
                 self.class_distribution[label] = 1
 
-        
         return image_tensor, label, self.class_distribution
 
 
     def _create_mask_from_yolo(self, txt_path, image_size=(256, 256), target_classes=None):
         """
         Create a segmentation mask from YOLO format annotations.
-        Improved to properly handle all class labels without excessive logging.
+        Handles empty label files correctly.
         """
         mask = np.zeros(image_size, dtype=np.uint8)
+        is_empty_label = False
         
+        # Check if file exists
+        if not os.path.exists(txt_path):
+            print(f"Warning: Missing label file: {os.path.basename(txt_path)}")
+            is_empty_label = True
+            return mask, is_empty_label
+        
+        # Check if file is empty
         try:
             with open(txt_path, 'r') as f:
                 lines = f.readlines()
                 
-                # Skip excessive debug info - only log when really needed
-                if not os.path.exists(txt_path) or len(lines) == 0:
-                    print(f"Warning: Empty or missing label file: {os.path.basename(txt_path)}")
+                # If file is empty or has no valid lines, return empty mask
+                if len(lines) == 0 or all(not line.strip() for line in lines):
+                    print(f"Note: Empty label file: {os.path.basename(txt_path)}")
+                    is_empty_label = True
+                    return mask, is_empty_label
                 
+                # Process annotation lines
                 for line in lines:
                     parts = line.strip().split()
                     
@@ -101,7 +117,6 @@ class UrineStripDataset(Dataset):
                             
                             # Fill polygon with class_id
                             cv2.fillPoly(mask, [polygon_points], class_id)
-                            # Reduced logging - no need to print for every polygon
                             
                         # Handle bounding box format (class_id, x_center, y_center, width, height)
                         elif len(parts) == 5:
@@ -116,30 +131,28 @@ class UrineStripDataset(Dataset):
                             
                             # Draw rectangle with class_id
                             cv2.rectangle(mask, (x, y), (x+w, y+h), class_id, -1)  # -1 means filled rectangle
-                            # Reduced logging - no need to print for every box
                     
                     except Exception as e:
-                        # Only log actual errors, not normal processing
                         print(f"Error processing line in {os.path.basename(txt_path)}: {line.strip()}")
                         print(f"Error details: {e}")
                         continue
         
         except Exception as e:
             print(f"Error reading label file {txt_path}: {e}")
-            return mask  # Return empty mask if file can't be read
+            is_empty_label = True
+            return mask, is_empty_label  # Return empty mask if file can't be read
         
-        # Only log unique classes if there's something unusual (too many or zero)
-        unique_classes = np.unique(mask)
-        if len(unique_classes) == 0:
-            print(f"Warning: No classes found in {os.path.basename(txt_path)}")
-        # elif len(unique_classes) > 5:  # Only log if there are unusually many classes
-        #     print(f"Classes found in {os.path.basename(txt_path)}: {unique_classes}")
+        # If after processing all lines, mask is still empty (no successful annotations),
+        # consider it an empty label
+        if np.all(mask == 0):
+            is_empty_label = True
+            print(f"Warning: No valid annotations found in {os.path.basename(txt_path)}")
         
         # Optionally filter mask for target classes
         if target_classes is not None:
             mask = np.where(np.isin(mask, target_classes), mask, 0)
         
-        return mask
+        return mask, is_empty_label
 
 
 # Add a function to visualize the dataset

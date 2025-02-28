@@ -76,32 +76,14 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
     
     print(f"Computed class weights: {class_weights}")
 
-    # Analyze the dataset to understand class distribution
-    class_counts = {}
-    for i in range(NUM_CLASSES):
-        class_counts[i] = 0  # Initialize all classes
-        
-    for _, label, _ in train_dataset:
-        label_val = label.item() if isinstance(label, torch.Tensor) else label
-        class_counts[label_val] = class_counts.get(label_val, 0) + 1
-    
-    # Identify missing classes and log the distribution
-    # missing_classes = [i for i in range(NUM_CLASSES) if class_counts[i] == 0]
-    # if missing_classes:
-    #     print(f"WARNING: Classes {missing_classes} have no samples in the training data.")
-    #     print("The model may not learn to recognize these classes effectively.")
-        
-    #     # Option 1: Continue with missing classes, using default weights
-    #     print("Continuing training with default weights for missing classes.")
-        
-        # Option 2: Generate synthetic data for missing classes (commented out)
-        # print("Generating synthetic samples for missing classes...")
-        # Implement synthetic data generation here if needed
-    
     # Standard multiclass approach using CrossEntropyLoss with class weights
+    # Use only the first NUM_CLASSES weights (0-10), exclude the empty label weight
     print(f"Using class weights: {class_weights[:NUM_CLASSES]}")
 
-    criterion_ce = torch.nn.CrossEntropyLoss(weight=class_weights[:NUM_CLASSES], label_smoothing=0.1, reduction='mean')
+    criterion_ce = torch.nn.CrossEntropyLoss(weight=class_weights[:NUM_CLASSES], 
+                                           label_smoothing=0.1, 
+                                           reduction='mean', 
+                                           ignore_index=NUM_CLASSES)  # Ignore empty labels during loss calculation
     criterion_dice = dice_loss
 
     # Model initialization with memory optimization
@@ -157,14 +139,19 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
         epoch_loss = 0
         optimizer.zero_grad(set_to_none=True)
 
-        # Training loop - update to unpack 3 values instead of 2
+        # Training loop - with correct handling of empty labels
         with tqdm(total=len(train_loader), desc=f"Training Epoch {epoch+1}") as pbar:
-            for i, (images, labels, _) in enumerate(train_loader):  # Added _ to unpack class_distribution
+            for i, (images, labels, _) in enumerate(train_loader):
                 try:
-                    if labels.numel() == 0:
-                        print(f"Skipping batch {i} due to empty labels.")
+                    # Skip batches that consist entirely of empty labels
+                    if torch.all(labels == NUM_CLASSES):
+                        print(f"Skipping batch {i} - all empty labels")
+                        pbar.update(1)
                         continue
-                
+                    
+                    # For mixed batches, keep training but the loss function will
+                    # ignore the empty labels thanks to ignore_index=NUM_CLASSES
+                    
                     # Move to GPU and free CPU memory
                     images = images.to(device, non_blocking=True)
                     labels = labels.to(device, non_blocking=True)
