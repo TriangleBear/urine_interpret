@@ -8,9 +8,10 @@ import cv2
 import matplotlib.pyplot as plt
 import torchvision.transforms as T
 from config import NUM_CLASSES, IMAGE_SIZE
+import random  # Add this missing import at the top
 
 class UrineStripDataset(Dataset):
-    def __init__(self, image_dir, mask_dir, transform=None):
+    def __init__(self, image_dir, mask_dir, transform=None, cache_size=100):
         self.image_dir = image_dir
         self.mask_dir = mask_dir
         self.images = sorted([f for f in os.listdir(image_dir) if f.endswith(('.png', '.jpg', '.jpeg'))])
@@ -24,11 +25,19 @@ class UrineStripDataset(Dataset):
                 T.Resize(IMAGE_SIZE),
                 T.ToTensor(),
             ])
+        
+        # Add caching to speed up repeated access
+        self.cache = {}
+        self.cache_size = cache_size
     
     def __len__(self):
         return len(self.images)
     
     def __getitem__(self, idx):
+        # Check if in cache first
+        if idx in self.cache:
+            return self.cache[idx]
+        
         img_name = self.images[idx]
         img_path = os.path.join(self.image_dir, img_name)
         mask_path = os.path.join(self.mask_dir, os.path.splitext(img_name)[0] + '.txt')
@@ -67,6 +76,10 @@ class UrineStripDataset(Dataset):
                 self.class_distribution[label] += 1
             else:
                 self.class_distribution[label] = 1
+
+        # Add to cache if not full
+        if len(self.cache) < self.cache_size:
+            self.cache[idx] = (image_tensor, label, self.class_distribution)
 
         return image_tensor, label, self.class_distribution
 
@@ -124,6 +137,10 @@ class UrineStripDataset(Dataset):
                                 polygon_points[:, 0] *= image_size[1]
                                 polygon_points[:, 1] *= image_size[0]
                                 polygon_points = polygon_points.astype(np.int32)
+                                # Make sure polygon_points is usable for fillPoly
+                                if len(polygon_points) < 3:  # Need at least 3 points for a polygon
+                                    print(f"Warning: Not enough points for polygon in {os.path.basename(txt_path)}")
+                                    continue
                                 cv2.fillPoly(mask, [polygon_points], class_id)
                             elif len(parts) == 5:  # Bounding box format
                                 x_center, y_center, width, height = map(float, parts[1:5])
@@ -138,24 +155,27 @@ class UrineStripDataset(Dataset):
                 # Then process reagent pads (classes 0-9) to overlay on top
                 for class_id in range(10):  # 0-9 reagent pads
                     if class_annotations[class_id]:
+                        # Process all polygons of same class together
+                        polygons = []
+                        rectangles = []
+                        
                         for parts in class_annotations[class_id]:
-                            try:
-                                # Handle different annotation formats
-                                if len(parts) > 5:  # Polygon format
-                                    polygon_points = np.array([float(x) for x in parts[1:]], dtype=np.float32).reshape(-1, 2)
-                                    polygon_points[:, 0] *= image_size[1]
-                                    polygon_points[:, 1] *= image_size[0]
-                                    polygon_points = polygon_points.astype(np.int32)
-                                    cv2.fillPoly(mask, [polygon_points], class_id)
-                                elif len(parts) == 5:  # Bounding box format
-                                    x_center, y_center, width, height = map(float, parts[1:5])
-                                    x = int((x_center - width/2) * image_size[1])
-                                    y = int((y_center - height/2) * image_size[0])
-                                    w = int(width * image_size[1])
-                                    h = int(height * image_size[0])
-                                    cv2.rectangle(mask, (x, y), (x+w, y+h), class_id, -1)
-                            except Exception as e:
-                                print(f"Error processing reagent pad annotation: {e}")
+                            if len(parts) > 5:  # Polygon
+                                poly_points = self._parse_polygon(parts, image_size)
+                                if len(poly_points) >= 3:  # Valid polygon needs 3+ points
+                                    polygons.append(poly_points)
+                            elif len(parts) == 5:  # Bounding box
+                                rect = self._parse_bbox(parts, image_size)
+                                if rect:  # If valid rectangle
+                                    rectangles.append(rect)
+                        
+                        # Draw all polygons at once
+                        if polygons:
+                            cv2.fillPoly(mask, polygons, class_id)
+                            
+                        # Draw all rectangles
+                        for x, y, w, h in rectangles:
+                            cv2.rectangle(mask, (x, y), (x+w, y+h), class_id, -1)
                 
         except Exception as e:
             print(f"Error reading label file {txt_path}: {e}")
@@ -173,6 +193,21 @@ class UrineStripDataset(Dataset):
             mask = np.where(np.isin(mask, target_classes), mask, 0)
         
         return mask, is_empty_label
+
+    # Helper functions to make the code cleaner
+    def _parse_polygon(self, parts, image_size):
+        points = np.array([float(x) for x in parts[1:]], dtype=np.float32).reshape(-1, 2)
+        points[:, 0] *= image_size[1]  # Scale x
+        points[:, 1] *= image_size[0]  # Scale y
+        return points.astype(np.int32)
+    
+    def _parse_bbox(self, parts, image_size):
+        x_center, y_center, width, height = map(float, parts[1:5])
+        x = int((x_center - width/2) * image_size[1])
+        y = int((y_center - height/2) * image_size[0])
+        w = int(width * image_size[1])
+        h = int(height * image_size[0])
+        return (x, y, w, h)
 
 
 # Add a function to visualize the dataset
