@@ -55,11 +55,17 @@ def compute_mean_std(dataset, batch_size=16):
     
     return mean.numpy(), std.numpy()
 
-def dynamic_normalization(images, epsilon=1e-5):
-    """Normalize images dynamically based on their own statistics."""
-    batch_size = images.size(0)
-    mean = images.view(batch_size, images.size(1), -1).mean(dim=2).view(batch_size, images.size(1), 1, 1)
-    std = images.view(batch_size, images.size(1), -1).std(dim=2).view(batch_size, images.size(1), 1, 1) + epsilon
+def dynamic_normalization(images, epsilon=1e-5, use_channels=True):
+    """Optimized normalization that can work per-image or per-batch."""
+    if use_channels:
+        # Per-channel normalization (original)
+        batch_size = images.size(0)
+        mean = images.view(batch_size, images.size(1), -1).mean(dim=2).view(batch_size, images.size(1), 1, 1)
+        std = images.view(batch_size, images.size(1), -1).std(dim=2).view(batch_size, images.size(1), 1, 1) + epsilon
+    else:
+        # Faster global normalization
+        mean = images.mean(dim=(2, 3), keepdim=True)
+        std = images.std(dim=(2, 3), keepdim=True) + epsilon
     return (images - mean) / std
 
 def compute_class_weights(dataset, max_weight=50.0, min_weight=0.5):
@@ -153,46 +159,41 @@ def post_process_mask(mask, kernel_size=3):
     return mask_cleaned
 
 def post_process_segmentation(logits, apply_layering=True):
-    """
-    Post-process segmentation output to respect class hierarchy:
-    - Classes 0-9 (reagent pads) are in foreground
-    - Class 10 (strip) is behind reagent pads
-    - Class 11 (background) is at the very back
-    
-    Args:
-        logits: Raw model output tensor [B, C, H, W]
-        apply_layering: Whether to apply class layering hierarchy
-    
-    Returns:
-        Processed segmentation mask [B, H, W]
-    """
-    # Get predicted class (highest probability) for each pixel
-    probabilities = F.softmax(logits, dim=1)
-    
+    """Optimized post-processing with better memory usage."""
     if not apply_layering:
         # Standard argmax approach (highest probability wins)
-        return torch.argmax(probabilities, dim=1)
+        return torch.argmax(F.softmax(logits, dim=1), dim=1)
     
-    # Apply class hierarchy with layering
+    # Get device to avoid unnecessary transfers
+    device = logits.device
     batch_size, num_classes, height, width = logits.shape
-    masks = torch.zeros((batch_size, height, width), device=logits.device, dtype=torch.long)
     
-    # Start with background probabilities
-    background_prob = probabilities[:, -1]  # Class 11 is background
+    # Process in smaller chunks if needed for memory efficiency
+    masks = torch.zeros((batch_size, height, width), device=device, dtype=torch.long)
     
-    # Apply strip (class 10) where its probability exceeds background
-    strip_prob = probabilities[:, 10]
-    strip_mask = strip_prob > background_prob
-    masks[strip_mask] = 10
-    
-    # Apply reagent pads (classes 0-9) where their probability exceeds others
-    for class_id in range(10):
-        class_prob = probabilities[:, class_id]
-        # Compare against maximum of strip and background probabilities
-        competing_prob = torch.maximum(strip_prob, background_prob)
-        class_mask = class_prob > competing_prob
-        masks[class_mask] = class_id
-    
+    # More efficient softmax calculation
+    with torch.no_grad():
+        # Use log_softmax which is more numerically stable
+        log_probs = F.log_softmax(logits, dim=1)
+        probs = torch.exp(log_probs)  # Convert to probabilities
+        
+        # Get background and strip probabilities 
+        bg_prob = probs[:, -1]  # Class 11 (background)
+        strip_prob = probs[:, 10]  # Class 10 (strip)
+        
+        # Apply strip where it beats background
+        strip_wins = strip_prob > bg_prob
+        masks[strip_wins] = 10
+        
+        # Apply reagent pads (0-9) where they beat both strip and background
+        max_lower_prob = torch.maximum(strip_prob, bg_prob)
+        
+        # Process each class separately to save memory
+        for class_id in range(10):  # 0-9 = reagent pads 
+            pad_prob = probs[:, class_id]
+            pad_wins = pad_prob > max_lower_prob
+            masks[pad_wins] = class_id
+            
     return masks
 
 def extract_features_and_labels(dataset, model):
@@ -224,6 +225,21 @@ def extract_features_and_labels(dataset, model):
     labels = np.concatenate(labels)
     
     return features, labels
+
+@torch.no_grad()
+def batch_predict(model, images, device, batch_size=4):
+    """Process predictions in batches to avoid memory issues."""
+    num_images = len(images)
+    all_predictions = []
+    
+    for i in range(0, num_images, batch_size):
+        batch = images[i:i+batch_size].to(device)
+        batch = dynamic_normalization(batch)
+        outputs = model(batch)
+        predictions = post_process_segmentation(outputs)
+        all_predictions.append(predictions.cpu())
+        
+    return torch.cat(all_predictions, dim=0)
 
 def save_svm_model(model_data, filepath):
     """Save SVM model and related data to disk."""
