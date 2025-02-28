@@ -10,7 +10,7 @@ from config import *
 from models import UNetYOLO
 from datasets import UrineStripDataset
 from losses import dice_loss, focal_loss
-from utils import compute_mean_std, dynamic_normalization, compute_class_weights
+from utils import compute_mean_std, dynamic_normalization, compute_class_weights, post_process_segmentation
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, ReduceLROnPlateau
 import gc
 import os
@@ -123,6 +123,8 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
     model_filename = os.path.join(model_folder, "unet_model.pt")
     metrics_folder = os.path.join(model_folder, "metrics")
     os.makedirs(metrics_folder, exist_ok=True)
+
+    class_counts = {i: 0 for i in range(NUM_CLASSES + 1)}  # Include background class
 
     for epoch in range(NUM_EPOCHS):  # Start training loop
 
@@ -300,6 +302,8 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
         scheduler.step(avg_val_loss)
 
     test_total = 0
+    test_loss = 0
+    test_correct = 0
     
     # Test loop - update to unpack 3 values
     print("\nEvaluating on test set...")
