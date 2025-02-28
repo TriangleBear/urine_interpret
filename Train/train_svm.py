@@ -34,7 +34,8 @@ CLASS_NAMES = {
     7: 'SpGravity',
     8: 'Urobilinogen',
     9: 'pH',
-    10: 'strip'
+    10: 'strip',
+    11: 'background'  # Add background class
 }
 
 def extract_polygon_features(image, mask, class_id):
@@ -118,9 +119,19 @@ def train_svm_classifier(unet_model_path, model_path=None):
     
     ic("Training SVM classifier with RBF kernel...")
     
+    # Skip background class (11) when training SVM
+    svm_data = [(features, label) for features, label in zip(train_features, train_labels) if label != NUM_CLASSES]
+    if svm_data:
+        svm_features, svm_labels = zip(*svm_data)
+        svm_features = np.array(svm_features)
+        svm_labels = np.array(svm_labels)
+    else:
+        print("Warning: No valid samples for SVM training after filtering background class")
+        return
+    
     # Scale features
     scaler = StandardScaler()
-    train_features_scaled = scaler.fit_transform(train_features)
+    train_features_scaled = scaler.fit_transform(svm_features)
     valid_features_scaled = scaler.transform(valid_features)
     test_features_scaled = scaler.transform(test_features)
     
@@ -132,7 +143,7 @@ def train_svm_classifier(unet_model_path, model_path=None):
         probability=True
     )
     
-    svm_model.fit(train_features_scaled, train_labels)
+    svm_model.fit(train_features_scaled, svm_labels)
     
     # Evaluate on validation set
     valid_pred = svm_model.predict(valid_features_scaled)

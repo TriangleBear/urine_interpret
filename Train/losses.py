@@ -4,6 +4,8 @@ import numpy as np
 import cv2
 import gc
 
+NUM_CLASSES = 11
+
 def fix_target_indices(targets, num_classes):
     """
     Fix target indices to ensure they are within the valid range.
@@ -29,6 +31,22 @@ def fix_target_indices(targets, num_classes):
     return targets
 
 def dice_loss(outputs, targets, smooth=1e-6, max_size=512):
+    # First, handle the case where targets have the background/empty label value (NUM_CLASSES)
+    # Create a mask to identify which samples should be included in loss computation
+    if targets.dim() == 1:  # Class indices [B]
+        valid_samples = targets != NUM_CLASSES  # Binary mask of valid samples
+        if not valid_samples.any():
+            # If all samples are background, return 0 loss
+            return torch.tensor(0.0, device=outputs.device, requires_grad=True)
+        
+        # Filter out background samples
+        outputs = outputs[valid_samples]
+        targets = targets[valid_samples]
+        
+        # If no samples left, return 0 loss
+        if outputs.size(0) == 0:
+            return torch.tensor(0.0, device=outputs.device, requires_grad=True)
+    
     # Resize outputs to save memory if necessary
     original_size = outputs.shape[2:]
     if outputs.shape[2] > max_size or outputs.shape[3] > max_size:
@@ -36,7 +54,8 @@ def dice_loss(outputs, targets, smooth=1e-6, max_size=512):
         new_h, new_w = int(outputs.shape[2] * scale_factor), int(outputs.shape[3] * scale_factor)
         outputs = F.interpolate(outputs, size=(new_h, new_w), mode='bilinear', align_corners=False)
     
-    outputs = F.softmax(outputs, dim=1)
+    # DON'T use softmax here, since we'll manually handle the probability conversion for BCE
+    # Instead, we'll use sigmoid on each output channel for binary classification per class
     
     # Handle target dimensions
     if targets.dim() == 5:
@@ -47,18 +66,20 @@ def dice_loss(outputs, targets, smooth=1e-6, max_size=512):
         targets = targets.view(batch_size, height, width)
     elif targets.dim() == 3:
         targets = targets.unsqueeze(1)
-    elif targets.dim() == 1:
-        targets = targets.unsqueeze(1).unsqueeze(2).unsqueeze(3)
+    elif targets.dim() == 1:  # Class indices
+        targets_one_hot = F.one_hot(targets, num_classes=outputs.shape[1]).float()
+        # Use binary_cross_entropy_with_logits instead of binary_cross_entropy for autocast safety
+        mean_outputs = outputs.mean([2, 3])  # Average over spatial dimensions to get logits
+        return F.binary_cross_entropy_with_logits(mean_outputs, targets_one_hot)
     
     # Resize targets to match outputs size
     if targets.shape[2:] != outputs.shape[2:]:
-        targets = F.interpolate(targets.float(), size=outputs.shape[2:], mode='nearest').long()
+        targets = F.interpolate(targets.float().unsqueeze(1), size=outputs.shape[2:], mode='nearest').long().squeeze(1)
     
     # Fix any invalid target indices
     targets = fix_target_indices(targets, outputs.shape[1])
     
     # Convert to one-hot encoding
-    targets = targets.squeeze(1)  # Remove channel dim for one-hot
     targets_one_hot = F.one_hot(targets.long(), num_classes=outputs.shape[1]).permute(0, 3, 1, 2).float()
     
     # Compute dice loss in batches to save memory
@@ -70,32 +91,44 @@ def dice_loss(outputs, targets, smooth=1e-6, max_size=512):
         output_i = outputs[i:i+1]
         target_i = targets_one_hot[i:i+1]
         
-        intersection = (output_i * target_i).sum(dim=(2,3))
-        union = output_i.sum(dim=(2,3)) + target_i.sum(dim=(2,3))
+        # Apply sigmoid to convert logits to probabilities (autocast safe)
+        probs_i = torch.sigmoid(output_i)
+        
+        intersection = (probs_i * target_i).sum(dim=(2,3))
+        union = probs_i.sum(dim=(2,3)) + target_i.sum(dim=(2,3))
         dice_i = 1 - (2 * intersection + smooth) / (union + smooth)
         dice_sum += dice_i.mean()
         
         # Clean up to save memory
-        del output_i, target_i, intersection, union, dice_i
+        del output_i, target_i, probs_i, intersection, union, dice_i
     
     # Clean up memory
     del outputs, targets, targets_one_hot
     torch.cuda.empty_cache()
     gc.collect()
     
-    return dice_sum / batch_size
+    return dice_sum / batch_size if batch_size > 0 else torch.tensor(0.0, device='cuda')
 
 def focal_loss(outputs, targets, alpha=0.25, gamma=2, max_size=512):
     """
     Compute focal loss for multi-class segmentation with support for class indices.
-    
-    Args:
-        outputs: Model predictions [B, C, H, W]
-        targets: Ground truth labels [B] or [B, H, W]
-        alpha: Weighting factor for rare classes
-        gamma: Focusing parameter
-        max_size: Maximum size for resizing to save memory
+    Now handles background/empty label (NUM_CLASSES) properly.
     """
+    # Handle background class special case
+    if targets.dim() == 1:  # [B] - class indices
+        valid_samples = targets != NUM_CLASSES  # Binary mask of valid samples
+        if not valid_samples.any():
+            # If all samples are background, return 0 loss
+            return torch.tensor(0.0, device=outputs.device, requires_grad=True)
+        
+        # Filter out background samples
+        outputs = outputs[valid_samples]
+        targets = targets[valid_samples]
+        
+        # If no samples left, return 0 loss
+        if outputs.size(0) == 0:
+            return torch.tensor(0.0, device=outputs.device, requires_grad=True)
+    
     # Resize outputs to save memory if necessary
     original_size = outputs.shape[2:]
     if outputs.shape[2] > max_size or outputs.shape[3] > max_size:

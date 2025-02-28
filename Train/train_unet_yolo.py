@@ -170,13 +170,27 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                         # Global Average Pooling for classification
                         pooled_outputs = F.adaptive_avg_pool2d(outputs, 1).squeeze(-1).squeeze(-1)
                         
-                        # Use combined loss with balanced components
+                        # CrossEntropy loss (handled by ignore_index)
                         loss_ce = criterion_ce(pooled_outputs, labels)
-                        loss_dice = criterion_dice(outputs, labels)
-                        loss_focal = focal_loss(outputs, labels, gamma=2.0)
                         
-                        # Combined loss with balanced weights 
-                        loss = loss_ce * 0.4 + loss_dice * 0.3 + loss_focal * 0.3
+                        # Only compute dice and focal losses if there are non-background samples
+                        background_mask = labels == NUM_CLASSES
+                        if not torch.all(background_mask):
+                            try:
+                                # Wrap these in try-except - if they fail, fallback to CE loss only
+                                with autocast(enabled=False):  # Temporarily disable autocast for dice_loss
+                                    loss_dice = criterion_dice(outputs, labels)
+                                    loss_focal = focal_loss(outputs, labels, gamma=2.0)
+                                
+                                # Combined loss with balanced weights 
+                                loss = loss_ce * 0.4 + loss_dice * 0.3 + loss_focal * 0.3
+                            except RuntimeError as e:
+                                print(f"Error in loss calculation: {e}")
+                                print("Using CE loss only for this batch.")
+                                loss = loss_ce
+                        else:
+                            # If all samples are background, use CE loss only
+                            loss = loss_ce
                     
                     # Scale loss and backward pass
                     loss = loss / accumulation_steps

@@ -69,7 +69,7 @@ else:
 
 # For RTX 4050 (mobile GPU), use conservative settings
 ACCUMULATION_STEPS = 8 if BATCH_SIZE < 4 else 4  # Adjust based on batch size
-NUM_CLASSES = 11
+NUM_CLASSES = 11  # Classes 0-10 for reagents and strip, 11 (NUM_CLASSES) will be for background
 NUM_EPOCHS = 100
 PATIENCE = 15
 IMAGE_SIZE = (224, 224)
