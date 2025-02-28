@@ -67,28 +67,74 @@ class UrineStripDataset(Dataset):
 
 
     def _create_mask_from_yolo(self, txt_path, image_size=(256, 256), target_classes=None):
-
+        """
+        Create a segmentation mask from YOLO format annotations.
+        Improved to properly handle all class labels without excessive logging.
+        """
         mask = np.zeros(image_size, dtype=np.uint8)
-
-        with open(txt_path, 'r') as f:
-            for line in f:
-                parts = line.strip().split()
-                if len(parts) == 5:
-                    class_id, x_center, y_center, width, height = map(float, parts)
-                    class_id = int(class_id)
-                    x = int((x_center - width/2) * image_size[1])
-                    y = int((y_center - height/2) * image_size[0])
-                    w = int(width * image_size[1])
-                    h = int(height * image_size[0])
-                    cv2.rectangle(mask, (x, y), (x+w, y+h), class_id, -1)
-                elif len(parts) > 5:
-                    class_id = int(parts[0])
-                    polygon_points = np.array(parts[1:], dtype=np.float32).reshape(-1, 2)
-                    polygon_points[:, 0] *= image_size[1]
-                    polygon_points[:, 1] *= image_size[0]
-                    polygon_points = polygon_points.astype(np.int32)
-                    cv2.fillPoly(mask, [polygon_points], class_id)
-
+        
+        try:
+            with open(txt_path, 'r') as f:
+                lines = f.readlines()
+                
+                # Skip excessive debug info - only log when really needed
+                if not os.path.exists(txt_path) or len(lines) == 0:
+                    print(f"Warning: Empty or missing label file: {os.path.basename(txt_path)}")
+                
+                for line in lines:
+                    parts = line.strip().split()
+                    
+                    # Skip empty lines
+                    if not parts:
+                        continue
+                    
+                    try:
+                        class_id = int(parts[0])
+                        
+                        # Handle polygon format (first value is class_id, rest are x,y coordinates)
+                        if len(parts) > 5:
+                            # Parse polygon points
+                            polygon_points = np.array([float(x) for x in parts[1:]], dtype=np.float32).reshape(-1, 2)
+                            polygon_points[:, 0] *= image_size[1]  # Scale x coordinates to image width
+                            polygon_points[:, 1] *= image_size[0]  # Scale y coordinates to image height
+                            polygon_points = polygon_points.astype(np.int32)
+                            
+                            # Fill polygon with class_id
+                            cv2.fillPoly(mask, [polygon_points], class_id)
+                            # Reduced logging - no need to print for every polygon
+                            
+                        # Handle bounding box format (class_id, x_center, y_center, width, height)
+                        elif len(parts) == 5:
+                            # Parse bounding box
+                            x_center, y_center, width, height = map(float, parts[1:5])
+                            
+                            # Convert from normalized coordinates to pixel coordinates
+                            x = int((x_center - width/2) * image_size[1])
+                            y = int((y_center - height/2) * image_size[0])
+                            w = int(width * image_size[1])
+                            h = int(height * image_size[0])
+                            
+                            # Draw rectangle with class_id
+                            cv2.rectangle(mask, (x, y), (x+w, y+h), class_id, -1)  # -1 means filled rectangle
+                            # Reduced logging - no need to print for every box
+                    
+                    except Exception as e:
+                        # Only log actual errors, not normal processing
+                        print(f"Error processing line in {os.path.basename(txt_path)}: {line.strip()}")
+                        print(f"Error details: {e}")
+                        continue
+        
+        except Exception as e:
+            print(f"Error reading label file {txt_path}: {e}")
+            return mask  # Return empty mask if file can't be read
+        
+        # Only log unique classes if there's something unusual (too many or zero)
+        unique_classes = np.unique(mask)
+        if len(unique_classes) == 0:
+            print(f"Warning: No classes found in {os.path.basename(txt_path)}")
+        elif len(unique_classes) > 5:  # Only log if there are unusually many classes
+            print(f"Classes found in {os.path.basename(txt_path)}: {unique_classes}")
+        
         # Optionally filter mask for target classes
         if target_classes is not None:
             mask = np.where(np.isin(mask, target_classes), mask, 0)
