@@ -89,10 +89,11 @@ class UrineStripDataset(Dataset):
         Create a segmentation mask from YOLO format annotations.
         Respects class hierarchy: Classes 0-9 (pads) > Class 10 (strip) > Class 11 (background)
         """
-        mask = np.zeros(image_size, dtype=np.uint8)  # Start with zeros (background/class 11)
+        # Start with zeros (background/class 11)
+        mask = np.zeros(image_size, dtype=np.uint8)
         is_empty_label = False
         
-        # Check if file exists and has content
+        # Check if file exists
         if not os.path.exists(txt_path):
             print(f"Warning: Missing label file: {os.path.basename(txt_path)}")
             is_empty_label = True
@@ -124,58 +125,43 @@ class UrineStripDataset(Dataset):
                         print(f"Error processing line: {line.strip()}, Error: {e}")
                 
                 # Process annotations in Z-order (from back to front)
-                # Background (11) is already set as zeros
+                # First: Draw background (class 11) if present - lowest layer
+                if class_annotations[11]:
+                    # Background is already set to zeros, so we don't need to do anything here
+                    # But if we have explicit background annotations, we could use them
+                    pass
                 
-                # Process strip (class 10) first
+                # Second: Draw strip (class 10) - middle layer
                 if class_annotations[10]:
                     for parts in class_annotations[10]:
                         class_id = 10
                         try:
                             # Handle different annotation formats
                             if len(parts) > 5:  # Polygon format
-                                polygon_points = np.array([float(x) for x in parts[1:]], dtype=np.float32).reshape(-1, 2)
-                                polygon_points[:, 0] *= image_size[1]
-                                polygon_points[:, 1] *= image_size[0]
-                                polygon_points = polygon_points.astype(np.int32)
-                                # Make sure polygon_points is usable for fillPoly
-                                if len(polygon_points) < 3:  # Need at least 3 points for a polygon
-                                    print(f"Warning: Not enough points for polygon in {os.path.basename(txt_path)}")
-                                    continue
-                                cv2.fillPoly(mask, [polygon_points], class_id)
+                                polygon_points = self._parse_polygon(parts, image_size)
+                                if len(polygon_points) >= 3:  # Need at least 3 points for a polygon
+                                    cv2.fillPoly(mask, [polygon_points], class_id)
                             elif len(parts) == 5:  # Bounding box format
-                                x_center, y_center, width, height = map(float, parts[1:5])
-                                x = int((x_center - width/2) * image_size[1])
-                                y = int((y_center - height/2) * image_size[0])
-                                w = int(width * image_size[1])
-                                h = int(height * image_size[0])
+                                x, y, w, h = self._parse_bbox(parts, image_size)
                                 cv2.rectangle(mask, (x, y), (x+w, y+h), class_id, -1)
                         except Exception as e:
                             print(f"Error processing strip annotation: {e}")
                 
-                # Then process reagent pads (classes 0-9) to overlay on top
-                for class_id in range(10):  # 0-9 reagent pads
+                # Last: Draw reagent pads (classes 0-9) - top layers
+                for class_id in range(10):
                     if class_annotations[class_id]:
-                        # Process all polygons of same class together
-                        polygons = []
-                        rectangles = []
-                        
                         for parts in class_annotations[class_id]:
-                            if len(parts) > 5:  # Polygon
-                                poly_points = self._parse_polygon(parts, image_size)
-                                if len(poly_points) >= 3:  # Valid polygon needs 3+ points
-                                    polygons.append(poly_points)
-                            elif len(parts) == 5:  # Bounding box
-                                rect = self._parse_bbox(parts, image_size)
-                                if rect:  # If valid rectangle
-                                    rectangles.append(rect)
-                        
-                        # Draw all polygons at once
-                        if polygons:
-                            cv2.fillPoly(mask, polygons, class_id)
-                            
-                        # Draw all rectangles
-                        for x, y, w, h in rectangles:
-                            cv2.rectangle(mask, (x, y), (x+w, y+h), class_id, -1)
+                            try:
+                                # Handle different annotation formats
+                                if len(parts) > 5:  # Polygon format
+                                    polygon_points = self._parse_polygon(parts, image_size)
+                                    if len(polygon_points) >= 3:  # Need at least 3 points for a polygon
+                                        cv2.fillPoly(mask, [polygon_points], class_id)
+                                elif len(parts) == 5:  # Bounding box format
+                                    x, y, w, h = self._parse_bbox(parts, image_size)
+                                    cv2.rectangle(mask, (x, y), (x+w, y+h), class_id, -1)
+                            except Exception as e:
+                                print(f"Error processing reagent pad annotation: {e}")
                 
         except Exception as e:
             print(f"Error reading label file {txt_path}: {e}")
