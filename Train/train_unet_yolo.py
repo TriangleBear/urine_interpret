@@ -70,7 +70,6 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
 
     # Compute class weights with special handling for missing classes
     print("Computing class weights...")
-
     class_weights = compute_class_weights(train_dataset, max_weight=50.0)
     class_weights = class_weights.clone().detach().to(device)
     
