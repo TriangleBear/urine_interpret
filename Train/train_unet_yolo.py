@@ -117,14 +117,122 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
     val_accuracies = []
 
     # Initialize training loop variables
-    best_loss = float('inf')
+    best_val_loss = float('inf')
     early_stop_counter = 0
     model_folder = get_model_folder()
     model_filename = os.path.join(model_folder, "unet_model.pt")
+    best_model_path = os.path.join(model_folder, "unet_model_best.pt")
     metrics_folder = os.path.join(model_folder, "metrics")
     os.makedirs(metrics_folder, exist_ok=True)
 
     class_counts = {i: 0 for i in range(NUM_CLASSES + 1)}  # Include background class
+    
+    # Add this line to initialize the confusion matrix
+    confmat = torch.zeros((NUM_CLASSES + 1, NUM_CLASSES + 1), device='cpu')
+
+    # Add a function to save plots during training
+    def save_epoch_plots(epoch, train_losses, val_losses, val_accuracies, class_correct, class_total, lr, metrics_folder):
+        """Save plots for monitoring training progress at each epoch."""
+        plt.figure(figsize=(15, 10))
+        
+        # Plot 1: Training and validation loss
+        plt.subplot(2, 2, 1)
+        plt.plot(range(1, len(train_losses) + 1), train_losses, 'b-', label='Train Loss')
+        plt.plot(range(1, len(val_losses) + 1), val_losses, 'r-', label='Val Loss')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title(f'Training Progress - Epoch {epoch+1}')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        # Plot 2: Validation accuracy
+        plt.subplot(2, 2, 2)
+        plt.plot(range(1, len(val_accuracies) + 1), val_accuracies, 'g-')
+        plt.xlabel('Epoch')
+        plt.ylabel('Accuracy (%)')
+        plt.title('Validation Accuracy')
+        plt.grid(True, alpha=0.3)
+        
+        # Plot 3: Per-class accuracy for key classes
+        plt.subplot(2, 2, 3)
+        key_classes = [0, 1, 5, 10]  # Example: focus on a few important classes
+        class_names = ['Bilirubin', 'Blood', 'Nitrite', 'Strip']  # Corresponding names
+        accuracies = []
+        for cls in key_classes:
+            if cls in class_total and class_total[cls] > 0:
+                acc = 100 * class_correct[cls] / class_total[cls]
+                accuracies.append(acc)
+            else:
+                accuracies.append(0)
+        
+        plt.bar(class_names, accuracies)
+        plt.xlabel('Class')
+        plt.ylabel('Accuracy (%)')
+        plt.title('Per-class Accuracy')
+        plt.ylim(0, 100)
+        
+        # Plot 4: Learning rate progression
+        plt.subplot(2, 2, 4)
+        plt.plot(range(1, epoch+2), lr, 'mo-')
+        plt.xlabel('Epoch')
+        plt.ylabel('Learning Rate')
+        plt.title('Learning Rate Progression')
+        plt.yscale('log')
+        plt.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        
+        # Save the plot
+        plot_filename = os.path.join(metrics_folder, f'epoch_{epoch+1:03d}_metrics.png')
+        plt.savefig(plot_filename, dpi=100)
+        plt.close()
+        
+        # Also save a "latest" version that always gets overwritten
+        latest_plot = os.path.join(metrics_folder, 'latest_metrics.png')
+        plt.figure(figsize=(15, 10))
+        
+        # Same plots as above
+        # Plot 1
+        plt.subplot(2, 2, 1)
+        plt.plot(range(1, len(train_losses) + 1), train_losses, 'b-', label='Train Loss')
+        plt.plot(range(1, len(val_losses) + 1), val_losses, 'r-', label='Val Loss')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title(f'Training Progress - Epoch {epoch+1}')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        # Plot 2
+        plt.subplot(2, 2, 2)
+        plt.plot(range(1, len(val_accuracies) + 1), val_accuracies, 'g-')
+        plt.xlabel('Epoch')
+        plt.ylabel('Accuracy (%)')
+        plt.title('Validation Accuracy')
+        plt.grid(True, alpha=0.3)
+        
+        # Plot 3
+        plt.subplot(2, 2, 3)
+        plt.bar(class_names, accuracies)
+        plt.xlabel('Class')
+        plt.ylabel('Accuracy (%)')
+        plt.title('Per-class Accuracy')
+        plt.ylim(0, 100)
+        
+        # Plot 4
+        plt.subplot(2, 2, 4)
+        plt.plot(range(1, epoch+2), lr, 'mo-')
+        plt.xlabel('Epoch')
+        plt.ylabel('Learning Rate')
+        plt.title('Learning Rate Progression')
+        plt.yscale('log')
+        plt.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(latest_plot, dpi=100)
+        plt.close()
+
+    # Track learning rate for plotting
+    learning_rates = []
 
     for epoch in range(NUM_EPOCHS):  # Start training loop
 
@@ -300,6 +408,57 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
         
         # Adjust learning rate based on validation loss
         scheduler.step(avg_val_loss)
+        
+        # Get current learning rate
+        current_lr = optimizer.param_groups[0]['lr']
+        learning_rates.append(current_lr)
+        
+        # Save plots for monitoring at each epoch
+        save_epoch_plots(
+            epoch, 
+            train_losses, 
+            val_losses, 
+            val_accuracies, 
+            class_correct,
+            class_total,
+            learning_rates,
+            metrics_folder
+        )
+        
+        print(f"Saved monitoring plots for epoch {epoch+1}")
+        
+        # Save model checkpoint periodically
+        if (epoch + 1) % 5 == 0:  # Save every 5 epochs
+            checkpoint_path = os.path.join(model_folder, f"unet_model_epoch{epoch+1}.pt")
+            torch.save(model.state_dict(), checkpoint_path)
+            print(f"Saved model checkpoint to {checkpoint_path}")
+        
+        # Save best model based on validation loss
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            torch.save(model.state_dict(), best_model_path)
+            print(f"New best model saved! Validation loss: {best_val_loss:.4f}")
+            early_stop_counter = 0  # Reset counter when we find a better model
+        else:
+            early_stop_counter += 1
+            print(f"Early stopping counter: {early_stop_counter}/{patience}")
+            
+        # Check for early stopping
+        if early_stop_counter >= patience:
+            print(f"Early stopping triggered after {epoch+1} epochs")
+            # Save final model before stopping
+            torch.save(model.state_dict(), model_filename)
+            print(f"Saved final model to {model_filename}")
+            break  # Exit the training loop
+    
+    # Save the final model if not stopped early
+    if early_stop_counter < patience:
+        torch.save(model.state_dict(), model_filename)
+        print(f"Saved final model to {model_filename}")
+        
+    # If training completed, load the best model for evaluation
+    print("Loading best model for evaluation...")
+    model.load_state_dict(torch.load(best_model_path))
 
     test_total = 0
     test_loss = 0
@@ -352,6 +511,9 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
     
     # Create a confusion matrix at the end of training to analyze performance
     print("\nGenerating final confusion matrix...")
+    # Reset the confusion matrix before using it
+    confmat.zero_()  # Clear any existing values
+    
     # Confusion matrix generation - update to unpack 3 values
     with torch.no_grad():
         for images, labels, _ in tqdm(val_loader, desc="Confusion Matrix"):  # Added _ to unpack class_distribution
