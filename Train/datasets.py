@@ -1,4 +1,3 @@
-# datasets.py
 import os
 import numpy as np
 import torch
@@ -8,78 +7,244 @@ from PIL import Image
 import cv2
 import matplotlib.pyplot as plt
 import torchvision.transforms as T
-
+from config import NUM_CLASSES, IMAGE_SIZE
+import random  # Add this missing import at the top
 
 class UrineStripDataset(Dataset):
-    def __init__(self, image_dir, mask_dir):
+    def __init__(self, image_dir, mask_dir, transform=None, cache_size=100):
         self.image_dir = image_dir
         self.mask_dir = mask_dir
         self.images = sorted([f for f in os.listdir(image_dir) if f.endswith(('.png', '.jpg', '.jpeg'))])
+        self.transform = transform
         
-        # Standard transforms
-        self.transform = T.Compose([
-            T.Resize((224, 224)),
-            T.ToTensor(),
-        ])
+        # Default transform if none provided
+        self.class_distribution = {}
+
+        if self.transform is None:
+            self.transform = T.Compose([
+                T.Resize(IMAGE_SIZE),
+                T.ToTensor(),
+            ])
+        
+        # Add caching to speed up repeated access
+        self.cache = {}
+        self.cache_size = cache_size
     
     def __len__(self):
-        return len(self.images)  # Return the number of images
-
+        return len(self.images)
     
     def __getitem__(self, idx):
+        # Check if in cache first
+        if idx in self.cache:
+            return self.cache[idx]
+        
         img_name = self.images[idx]
         img_path = os.path.join(self.image_dir, img_name)
+        mask_path = os.path.join(self.mask_dir, os.path.splitext(img_name)[0] + '.txt')
         
-        # Extract class label from the corresponding mask file
-        mask_path = os.path.join(self.mask_dir, img_name.replace('.jpg', '.txt').replace('.png', '.txt').replace('.jpeg', '.txt'))
-        if os.path.exists(mask_path):
-            with open(mask_path, 'r') as f:
-                lines = f.readlines()
-                if lines:
-                    # Assuming the first line contains the class ID
-                    label = int(lines[0].strip().split()[0])
-                else:
-                    label = 0  # Default to class 0 if no lines are found
-                # Ensure label is within valid range
-                if label < 1 or label > 11:
-                    label = 0  # Default to class 0 if label is out of range
-
-        else:
-            label = 0  # Default to class 0 if mask file does not exist
-
-
-        # Load and transform image
+        # Load image
         image = Image.open(img_path).convert('RGB')
-        image = self.transform(image)
         
-        return image, label
+        # Debug print to check what's happening
+        if idx < 5:  # Just print the first few for debugging
+            print(f"\nProcessing image: {img_name}")
+            print(f"Loading mask from: {mask_path}")
+            
+        # Load mask - check if file exists and has content
+        mask, is_empty_label = self._create_mask_from_yolo(mask_path)
+        
+        # Debug: check what classes are in the raw mask
+        unique_classes = np.unique(mask)
+        if idx < 5:
+            print(f"Classes in raw mask: {unique_classes}")
+        
+        # Resize mask to match image size
+        mask = cv2.resize(mask, (IMAGE_SIZE[1], IMAGE_SIZE[0]), interpolation=cv2.INTER_NEAREST)
+        
+        # Debug: check if resizing affected the classes
+        unique_after_resize = np.unique(mask)
+        if idx < 5 and not np.array_equal(unique_classes, unique_after_resize):
+            print(f"Warning: Classes changed after resize: {unique_after_resize}")
 
-    def _create_mask_from_yolo(self, txt_path, image_size=(256, 256)):
+        # Apply transform if provided
+        image_tensor = self.transform(image)
+
+        # Convert mask to tensor and add channel dimension
+        mask_tensor = torch.from_numpy(mask).unsqueeze(0).long()  # Ensure mask has a channel dimension
+        
+        # Debug: check tensor mask classes
+        unique_tensor = torch.unique(mask_tensor).cpu().numpy()
+        if idx < 5:
+            print(f"Classes in tensor mask: {unique_tensor}")
+
+        # Extract class label from mask
+        if is_empty_label:
+            # Use NUM_CLASSES for empty labels
+            label = NUM_CLASSES
+            if idx < 5:
+                print(f"Empty label detected, setting label to: {label}")
+        else:
+            unique_labels = torch.unique(mask_tensor)
+            if idx < 5:
+                print(f"Unique labels found: {unique_labels}")
+                
+            if len(unique_labels) == 1:
+                label = unique_labels.item()
+                if idx < 5:
+                    print(f"Single label detected: {label}")
+            else:
+                # Here's the problem! We're defaulting to 10 when multiple classes are found
+                # Instead let's prefer reagent pad classes (0-9) over strip (10)
+                reagent_labels = [l.item() for l in unique_labels if l.item() < 10]
+                if reagent_labels:
+                    # If any reagent pad classes are found, use the first one
+                    label = reagent_labels[0]
+                    if idx < 5:
+                        print(f"Multiple labels found, using reagent pad class: {label}")
+                else:
+                    label = 10  # Default to strip class only if no reagent pads are found
+                    if idx < 5:
+                        print(f"No reagent pad classes found, using strip class: {label}")
+        
+        # Update class distribution
+        if isinstance(label, int):  # Check if label is already an integer
+            if label in self.class_distribution:
+                self.class_distribution[label] += 1
+            else:
+                self.class_distribution[label] = 1
+
+        # Add to cache if not full
+        if len(self.cache) < self.cache_size:
+            self.cache[idx] = (image_tensor, label, self.class_distribution)
+
+        return image_tensor, label, self.class_distribution
+
+
+    def _create_mask_from_yolo(self, txt_path, image_size=(256, 256), target_classes=None):
+        """
+        Create a segmentation mask from YOLO format annotations.
+        Respects class hierarchy: Classes 0-9 (pads) > Class 10 (strip) > Class 11 (background)
+        """
+        # Start with zeros (background/class 11)
         mask = np.zeros(image_size, dtype=np.uint8)
+        is_empty_label = False
+        
+        # Check if file exists
+        if not os.path.exists(txt_path):
+            print(f"Warning: Missing label file: {os.path.basename(txt_path)}")
+            is_empty_label = True
+            return mask, is_empty_label
+        
+        # Check if file is empty
+        try:
+            with open(txt_path, 'r') as f:
+                lines = f.readlines()
+                
+                # If file is empty or has no valid lines, return empty mask
+                if len(lines) == 0 or all(not line.strip() for line in lines):
+                    print(f"Note: Empty label file: {os.path.basename(txt_path)}")
+                    is_empty_label = True
+                    return mask, is_empty_label
+                
+                # First pass: Group annotations by class
+                class_annotations = {i: [] for i in range(12)}  # For classes 0-11
+                
+                for line in lines:
+                    parts = line.strip().split()
+                    if not parts:
+                        continue
+                    
+                    try:
+                        class_id = int(parts[0])
+                        class_annotations[class_id].append(parts)
+                    except Exception as e:
+                        print(f"Error processing line: {line.strip()}, Error: {e}")
+                
+                # Process annotations in Z-order (from back to front)
+                # First: Draw background (class 11) if present - lowest layer
+                if class_annotations[11]:
+                    # Background is already set to zeros, so we don't need to do anything here
+                    pass
+                
+                # Second: Draw strip (class 10) - middle layer
+                if class_annotations[10]:
+                    for parts in class_annotations[10]:
+                        class_id = 10
+                        try:
+                            # Handle different annotation formats
+                            if len(parts) > 5:  # Polygon format
+                                polygon_points = self._parse_polygon(parts, image_size)
+                                if len(polygon_points) >= 3:  # Need at least 3 points for a polygon
+                                    cv2.fillPoly(mask, [polygon_points], class_id)
+                            elif len(parts) == 5:  # Bounding box format
+                                x, y, w, h = self._parse_bbox(parts, image_size)
+                                cv2.rectangle(mask, (x, y), (x+w, y+h), class_id, -1)
+                        except Exception as e:
+                            print(f"Error processing strip annotation: {e}")
+                
+                # Last: Draw reagent pads (classes 0-9) - top layers
+                for class_id in range(10):
+                    if class_annotations[class_id]:
+                        for parts in class_annotations[class_id]:
+                            try:
+                                # Handle different annotation formats
+                                if len(parts) > 5:  # Polygon format
+                                    polygon_points = self._parse_polygon(parts, image_size)
+                                    if len(polygon_points) >= 3:  # Need at least 3 points for a polygon
+                                        cv2.fillPoly(mask, [polygon_points], class_id)
+                                elif len(parts) == 5:  # Bounding box format
+                                    x, y, w, h = self._parse_bbox(parts, image_size)
+                                    cv2.rectangle(mask, (x, y), (x+w, y+h), class_id, -1)
+                            except Exception as e:
+                                print(f"Error processing reagent pad annotation: {e}")
+                
+        except Exception as e:
+            print(f"Error reading label file {txt_path}: {e}")
+            is_empty_label = True
+            return mask, is_empty_label
+        
+        # If after processing all lines, mask is still empty (no successful annotations),
+        # consider it an empty label
+        if np.all(mask == 0):
+            is_empty_label = True
+            print(f"Warning: No valid annotations found in {os.path.basename(txt_path)}")
+        
+        # Optionally filter mask for target classes
+        if target_classes is not None:
+            mask = np.where(np.isin(mask, target_classes), mask, 0)
+        
+        return mask, is_empty_label
 
-        with open(txt_path, 'r') as f:
-            for line in f:
-                parts = line.strip().split()
-                if len(parts) == 5:
-                    class_id, x_center, y_center, width, height = map(float, parts)
-                    class_id = int(class_id)
-                    x = int((x_center - width/2) * image_size[1])
-                    y = int((y_center - height/2) * image_size[0])
-                    w = int(width * image_size[1])
-                    h = int(height * image_size[0])
-                    cv2.rectangle(mask, (x, y), (x+w, y+h), class_id, -1)
-                elif len(parts) > 5:
-                    class_id = int(parts[0])
-                    polygon_points = np.array(parts[1:], dtype=np.float32).reshape(-1, 2)
-                    polygon_points[:, 0] *= image_size[1]
-                    polygon_points[:, 1] *= image_size[0]
-                    polygon_points = polygon_points.astype(np.int32)
-                    cv2.fillPoly(mask, [polygon_points], class_id)
+    # Helper functions to make the code cleaner
+    def _parse_polygon(self, parts, image_size):
+        points = np.array([float(x) for x in parts[1:]], dtype=np.float32).reshape(-1, 2)
+        points[:, 0] *= image_size[1]  # Scale x
+        points[:, 1] *= image_size[0]  # Scale y
+        return points.astype(np.int32)
+    
+    def _parse_bbox(self, parts, image_size):
+        x_center, y_center, width, height = map(float, parts[1:5])
+        x = int((x_center - width/2) * image_size[1])
+        y = int((y_center - height/2) * image_size[0])
+        w = int(width * image_size[1])
+        h = int(height * image_size[0])
+        return (x, y, w, h)
 
-        return mask
 
 # Add a function to visualize the dataset
+def visualize_class_distribution(class_distribution):
+    import matplotlib.pyplot as plt
+    classes = list(class_distribution.keys())
+    counts = list(class_distribution.values())
+    
+    plt.bar(classes, counts)
+    plt.xlabel('Classes')
+    plt.ylabel('Counts')
+    plt.title('Class Distribution')
+    plt.show()
+
 def visualize_dataset(dataset, num_samples=5):
+
     import matplotlib.pyplot as plt
     for i in range(num_samples):
         image, mask = dataset[i]
@@ -139,16 +304,16 @@ class RandomTrainTransformations:
     def __init__(self, mean, std):
         self.joint_transform = transforms.Compose([
             RandomFlip(horizontal=True, vertical=True),
-            RandomRotation(degrees=45),  # Increase rotation range
-            RandomAffine(translate=(0.5, 0.5)),  # Increase translation range
+            RandomRotation(degrees=30),  # Reduced rotation range
+            RandomAffine(translate=(0.1, 0.1)),  # Reduced translation range
         ])
         self.image_transform = transforms.Compose([
-            transforms.RandomResizedCrop(256, scale=(0.4, 1.0)),  # Increase scale range
-            transforms.ColorJitter(brightness=0.9, contrast=0.9, saturation=0.9, hue=0.5),  # Adjust hue range
-            transforms.RandomAffine(degrees=120, translate=(0.5, 0.5), scale=(0.4, 1.6), shear=40),  # Increase affine range
-            transforms.RandomGrayscale(p=0.5),  # Increase grayscale probability
+            transforms.RandomResizedCrop(256, scale=(0.6, 1.0)),  # Adjusted scale range
+            transforms.ColorJitter(brightness=0.8, contrast=0.8, saturation=0.8, hue=0.3),  # Adjusted hue range
+            transforms.RandomAffine(degrees=30, translate=(0.1, 0.1), scale=(0.8, 1.2), shear=10),  # Reduced affine range
+            transforms.RandomGrayscale(p=0.3),  # Adjusted grayscale probability
             transforms.ToTensor(),
-            transforms.RandomErasing(p=0.6, scale=(0.02, 0.1), ratio=(0.3, 3.3)),  # Increase erasing probability
+            transforms.RandomErasing(p=0.5, scale=(0.02, 0.1), ratio=(0.3, 3.3)),  # Adjusted erasing probability
             transforms.Normalize(mean=mean, std=std)
         ])
         self.mask_transform = transforms.Compose([

@@ -1,157 +1,247 @@
-import torch
 import numpy as np
+import matplotlib.pyplot as plt
+import torch
+import torchvision
+import torch.nn.functional as F
 import cv2
-from skimage import color, feature
-from sklearn.svm import SVC
-from sklearn.model_selection import train_test_split, GridSearchCV
-import joblib
+import pickle
+from tqdm import tqdm
 from config import device, NUM_CLASSES
-import torchvision.transforms as T
-from scipy import stats
 
-def compute_mean_std(dataset):
-    loader = torch.utils.data.DataLoader(dataset, batch_size=64, shuffle=False)
-    mean = 0.
-    std = 0.
-    total_images = len(loader.dataset)
-    if total_images == 0:
-        raise ValueError("Dataset is empty.")
-    for images, _ in loader:
-        batch_samples = images.size(0)
-        images = images.view(batch_samples, images.size(1), -1)
+def log_class_distribution(class_distribution):
+    """Log the class distribution."""
+    classes = list(class_distribution.keys())
+    counts = list(class_distribution.values())
+    
+    plt.bar(classes, counts)
+    plt.xlabel('Classes')
+    plt.ylabel('Counts')
+    plt.title('Class Distribution')
+    plt.show()
+
+def dynamic_sampling(dataset, target_classes, sampling_factor=2):
+    """Implement dynamic sampling for underrepresented classes."""
+    sampled_indices = []
+    for class_id in target_classes:
+        class_indices = [i for i, (_, label) in enumerate(dataset) if label == class_id]
+        sampled_indices.extend(class_indices * sampling_factor)  # Oversample underrepresented classes
+    return sampled_indices
+
+def compute_mean_std(dataset, batch_size=16):
+    """Compute the mean and standard deviation of a dataset."""
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=0
+    )
+    
+    mean = torch.zeros(3)
+    std = torch.zeros(3)
+    num_samples = 0
+    
+    for batch in tqdm(loader, desc="Computing dataset statistics"):
+        # Correctly unpack the batch - the first element is the image
+        images = batch[0]  # Extract just the image tensors
+        
+        batch_size = images.size(0)
+        images = images.view(batch_size, images.size(1), -1)
         mean += images.mean(2).sum(0)
         std += images.std(2).sum(0)
-    mean /= total_images
-    std /= total_images
-    return mean.tolist(), std.tolist()
-
-def dynamic_normalization(tensor_images):
-    if len(tensor_images.shape) == 4:  # Batch of images
-        mean = torch.mean(tensor_images, dim=[0, 2, 3], keepdim=True)
-        std = torch.std(tensor_images, dim=[0, 2, 3], keepdim=True)
-    else:  # Single image
-        mean = torch.mean(tensor_images, dim=[1, 2], keepdim=True)
-        std = torch.std(tensor_images, dim=[1, 2], keepdim=True)
-    std = torch.clamp(std, min=1e-6)
-    normalize = T.Normalize(mean.flatten().tolist(), std.flatten().tolist())
-    return normalize(tensor_images)
-
-def extract_features_and_labels(dataset, unet_model):
-    features_list = []
-    labels_list = []
+        num_samples += batch_size
     
-    for image, label in dataset:
-        # Ensure label is a single integer
-        if isinstance(label, (list, tuple, np.ndarray, torch.Tensor)):
-            label = int(label[0]) if len(label) > 0 else 0
-        else:
-            label = int(label)
+    mean /= num_samples
+    std /= num_samples
+    
+    return mean.numpy(), std.numpy()
+
+def dynamic_normalization(images, epsilon=1e-5, use_channels=True):
+    """Optimized normalization that can work per-image or per-batch."""
+    if use_channels:
+        # Per-channel normalization (original)
+        batch_size = images.size(0)
+        mean = images.view(batch_size, images.size(1), -1).mean(dim=2).view(batch_size, images.size(1), 1, 1)
+        std = images.view(batch_size, images.size(1), -1).std(dim=2).view(batch_size, images.size(1), 1, 1) + epsilon
+    else:
+        # Faster global normalization
+        mean = images.mean(dim=(2, 3), keepdim=True)
+        std = images.std(dim=(2, 3), keepdim=True) + epsilon
+    return (images - mean) / std
+
+def compute_class_weights(dataset, max_weight=50.0, min_weight=0.5):
+    """
+    Compute class weights for handling imbalanced datasets, recognizing that
+    class 0 is a legitimate class (Bilirubin) and not a background class.
+    Empty labels are tracked separately.
+    """
+    class_counts = {}
+    empty_label_count = 0
+    total_samples = 0
+    
+    # Initialize all classes with zero count
+    for i in range(NUM_CLASSES + 1):  # +1 to include the special empty label class
+        class_counts[i] = 0
+    
+    # Count actual occurrences
+    for _, label, _ in dataset:
+        label_val = label.item() if isinstance(label, torch.Tensor) else label
         
-        # Convert tensor to numpy and change format from (C,H,W) to (H,W,C)
-        if isinstance(image, torch.Tensor):
-            image_np = image.permute(1, 2, 0).numpy()
-        else:
-            image_np = np.array(image)
-        
-        # Ensure the image is in the correct format
-        if image_np.shape[2] != 3:
-            image_np = np.transpose(image_np, (1, 2, 0))
-        
-        # Convert to different color spaces
-        lab_image = color.rgb2lab(image_np)
-        hsv_image = cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)
-        gray_image = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
-        
-        # Get UNet predictions
-        with torch.no_grad():
-            if isinstance(image, torch.Tensor):
-                image_tensor = image.unsqueeze(0)
-            else:
-                image_tensor = T.ToTensor()(image).unsqueeze(0)
-            image_tensor = image_tensor.to(device)
+        # Count empty labels separately from class 0
+        class_counts[label_val] = class_counts.get(label_val, 0) + 1
+        total_samples += 1
             
-            pred = unet_model(image_tensor)
-            pred = torch.softmax(pred, dim=1)
-            pred_np = pred.squeeze().cpu().numpy()
-        
-        # Calculate features
-        features = []
-        
-        # Color statistics in multiple color spaces
-        for img in [lab_image, hsv_image]:
-            for channel in range(img.shape[2]):
-                channel_data = img[:, :, channel]
-                features.extend([
-                    np.mean(channel_data),
-                    np.std(channel_data),
-                    stats.skew(channel_data.flatten()),
-                    stats.kurtosis(channel_data.flatten()),
-                    np.percentile(channel_data, 25),
-                    np.percentile(channel_data, 75)
-                ])
-        
-        # Texture features using GLCM
-        glcm = feature.graycomatrix(
-            (gray_image * 255).astype(np.uint8), 
-            distances=[1, 2], 
-            angles=[0, np.pi/4, np.pi/2, 3*np.pi/4], 
-            levels=256,
-            symmetric=True, 
-            normed=True
-        )
-        
-        # Calculate GLCM properties
-        glcm_props = ['contrast', 'dissimilarity', 'homogeneity', 'energy', 'correlation']
-        for prop in glcm_props:
-            features.extend(feature.graycoprops(glcm, prop).flatten())
-        
-        # Add UNet prediction distribution statistics
-        for class_idx in range(NUM_CLASSES):
-            class_pred = pred_np[class_idx]
-            features.extend([
-                np.mean(class_pred),
-                np.std(class_pred),
-                np.max(class_pred),
-                np.sum(class_pred > 0.5)  # Area of high confidence predictions
-            ])
-        
-        features_list.append(features)
-        labels_list.append(label)
+        # Track empty labels for reporting
+        if label_val == NUM_CLASSES:  # NUM_CLASSES (11) indicates an empty label
+            empty_label_count += 1
     
-    return np.array(features_list, dtype=np.float32), np.array(labels_list, dtype=np.int32)
+    # Print class distribution summary
+    print("\nClass distribution in dataset:")
+    valid_classes = []
+    missing_classes = []
+    
+    for cls in range(NUM_CLASSES):  # Only iterate through valid classes (0-10)
+        count = class_counts.get(cls, 0)
+        if count > 0:
+            valid_classes.append(cls)
+            class_percentage = count/total_samples*100 if total_samples > 0 else 0
+            print(f"Class {cls}: {count} samples ({class_percentage:.1f}%)")
+        else:
+            missing_classes.append(cls)
+    
+    # Report empty labels separately
+    if empty_label_count > 0:
+        empty_percentage = empty_label_count/total_samples*100
+        print(f"Empty labels: {empty_label_count} samples ({empty_percentage:.1f}%)")
+    
+    if missing_classes:
+        print(f"Missing classes: {missing_classes}")
+    
+    # Calculate class weights for actual classes
+    weights = torch.ones(NUM_CLASSES + 1, device=device)  # +1 for empty label class
+    
+    for i in range(NUM_CLASSES + 1):  # Include the special empty label class
+        if class_counts[i] > 0:
+            # Inverse frequency weighting with smoothing
+            weights[i] = 1.0 / (class_counts[i] / total_samples)
+            
+            # Special handling for empty labels (NUM_CLASSES)
+            if i == NUM_CLASSES:  # Empty label class
+                # Almost ignore empty labels by giving them very low weight
+                weights[i] *= 0.1  # Minimal emphasis on empty labels
+        else:
+            # For missing classes, use average weight of present classes
+            if valid_classes:
+                avg_weight = sum(1.0 / (class_counts[c] / total_samples) for c in valid_classes) / len(valid_classes)
+                weights[i] = avg_weight
+            else:
+                weights[i] = 1.0
+    
+    # Normalize weights
+    if weights[:NUM_CLASSES].sum() > 0:  # Only normalize actual classes (0-10)
+        avg_weight = weights[:NUM_CLASSES].sum() / NUM_CLASSES
+        weights[:NUM_CLASSES] = weights[:NUM_CLASSES] / avg_weight
+    
+    # Cap minimum and maximum weights for actual classes
+    weights[:NUM_CLASSES] = torch.clamp(weights[:NUM_CLASSES], min_weight, max_weight)
+    
+    return weights
 
-def post_process_mask(mask):
-    # Apply morphological operations to remove noise and fill gaps
-    kernel = np.ones((5, 5), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    return mask
+def post_process_mask(mask, kernel_size=3):
+    """Apply post-processing to the predicted mask to remove noise and smooth boundaries."""
+    # Convert to uint8 for OpenCV operations
+    mask_uint8 = mask.astype(np.uint8)
+    
+    # Apply morphological operations
+    kernel = np.ones((kernel_size, kernel_size), np.uint8)
+    mask_cleaned = cv2.morphologyEx(mask_uint8, cv2.MORPH_OPEN, kernel)
+    mask_cleaned = cv2.morphologyEx(mask_cleaned, cv2.MORPH_CLOSE, kernel)
+    
+    return mask_cleaned
 
-def train_svm_classifier(features, labels):
-    param_grid = {'C': [0.1, 1, 10], 'gamma': [0.001, 0.01, 0.1]}
-    grid_search = GridSearchCV(SVC(kernel='rbf'), param_grid, cv=3, error_score='raise')
-    grid_search.fit(features, labels)
-    return grid_search.best_estimator_
+def post_process_segmentation(logits, apply_layering=True):
+    """Optimized post-processing with better memory usage."""
+    if not apply_layering:
+        # Standard argmax approach (highest probability wins)
+        return torch.argmax(F.softmax(logits, dim=1), dim=1)
+    
+    # Get device to avoid unnecessary transfers
+    device = logits.device
+    batch_size, num_classes, height, width = logits.shape
+    
+    # Process in smaller chunks if needed for memory efficiency
+    masks = torch.zeros((batch_size, height, width), device=device, dtype=torch.long)
+    
+    # More efficient softmax calculation
+    with torch.no_grad():
+        # Use log_softmax which is more numerically stable
+        log_probs = F.log_softmax(logits, dim=1)
+        probs = torch.exp(log_probs)  # Convert to probabilities
+        
+        # Get background and strip probabilities 
+        bg_prob = probs[:, -1]  # Class 11 (background)
+        strip_prob = probs[:, 10]  # Class 10 (strip)
+        
+        # Apply strip where it beats background
+        strip_wins = strip_prob > bg_prob
+        masks[strip_wins] = 10
+        
+        # Apply reagent pads (0-9) where they beat both strip and background
+        max_lower_prob = torch.maximum(strip_prob, bg_prob)
+        
+        # Process each class separately to save memory
+        for class_id in range(10):  # 0-9 = reagent pads 
+            pad_prob = probs[:, class_id]
+            pad_wins = pad_prob > max_lower_prob
+            masks[pad_wins] = class_id
+            
+    return masks
 
-def save_svm_model(svm_model, filename):
-    joblib.dump(svm_model, filename)
+def extract_features_and_labels(dataset, model):
+    """Extract features from images using a trained model."""
+    features = []
+    labels = []
+    
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=4,
+        shuffle=False,
+        num_workers=0
+    )
+    
+    model.eval()
+    with torch.no_grad():
+        for images, batch_labels, _ in tqdm(loader, desc="Extracting features"):
+            images = images.to(device)
+            images = dynamic_normalization(images)
+            outputs = model(images)
+            
+            # Global average pooling for features
+            pooled_features = F.adaptive_avg_pool2d(outputs, 1).squeeze(-1).squeeze(-1)
+            
+            features.append(pooled_features.cpu().numpy())
+            labels.append(batch_labels.cpu().numpy())
+    
+    features = np.vstack(features)
+    labels = np.concatenate(labels)
+    
+    return features, labels
 
-def compute_class_weights(dataset):
-    """Compute class weights for the dataset."""
-    labels_list = []
-    for _, label in dataset:
-        labels_list.append(label)
-    labels = np.array(labels_list)
-    class_counts = np.bincount(labels, minlength=NUM_CLASSES)  # Use NUM_CLASSES directly
+@torch.no_grad()
+def batch_predict(model, images, device, batch_size=4):
+    """Process predictions in batches to avoid memory issues."""
+    num_images = len(images)
+    all_predictions = []
+    
+    for i in range(0, num_images, batch_size):
+        batch = images[i:i+batch_size].to(device)
+        batch = dynamic_normalization(batch)
+        outputs = model(batch)
+        predictions = post_process_segmentation(outputs)
+        all_predictions.append(predictions.cpu())
+        
+    return torch.cat(all_predictions, dim=0)
 
-
-    total_samples = len(dataset)
-    if total_samples == 0:
-        raise ValueError("Dataset is empty.")
-    # Avoid division by zero
-    class_weights = total_samples / (NUM_CLASSES * np.where(class_counts == 0, 1, class_counts))  # Use NUM_CLASSES directly
-
-
-    class_weights_tensor = torch.tensor(class_weights, dtype=torch.float32).to(device)
-
-    return class_weights_tensor
+def save_svm_model(model_data, filepath):
+    """Save SVM model and related data to disk."""
+    with open(filepath, 'wb') as f:
+        pickle.dump(model_data, f)
