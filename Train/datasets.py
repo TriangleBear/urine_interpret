@@ -92,7 +92,7 @@ class UrineStripDataset(Dataset):
         mask = np.zeros(image_size, dtype=np.uint8)  # Start with zeros (background/class 11)
         is_empty_label = False
         
-        # Check if file exists
+        # Check if file exists and has content
         if not os.path.exists(txt_path):
             print(f"Warning: Missing label file: {os.path.basename(txt_path)}")
             is_empty_label = True
