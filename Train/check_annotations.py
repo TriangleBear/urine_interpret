@@ -86,6 +86,39 @@ def check_annotation_files(folder_path, max_files=50):
     
     return class_counts
 
+def examine_specific_files(mask_folder, filenames):
+    """
+    Check the content of specific annotation files.
+    """
+    print(f"\nExamining specific files:")
+    
+    for filename in filenames:
+        file_path = os.path.join(mask_folder, filename)
+        if not os.path.exists(file_path):
+            print(f"File not found: {file_path}")
+            continue
+            
+        print(f"\nFile: {filename}")
+        
+        with open(file_path, 'r') as f:
+            content = f.read()
+            print("Content:")
+            print(content)
+            
+            # Count classes
+            classes = {}
+            for line in content.strip().split('\n'):
+                if line.strip():
+                    parts = line.strip().split()
+                    if parts:
+                        try:
+                            class_id = int(parts[0])
+                            classes[class_id] = classes.get(class_id, 0) + 1
+                        except ValueError:
+                            pass
+                            
+            print("Classes found:", sorted(classes.keys()))
+
 if __name__ == "__main__":
     # Check train, validation, and test sets
     train_counts = check_annotation_files(TRAIN_MASK_FOLDER, max_files=None)
@@ -100,3 +133,17 @@ if __name__ == "__main__":
             print(f"  Train: {train_counts[cls]} annotations")
             print(f"  Valid: {valid_counts[cls]} annotations")
             print(f"  Test:  {test_counts[cls]} annotations")
+    
+    # Check specific files from debug output
+    specific_files = [
+        "10_jpg.rf.06fb047ad59b246fe8f9e9a817ca99b9.txt",
+        "10_jpg.rf.29a403680135a3e61650c13539075099.txt",
+        "10_jpg.rf.4615bd7fa5bf269532c0e4e7724926ab.txt"
+    ]
+    examine_specific_files(TRAIN_MASK_FOLDER, specific_files)
+    
+    # Check 5 random files to see if they have multiple classes
+    import random
+    all_files = [f for f in os.listdir(TRAIN_MASK_FOLDER) if f.endswith('.txt')]
+    random_files = random.sample(all_files, 5)
+    examine_specific_files(TRAIN_MASK_FOLDER, random_files)
