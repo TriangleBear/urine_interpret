@@ -45,30 +45,66 @@ class UrineStripDataset(Dataset):
         # Load image
         image = Image.open(img_path).convert('RGB')
         
+        # Debug print to check what's happening
+        if idx < 5:  # Just print the first few for debugging
+            print(f"\nProcessing image: {img_name}")
+            print(f"Loading mask from: {mask_path}")
+            
         # Load mask - check if file exists and has content
         mask, is_empty_label = self._create_mask_from_yolo(mask_path)
         
+        # Debug: check what classes are in the raw mask
+        unique_classes = np.unique(mask)
+        if idx < 5:
+            print(f"Classes in raw mask: {unique_classes}")
+        
         # Resize mask to match image size
         mask = cv2.resize(mask, (IMAGE_SIZE[1], IMAGE_SIZE[0]), interpolation=cv2.INTER_NEAREST)
+        
+        # Debug: check if resizing affected the classes
+        unique_after_resize = np.unique(mask)
+        if idx < 5 and not np.array_equal(unique_classes, unique_after_resize):
+            print(f"Warning: Classes changed after resize: {unique_after_resize}")
 
         # Apply transform if provided
         image_tensor = self.transform(image)
 
         # Convert mask to tensor and add channel dimension
         mask_tensor = torch.from_numpy(mask).unsqueeze(0).long()  # Ensure mask has a channel dimension
+        
+        # Debug: check tensor mask classes
+        unique_tensor = torch.unique(mask_tensor).cpu().numpy()
+        if idx < 5:
+            print(f"Classes in tensor mask: {unique_tensor}")
 
         # Extract class label from mask
-        # IMPORTANT: We're not using class 0 for empty labels anymore!
         if is_empty_label:
-            # Use a special value for empty labels (NUM_CLASSES = 11)
-            # This separates empty labels from actual class 0 (Bilirubin)
-            label = NUM_CLASSES  # Using NUM_CLASSES (11) as the empty/background indicator
+            # Use NUM_CLASSES for empty labels
+            label = NUM_CLASSES
+            if idx < 5:
+                print(f"Empty label detected, setting label to: {label}")
         else:
-            label = torch.unique(mask_tensor)
-            if len(label) == 1:
-                label = label.item()
+            unique_labels = torch.unique(mask_tensor)
+            if idx < 5:
+                print(f"Unique labels found: {unique_labels}")
+                
+            if len(unique_labels) == 1:
+                label = unique_labels.item()
+                if idx < 5:
+                    print(f"Single label detected: {label}")
             else:
-                label = 10  # Default to strip class if multiple labels are found
+                # Here's the problem! We're defaulting to 10 when multiple classes are found
+                # Instead let's prefer reagent pad classes (0-9) over strip (10)
+                reagent_labels = [l.item() for l in unique_labels if l.item() < 10]
+                if reagent_labels:
+                    # If any reagent pad classes are found, use the first one
+                    label = reagent_labels[0]
+                    if idx < 5:
+                        print(f"Multiple labels found, using reagent pad class: {label}")
+                else:
+                    label = 10  # Default to strip class only if no reagent pads are found
+                    if idx < 5:
+                        print(f"No reagent pad classes found, using strip class: {label}")
         
         # Update class distribution
         if isinstance(label, int):  # Check if label is already an integer
@@ -128,7 +164,6 @@ class UrineStripDataset(Dataset):
                 # First: Draw background (class 11) if present - lowest layer
                 if class_annotations[11]:
                     # Background is already set to zeros, so we don't need to do anything here
-                    # But if we have explicit background annotations, we could use them
                     pass
                 
                 # Second: Draw strip (class 10) - middle layer
