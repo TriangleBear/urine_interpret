@@ -8,25 +8,7 @@ import pickle
 from tqdm import tqdm
 from config import device, NUM_CLASSES
 
-def log_class_distribution(class_distribution):
-    """Log the class distribution."""
-    classes = list(class_distribution.keys())
-    counts = list(class_distribution.values())
-    
-    plt.bar(classes, counts)
-    plt.xlabel('Classes')
-    plt.ylabel('Counts')
-    plt.title('Class Distribution')
-    plt.show()
-
-def dynamic_sampling(dataset, target_classes, sampling_factor=2):
-    """Implement dynamic sampling for underrepresented classes."""
-    sampled_indices = []
-    for class_id in target_classes:
-        class_indices = [i for i, (_, label) in enumerate(dataset) if label == class_id]
-        sampled_indices.extend(class_indices * sampling_factor)  # Oversample underrepresented classes
-    return sampled_indices
-
+# Standard utility functions
 def compute_mean_std(dataset, batch_size=16):
     """Compute the mean and standard deviation of a dataset."""
     loader = torch.utils.data.DataLoader(
@@ -41,7 +23,6 @@ def compute_mean_std(dataset, batch_size=16):
     num_samples = 0
     
     for batch in tqdm(loader, desc="Computing dataset statistics"):
-        # Correctly unpack the batch - the first element is the image
         images = batch[0]  # Extract just the image tensors
         
         batch_size = images.size(0)
@@ -68,11 +49,59 @@ def dynamic_normalization(images, epsilon=1e-5, use_channels=True):
         std = images.std(dim=(2, 3), keepdim=True) + epsilon
     return (images - mean) / std
 
+def post_process_mask(mask, kernel_size=3):
+    """Apply post-processing to the predicted mask to remove noise and smooth boundaries."""
+    # Convert to uint8 for OpenCV operations
+    mask_uint8 = mask.astype(np.uint8)
+    
+    # Apply morphological operations
+    kernel = np.ones((kernel_size, kernel_size), np.uint8)
+    mask_cleaned = cv2.morphologyEx(mask_uint8, cv2.MORPH_OPEN, kernel)
+    mask_cleaned = cv2.morphologyEx(mask_cleaned, cv2.MORPH_CLOSE, kernel)
+    
+    return mask_cleaned
+
+def post_process_segmentation(logits, apply_layering=True):
+    """Optimized post-processing with better memory usage."""
+    if not apply_layering:
+        # Standard argmax approach (highest probability wins)
+        return torch.argmax(F.softmax(logits, dim=1), dim=1)
+    
+    # Get device to avoid unnecessary transfers
+    device = logits.device
+    batch_size, num_classes, height, width = logits.shape
+    
+    # Process in smaller chunks if needed for memory efficiency
+    masks = torch.zeros((batch_size, height, width), device=device, dtype=torch.long)
+    
+    # More efficient softmax calculation
+    with torch.no_grad():
+        # Use log_softmax which is more numerically stable
+        log_probs = F.log_softmax(logits, dim=1)
+        probs = torch.exp(log_probs)  # Convert to probabilities
+        
+        # Get background and strip probabilities 
+        bg_prob = probs[:, -1]  # Class 11 (background)
+        strip_prob = probs[:, 10]  # Class 10 (strip)
+        
+        # Apply strip where it beats background
+        strip_wins = strip_prob > bg_prob
+        masks[strip_wins] = 10
+        
+        # Apply reagent pads (0-9) where they beat both strip and background
+        max_lower_prob = torch.maximum(strip_prob, bg_prob)
+        
+        # Process each class separately to save memory
+        for class_id in range(10):  # 0-9 = reagent pads 
+            pad_prob = probs[:, class_id]
+            pad_wins = pad_prob > max_lower_prob
+            masks[pad_wins] = class_id
+            
+    return masks
+
 def compute_class_weights(dataset, max_weight=50.0, min_weight=0.5):
     """
-    Compute class weights for handling imbalanced datasets, recognizing that
-    class 0 is a legitimate class (Bilirubin) and not a background class.
-    Empty labels are tracked separately.
+    Compute class weights for handling imbalanced datasets.
     """
     class_counts = {}
     empty_label_count = 0
@@ -145,103 +174,3 @@ def compute_class_weights(dataset, max_weight=50.0, min_weight=0.5):
     weights[:NUM_CLASSES] = torch.clamp(weights[:NUM_CLASSES], min_weight, max_weight)
     
     return weights
-
-def post_process_mask(mask, kernel_size=3):
-    """Apply post-processing to the predicted mask to remove noise and smooth boundaries."""
-    # Convert to uint8 for OpenCV operations
-    mask_uint8 = mask.astype(np.uint8)
-    
-    # Apply morphological operations
-    kernel = np.ones((kernel_size, kernel_size), np.uint8)
-    mask_cleaned = cv2.morphologyEx(mask_uint8, cv2.MORPH_OPEN, kernel)
-    mask_cleaned = cv2.morphologyEx(mask_cleaned, cv2.MORPH_CLOSE, kernel)
-    
-    return mask_cleaned
-
-def post_process_segmentation(logits, apply_layering=True):
-    """Optimized post-processing with better memory usage."""
-    if not apply_layering:
-        # Standard argmax approach (highest probability wins)
-        return torch.argmax(F.softmax(logits, dim=1), dim=1)
-    
-    # Get device to avoid unnecessary transfers
-    device = logits.device
-    batch_size, num_classes, height, width = logits.shape
-    
-    # Process in smaller chunks if needed for memory efficiency
-    masks = torch.zeros((batch_size, height, width), device=device, dtype=torch.long)
-    
-    # More efficient softmax calculation
-    with torch.no_grad():
-        # Use log_softmax which is more numerically stable
-        log_probs = F.log_softmax(logits, dim=1)
-        probs = torch.exp(log_probs)  # Convert to probabilities
-        
-        # Get background and strip probabilities 
-        bg_prob = probs[:, -1]  # Class 11 (background)
-        strip_prob = probs[:, 10]  # Class 10 (strip)
-        
-        # Apply strip where it beats background
-        strip_wins = strip_prob > bg_prob
-        masks[strip_wins] = 10
-        
-        # Apply reagent pads (0-9) where they beat both strip and background
-        max_lower_prob = torch.maximum(strip_prob, bg_prob)
-        
-        # Process each class separately to save memory
-        for class_id in range(10):  # 0-9 = reagent pads 
-            pad_prob = probs[:, class_id]
-            pad_wins = pad_prob > max_lower_prob
-            masks[pad_wins] = class_id
-            
-    return masks
-
-def extract_features_and_labels(dataset, model):
-    """Extract features from images using a trained model."""
-    features = []
-    labels = []
-    
-    loader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=4,
-        shuffle=False,
-        num_workers=0
-    )
-    
-    model.eval()
-    with torch.no_grad():
-        for images, batch_labels, _ in tqdm(loader, desc="Extracting features"):
-            images = images.to(device)
-            images = dynamic_normalization(images)
-            outputs = model(images)
-            
-            # Global average pooling for features
-            pooled_features = F.adaptive_avg_pool2d(outputs, 1).squeeze(-1).squeeze(-1)
-            
-            features.append(pooled_features.cpu().numpy())
-            labels.append(batch_labels.cpu().numpy())
-    
-    features = np.vstack(features)
-    labels = np.concatenate(labels)
-    
-    return features, labels
-
-@torch.no_grad()
-def batch_predict(model, images, device, batch_size=4):
-    """Process predictions in batches to avoid memory issues."""
-    num_images = len(images)
-    all_predictions = []
-    
-    for i in range(0, num_images, batch_size):
-        batch = images[i:i+batch_size].to(device)
-        batch = dynamic_normalization(batch)
-        outputs = model(batch)
-        predictions = post_process_segmentation(outputs)
-        all_predictions.append(predictions.cpu())
-        
-    return torch.cat(all_predictions, dim=0)
-
-def save_svm_model(model_data, filepath):
-    """Save SVM model and related data to disk."""
-    with open(filepath, 'wb') as f:
-        pickle.dump(model_data, f)
