@@ -80,17 +80,24 @@ def post_process_segmentation(logits, apply_layering=True):
         log_probs = F.log_softmax(logits, dim=1)
         probs = torch.exp(log_probs)  # Convert to probabilities
         
-        # Get strip probabilities (class 10)
-        strip_prob = probs[:, 10]  # Class 10 (strip)
+        # Get strip probabilities (class 11)
+        strip_prob = probs[:, 11]  # Class 11 (strip)
         
         # Apply strip where it beats background
-        masks[strip_prob > 0.5] = 10  # Threshold for strip
+        masks[strip_prob > 0.5] = 11  # Threshold for strip
         
-        # Apply reagent pads (0-9) where they beat both strip and background
-        for class_id in range(10):  # 0-9 = reagent pads 
+        # Apply reagent pads (0-8, 10) where they beat both strip and background
+        for class_id in list(range(9)) + [10]:  # 0-8, 10 = reagent pads 
             pad_prob = probs[:, class_id]
             pad_wins = pad_prob > strip_prob
             masks[pad_wins] = class_id
+        
+        # Apply background (class 9) where it beats all other classes
+        background_prob = probs[:, 9]  # Class 9 (background)
+        background_wins = background_prob > strip_prob
+        for class_id in list(range(9)) + [10]:
+            background_wins &= background_prob > probs[:, class_id]
+        masks[background_wins] = 9
             
     return masks
 

@@ -243,17 +243,17 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
         if epoch < 5:
             for layer in model.unet.inc, model.unet.down1, model.unet.down2, model.unet.down3, model.unet.down4:
                 layer.eval()  # Freeze encoder layers
-            criterion_ce = torch.nn.CrossEntropyLoss(weight=class_weights[10:11], 
+            criterion_ce = torch.nn.CrossEntropyLoss(weight=class_weights[11:12], 
                                                      label_smoothing=0.1, 
                                                      reduction='mean', 
-                                                     ignore_index=NUM_CLASSES)  # Focus on class 10 (strip)
+                                                     ignore_index=NUM_CLASSES)  # Focus on class 11 (strip)
         else:
             for layer in model.unet.inc, model.unet.down1, model.unet.down2, model.unet.down3, model.unet.down4:
                 layer.train()  # Unfreeze encoder layers
-            criterion_ce = torch.nn.CrossEntropyLoss(weight=class_weights[:10], 
+            criterion_ce = torch.nn.CrossEntropyLoss(weight=class_weights[:9] + class_weights[10:11], 
                                                      label_smoothing=0.1, 
                                                      reduction='mean', 
-                                                     ignore_index=NUM_CLASSES)  # Focus on classes 0-9 (reagent pads)
+                                                     ignore_index=NUM_CLASSES)  # Focus on classes 0-8, 10 (reagent pads)
         
         model.train()
         epoch_loss = 0

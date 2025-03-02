@@ -85,11 +85,11 @@ class UrineStripDataset(Dataset):
             if len(unique_labels) == 1:
                 label = unique_labels.item()
             else:
-                if 10 in unique_labels:
-                    label = 10  # Prefer strip class
+                if 11 in unique_labels:
+                    label = 11  # Prefer strip class
                 else:
-                    reagent_labels = [l.item() for l in unique_labels if l.item() < 10]
-                    label = reagent_labels[0] if reagent_labels else 10
+                    reagent_labels = [l.item() for l in unique_labels if l.item() < 11]
+                    label = reagent_labels[0] if reagent_labels else 11
 
         # Update class distribution
         if isinstance(label, int):  # Check if label is already an integer
@@ -108,9 +108,9 @@ class UrineStripDataset(Dataset):
     def _create_mask_from_yolo(self, txt_path, image_size=(256, 256), target_classes=None):
         """
         Create a segmentation mask from YOLO format annotations.
-        Respects class hierarchy: Classes 0-9 (pads) > Class 10 (strip) > Class 11 (background)
+        Respects class hierarchy: Classes 0-8, 10 (pads) > Class 11 (strip) > Class 9 (background)
         """
-        # Start with zeros (background/class 11)
+        # Start with zeros (background/class 9)
         mask = np.zeros(image_size, dtype=np.uint8)
         is_empty_label = False
         
@@ -146,15 +146,26 @@ class UrineStripDataset(Dataset):
                         print(f"Error processing line: {line.strip()}, Error: {e}")
                 
                 # Process annotations in Z-order (from back to front)
-                # First: Draw background (class 11) if present - lowest layer
-                if class_annotations[11]:
-                    # Background is already set to zeros, so we don't need to do anything here
-                    pass
+                # First: Draw background (class 9) if present - lowest layer
+                if class_annotations[9]:
+                    for parts in class_annotations[9]:
+                        class_id = 9
+                        try:
+                            # Handle different annotation formats
+                            if len(parts) > 5:  # Polygon format
+                                polygon_points = self._parse_polygon(parts, image_size)
+                                if len(polygon_points) >= 3:  # Need at least 3 points for a polygon
+                                    cv2.fillPoly(mask, [polygon_points], class_id)
+                            elif len(parts) == 5:  # Bounding box format
+                                x, y, w, h = self._parse_bbox(parts, image_size)
+                                cv2.rectangle(mask, (x, y), (x+w, y+h), class_id, -1)
+                        except Exception as e:
+                            print(f"Error processing background annotation: {e}")
                 
-                # Second: Draw strip (class 10) - middle layer
-                if class_annotations[10]:
-                    for parts in class_annotations[10]:
-                        class_id = 10
+                # Second: Draw strip (class 11) - middle layer
+                if class_annotations[11]:
+                    for parts in class_annotations[11]:
+                        class_id = 11
                         try:
                             # Handle different annotation formats
                             if len(parts) > 5:  # Polygon format
@@ -167,8 +178,8 @@ class UrineStripDataset(Dataset):
                         except Exception as e:
                             print(f"Error processing strip annotation: {e}")
                 
-                # Last: Draw reagent pads (classes 0-9) - top layers
-                for class_id in range(10):
+                # Last: Draw reagent pads (classes 0-8, 10) - top layers
+                for class_id in list(range(9)) + [10]:
                     if class_annotations[class_id]:
                         for parts in class_annotations[class_id]:
                             try:
