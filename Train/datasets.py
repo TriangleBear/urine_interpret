@@ -79,33 +79,18 @@ class UrineStripDataset(Dataset):
 
         # Extract class label from mask
         if is_empty_label:
-            # Use NUM_CLASSES for empty labels
             label = NUM_CLASSES
-            if idx < 5:
-                print(f"Empty label detected, setting label to: {label}")
         else:
             unique_labels = torch.unique(mask_tensor)
-            if idx < 5:
-                print(f"Unique labels found: {unique_labels}")
-                
             if len(unique_labels) == 1:
                 label = unique_labels.item()
-                if idx < 5:
-                    print(f"Single label detected: {label}")
             else:
-                # Here's the problem! We're defaulting to 10 when multiple classes are found
-                # Instead let's prefer reagent pad classes (0-9) over strip (10)
-                reagent_labels = [l.item() for l in unique_labels if l.item() < 10]
-                if reagent_labels:
-                    # If any reagent pad classes are found, use the first one
-                    label = reagent_labels[0]
-                    if idx < 5:
-                        print(f"Multiple labels found, using reagent pad class: {label}")
+                if 10 in unique_labels:
+                    label = 10  # Prefer strip class
                 else:
-                    label = 10  # Default to strip class only if no reagent pads are found
-                    if idx < 5:
-                        print(f"No reagent pad classes found, using strip class: {label}")
-        
+                    reagent_labels = [l.item() for l in unique_labels if l.item() < 10]
+                    label = reagent_labels[0] if reagent_labels else 10
+
         # Update class distribution
         if isinstance(label, int):  # Check if label is already an integer
             if label in self.class_distribution:

@@ -240,9 +240,20 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
         gc.collect()
         
         # First 5 epochs: train only decoder to save memory and reduce GPU load
-        if epoch == 5:
+        if epoch < 5:
             for layer in model.unet.inc, model.unet.down1, model.unet.down2, model.unet.down3, model.unet.down4:
-                layer.train()  # Start training encoder after 5 epochs
+                layer.eval()  # Freeze encoder layers
+            criterion_ce = torch.nn.CrossEntropyLoss(weight=class_weights[10:11], 
+                                                     label_smoothing=0.1, 
+                                                     reduction='mean', 
+                                                     ignore_index=NUM_CLASSES)  # Focus on class 10 (strip)
+        else:
+            for layer in model.unet.inc, model.unet.down1, model.unet.down2, model.unet.down3, model.unet.down4:
+                layer.train()  # Unfreeze encoder layers
+            criterion_ce = torch.nn.CrossEntropyLoss(weight=class_weights[:10], 
+                                                     label_smoothing=0.1, 
+                                                     reduction='mean', 
+                                                     ignore_index=NUM_CLASSES)  # Focus on classes 0-9 (reagent pads)
         
         model.train()
         epoch_loss = 0
@@ -306,6 +317,11 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                     scaler.scale(loss).backward()
                     
                     # Gradient clipping
+                    if scaler.get_scale() != 1.0:
+                        scaler.unscale_(optimizer)
+
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
+                    
                     if (i + 1) % accumulation_steps == 0:
                         scaler.unscale_(optimizer)
                         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
@@ -314,7 +330,8 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                         optimizer.zero_grad(set_to_none=True)
                         torch.cuda.empty_cache()
                     
-                    # Free up memory after each operation
+                        # Free up memory after processing
+
                     del images, labels, outputs, pooled_outputs
                     torch.cuda.empty_cache()
                     
