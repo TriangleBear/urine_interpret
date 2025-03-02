@@ -58,6 +58,26 @@ class UrineStripDataset(Dataset):
         if idx < 5:
             print(f"Classes in raw mask: {unique_classes}")
         
+        # IMPROVEMENT: Apply more aggressive augmentation for reagent pad classes
+        # Check if this sample contains any reagent pad classes
+        has_reagent_pads = any(cls in unique_classes for cls in list(range(9)) + [10])
+        
+        # Apply more aggressive augmentation to samples with reagent pads
+        if has_reagent_pads and self.transform and random.random() < 0.75:  # 75% chance
+            # Additional augmentations for rare classes to balance the dataset
+            aug_transforms = [
+                # Color jitter for better generalization
+                lambda img: T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1)(img),
+                # Random affine transform
+                lambda img: T.RandomAffine(degrees=15, translate=(0.1, 0.1), scale=(0.8, 1.2))(img),
+                # Random perspective
+                lambda img: T.RandomPerspective(distortion_scale=0.2, p=0.5)(img),
+            ]
+            
+            # Apply a random augmentation
+            aug_transform = random.choice(aug_transforms)
+            image = aug_transform(image)
+        
         # Resize mask to match image size
         mask = cv2.resize(mask, (IMAGE_SIZE[1], IMAGE_SIZE[0]), interpolation=cv2.INTER_NEAREST)
         
@@ -85,11 +105,12 @@ class UrineStripDataset(Dataset):
             if len(unique_labels) == 1:
                 label = unique_labels.item()
             else:
-                if 11 in unique_labels:
-                    label = 11  # Prefer strip class
+                # IMPROVEMENT: Prioritize reagent pad classes over strip
+                reagent_labels = [l.item() for l in unique_labels if l.item() < 9 or l.item() == 10]
+                if reagent_labels:
+                    label = reagent_labels[0]  # Prioritize reagent pads
                 else:
-                    reagent_labels = [l.item() for l in unique_labels if l.item() < 11]
-                    label = reagent_labels[0] if reagent_labels else 11
+                    label = 11 if 11 in unique_labels else unique_labels[0].item()  # Fallback to strip or first class
 
         # Update class distribution
         if isinstance(label, int):  # Check if label is already an integer
@@ -349,4 +370,4 @@ class SimpleValTransformations:
         mask = Image.fromarray(sample['mask'])  # Convert mask to PIL Image
         mask = self.mask_transform(mask)
         mask = torch.from_numpy(np.array(mask, dtype=np.uint8)).long()  # Convert mask to tensor
-        return {'image': image, 'mask': mask}
+        return {'image': image, 'mask': mask} 
