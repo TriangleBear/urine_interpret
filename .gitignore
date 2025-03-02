@@ -188,3 +188,6 @@ pad_mask_7.jpg
 pad_mask_8.jpg
 pad_mask_9.jpg
 /models
+train_class_distribution.png
+test_class_distribution.png
+valid_class_distribution.png
