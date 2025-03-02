@@ -33,9 +33,9 @@ CLASS_NAMES = {
     6: 'Protein',
     7: 'SpGravity',
     8: 'Urobilinogen',
-    9: 'pH',
-    10: 'strip',
-    11: 'background'  # Add background class
+    9: 'background',
+    10: 'pH',
+    11: 'strip'  # Add background class
 }
 
 def extract_polygon_features(image, mask, class_id):
