@@ -40,7 +40,7 @@ device = get_device_info()
 
 # Path Configuration
 BASE_PATH = r"D:/Programming/urine_interpret"
-DATA_ROOT = os.path.join(BASE_PATH, r"Datasets/Final")
+DATA_ROOT = os.path.join(BASE_PATH, r"Datasets/Split_70_20_10")
 TRAIN_IMAGE_FOLDER = os.path.join(DATA_ROOT, "train/images")
 TRAIN_MASK_FOLDER = os.path.join(DATA_ROOT, "train/labels")
 VALID_IMAGE_FOLDER = os.path.join(DATA_ROOT, "valid/images")
