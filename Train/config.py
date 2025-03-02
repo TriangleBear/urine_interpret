@@ -39,7 +39,7 @@ def get_device_info():
 device = get_device_info()
 
 # Path Configuration
-BASE_PATH = r"/content/urine_interpret"
+BASE_PATH = r"/content/urine_interpret/"
 DATA_ROOT = os.path.join(BASE_PATH, r"Datasets/Final")
 TRAIN_IMAGE_FOLDER = os.path.join(DATA_ROOT, "train/images")
 TRAIN_MASK_FOLDER = os.path.join(DATA_ROOT, "train/labels")
