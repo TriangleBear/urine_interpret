@@ -233,6 +233,10 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
     # Track learning rate for plotting
     learning_rates = []
 
+    # 2. IMPROVEMENT: Create a smoother transition between stages
+    total_transition_epochs = 8  # Longer transition period (epoch 4-11)
+    transition_start = 3  # Start transition earlier
+    
     for epoch in range(NUM_EPOCHS):  # Start training loop
 
         # Clear memory at the start of each epoch to prevent OOM
@@ -340,22 +344,21 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
                     loss = loss / accumulation_steps
                     scaler.scale(loss).backward()
                     
-                    # Gradient clipping
-                    if scaler.get_scale() != 1.0:
-                        scaler.unscale_(optimizer)
-
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
-                    
+                    # Only unscale and clip gradients when we're ready to step
                     if (i + 1) % accumulation_steps == 0:
+                        # First unscale the gradients
                         scaler.unscale_(optimizer)
+                        
+                        # Then apply gradient clipping
                         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
+                        
+                        # Step, update the scaler, and reset gradients
                         scaler.step(optimizer)
-                        scaler.update()  # Ensure update is called after step
+                        scaler.update()
                         optimizer.zero_grad(set_to_none=True)
                         torch.cuda.empty_cache()
                     
-                        # Free up memory after processing
-
+                    # Free up memory after processing
                     del images, labels, outputs, pooled_outputs
                     torch.cuda.empty_cache()
                     
