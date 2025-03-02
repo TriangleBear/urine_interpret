@@ -122,7 +122,7 @@ def compute_class_weights(dataset, max_weight=50.0, min_weight=0.5):
         total_samples += 1
             
         # Track empty labels for reporting
-        if label_val == NUM_CLASSES:  # NUM_CLASSES (11) indicates an empty label
+        if label_val == NUM_CLASSES:  # NUM_CLASSES (12) indicates an empty label
             empty_label_count += 1
     
     # Print class distribution summary
@@ -130,7 +130,7 @@ def compute_class_weights(dataset, max_weight=50.0, min_weight=0.5):
     valid_classes = []
     missing_classes = []
     
-    for cls in range(NUM_CLASSES):  # Only iterate through valid classes (0-10)
+    for cls in range(NUM_CLASSES):  # Only iterate through valid classes (0-11)
         count = class_counts.get(cls, 0)
         if count > 0:
             valid_classes.append(cls)
@@ -168,11 +168,15 @@ def compute_class_weights(dataset, max_weight=50.0, min_weight=0.5):
                 weights[i] = 1.0
     
     # Normalize weights
-    if weights[:NUM_CLASSES].sum() > 0:  # Only normalize actual classes (0-10)
+    if weights[:NUM_CLASSES].sum() > 0:  # Only normalize actual classes (0-11)
         avg_weight = weights[:NUM_CLASSES].sum() / NUM_CLASSES
         weights[:NUM_CLASSES] = weights[:NUM_CLASSES] / avg_weight
     
     # Cap minimum and maximum weights for actual classes
     weights[:NUM_CLASSES] = torch.clamp(weights[:NUM_CLASSES], min_weight, max_weight)
+    
+    # Debug: Print the final weights to make sure they're correct
+    print(f"Final class weights shape: {weights.shape}")
+    print(f"Class weights: {weights}")
     
     return weights
