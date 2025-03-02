@@ -76,13 +76,13 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
     print(f"Computed class weights: {class_weights}")
 
     # Standard multiclass approach using CrossEntropyLoss with class weights
-    # Use only the first NUM_CLASSES weights (0-10), exclude the empty label weight
-    print(f"Using class weights: {class_weights[:NUM_CLASSES]}")
+    # Ensure the weight tensor is defined for all 12 classes
+    print(f"Using class weights: {class_weights}")
 
-    criterion_ce = torch.nn.CrossEntropyLoss(weight=class_weights[:NUM_CLASSES], 
-                                           label_smoothing=0.1, 
-                                           reduction='mean', 
-                                           ignore_index=NUM_CLASSES)  # Ignore empty labels during loss calculation
+    criterion_ce = torch.nn.CrossEntropyLoss(weight=class_weights, 
+                                             label_smoothing=0.1, 
+                                             reduction='mean', 
+                                             ignore_index=NUM_CLASSES)  # Ignore empty labels during loss calculation
     criterion_dice = dice_loss
 
     # Model initialization with memory optimization
@@ -243,17 +243,41 @@ def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS
         if epoch < 5:
             for layer in model.unet.inc, model.unet.down1, model.unet.down2, model.unet.down3, model.unet.down4:
                 layer.eval()  # Freeze encoder layers
-            criterion_ce = torch.nn.CrossEntropyLoss(weight=class_weights[11:12], 
-                                                     label_smoothing=0.1, 
-                                                     reduction='mean', 
-                                                     ignore_index=NUM_CLASSES)  # Focus on class 11 (strip)
+                
+            # Create new weights that emphasize class 11 (strip)
+            strip_focused_weights = class_weights.clone()
+            # Boost the weight for class 11 (strip) by 5x
+            strip_focused_weights[11] = strip_focused_weights[11] * 5.0
+            # Scale down other classes
+            for i in range(NUM_CLASSES):
+                if i != 11:  # Skip strip class
+                    strip_focused_weights[i] = strip_focused_weights[i] * 0.2
+                    
+            criterion_ce = torch.nn.CrossEntropyLoss(
+                weight=strip_focused_weights[:NUM_CLASSES],  # Use all weights but focus on strip
+                label_smoothing=0.1,
+                reduction='mean',
+                ignore_index=NUM_CLASSES
+            )
         else:
             for layer in model.unet.inc, model.unet.down1, model.unet.down2, model.unet.down3, model.unet.down4:
                 layer.train()  # Unfreeze encoder layers
-            criterion_ce = torch.nn.CrossEntropyLoss(weight=class_weights[:9] + class_weights[10:11], 
-                                                     label_smoothing=0.1, 
-                                                     reduction='mean', 
-                                                     ignore_index=NUM_CLASSES)  # Focus on classes 0-8, 10 (reagent pads)
+                
+            # Create new weights that emphasize classes 0-8, 10 (reagent pads)
+            pad_focused_weights = class_weights.clone()
+            # Boost the weight for reagent pad classes
+            for i in list(range(9)) + [10]:  # Classes 0-8, 10
+                pad_focused_weights[i] = pad_focused_weights[i] * 3.0
+            # Scale down other classes
+            for i in [9, 11]:  # Background and strip
+                pad_focused_weights[i] = pad_focused_weights[i] * 0.3
+                
+            criterion_ce = torch.nn.CrossEntropyLoss(
+                weight=pad_focused_weights[:NUM_CLASSES],  # Use all weights but focus on reagent pads
+                label_smoothing=0.1,
+                reduction='mean',
+                ignore_index=NUM_CLASSES
+            )
         
         model.train()
         epoch_loss = 0
