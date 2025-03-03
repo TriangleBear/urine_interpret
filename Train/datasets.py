@@ -23,7 +23,10 @@ class UrineStripDataset(Dataset):
         if self.transform is None:
             self.transform = T.Compose([
                 T.Resize(IMAGE_SIZE),
+                T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),  # Added color jitter
+                T.RandomRotation(degrees=15),  # Added random rotation
                 T.ToTensor(),
+
             ])
         
         # Add caching to speed up repeated access
@@ -65,6 +68,8 @@ class UrineStripDataset(Dataset):
         # Apply more aggressive augmentation to samples with reagent pads
         if has_reagent_pads and self.transform and random.random() < 0.75:  # 75% chance
             # Additional augmentations for rare classes to balance the dataset
+            T.RandomAffine(degrees=15, translate=(0.1, 0.1), scale=(0.8, 1.2)),  # Added affine transformation
+
             aug_transforms = [
                 # Color jitter for better generalization
                 lambda img: T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1)(img),
@@ -370,4 +375,4 @@ class SimpleValTransformations:
         mask = Image.fromarray(sample['mask'])  # Convert mask to PIL Image
         mask = self.mask_transform(mask)
         mask = torch.from_numpy(np.array(mask, dtype=np.uint8)).long()  # Convert mask to tensor
-        return {'image': image, 'mask': mask} 
+        return {'image': image, 'mask': mask}
