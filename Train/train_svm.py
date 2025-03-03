@@ -185,7 +185,3 @@ def train_svm_classifier(unet_model_path, model_path=None):
     }
     save_svm_model(model_data, model_path)
     ic(f"Model saved to {model_path}")
-
-if __name__ == "__main__":
-    unet_model_path = r"D:\Programming\urine_interpret\models\weights.pt"
-    train_svm_classifier(unet_model_path)
