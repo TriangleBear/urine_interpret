@@ -1,112 +1,94 @@
-import matplotlib.pyplot as plt
-from config import *  # This will now print CUDA info only once
+import torch
 import numpy as np
-from train_unet_yolo import train_unet_yolo
-from utils import compute_mean_std, dynamic_normalization, post_process_mask, post_process_segmentation
-from datasets import UrineStripDataset, visualize_dataset
-import os
-import json
+import matplotlib.pyplot as plt
+from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix, ConfusionMatrixDisplay
+from torch.utils.data import DataLoader
+from ultralytics.nn.tasks import DetectionModel  # Import the required class
+from datasets import UrineStripDataset
+from models import UNetYOLO
+from config import TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER, NUM_CLASSES, IMAGE_SIZE  # Import more constants
+from train_unet_yolo import train_model  # Import train_model function
+from train_svm import train_svm_classifier  # Import train_svm_classifier function
 
-if __name__ == "__main__":  
-    # Compute dataset statistics using training dataset
-    train_dataset = UrineStripDataset(TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER)
-    mean, std = compute_mean_std(train_dataset)
-    print(f"Dataset mean: {mean}, std: {std}")
-    
-    # Visualize the training dataset
-    
-    # Path to pre-trained weights
-    pre_trained_weights = r"D:\Programming\urine_interpret\models\weights.pt"
-    
-    # Train UNetYOLO
-    result = train_unet_yolo(pre_trained_weights=pre_trained_weights)
-    if result is None:
-        print("Training was not completed due to an error.")
-    else:
-        unet_model, train_losses, val_losses, val_accuracies, test_accuracy = result
-        
-        # Get the metrics folder path from the latest model folder
-        model_folder = get_model_folder()  # Add this import from config
-        metrics_folder = os.path.join(model_folder, "metrics")
-        os.makedirs(metrics_folder, exist_ok=True)
-        
-        # Set matplotlib backend explicitly to ensure plots appear
-        import matplotlib
-        matplotlib.use('TkAgg')  # Try this backend for interactive display
-        
-        # Convert tensors to Python floats if needed
-        train_losses = [float(x) for x in train_losses]
-        val_losses = [float(x) for x in val_losses]
-        val_accuracies = [float(x) for x in val_accuracies]
-        
-        # Plot and save training results
-        epochs_range = range(1, len(train_losses) + 1)
-        plt.figure(figsize=(12, 4))
-        
-        # Plot losses
-        plt.subplot(1, 3, 1)
-        plt.plot(epochs_range, train_losses, label='Train Loss', marker='o')
-        plt.plot(epochs_range, val_losses, label='Validation Loss', marker='x')
-        plt.xlabel('Epochs')
-        plt.ylabel('Loss')
-        plt.legend()
-        plt.title('Training and Validation Loss')
-        plt.grid(True, alpha=0.3)
-        
-        # Plot validation accuracy
-        plt.subplot(1, 3, 2)
-        plt.plot(epochs_range, val_accuracies, label='Validation Accuracy', 
-                 marker='o', color='green')
-        plt.xlabel('Epochs')
-        plt.ylabel('Accuracy (%)')
-        plt.title('Validation Accuracy')
-        plt.grid(True, alpha=0.3)
-        
-        # Add final test accuracy
-        plt.subplot(1, 3, 3)
-        plt.text(0.5, 0.5, f'Test Accuracy:\n{test_accuracy:.2f}%', 
-                 horizontalalignment='center', verticalalignment='center',
-                 fontsize=14, fontweight='bold')
-        plt.axis('off')
-        plt.title('Test Results')
-        
-        plt.tight_layout()
-        
-        # Save the plot to metrics folder
-        metrics_plot_path = os.path.join(metrics_folder, "training_metrics.png")
-        plt.savefig(metrics_plot_path, dpi=300, bbox_inches='tight')
-        print(f"Saved metrics plot to: {metrics_plot_path}")
-        
-        # Force display of the plot
-        plt.draw()
-        plt.pause(0.001)
-        input("Press [enter] to continue.")
-        plt.show()
-        
-        # Also save raw metric data for future reference
-        metrics_data = {
-            'train_losses': [float(x) for x in train_losses],
-            'val_losses': [float(x) for x in val_losses],
-            'val_accuracies': [float(x) for x in val_accuracies],
-            'test_accuracy': float(test_accuracy)
-        }
-        
-        metrics_json_path = os.path.join(metrics_folder, "metrics.json")
-        with open(metrics_json_path, 'w') as f:
-            json.dump(metrics_data, f, indent=4)
-        print(f"Saved raw metrics data to: {metrics_json_path}")
+# Add DetectionModel to safe globals for model loading
+torch.serialization.add_safe_globals([DetectionModel])
 
-        # Apply post-processing to the predicted masks using test dataset
-        test_dataset = UrineStripDataset(TEST_IMAGE_FOLDER, TEST_MASK_FOLDER)
-        for i, (images, masks) in enumerate(test_dataset):
-            with torch.no_grad():
-                images = images.unsqueeze(0).to(device)
-                images = dynamic_normalization(images)
-                outputs = unet_model(images)
-                
-                # Use layered post-processing for better visualization
-                processed_outputs = post_process_segmentation(outputs, apply_layering=True)
-                predicted_mask = processed_outputs.squeeze(0).cpu().numpy()
-                
-                refined_mask = post_process_mask(predicted_mask)
-                cv2.imwrite(f"refined_mask_{i}.png", refined_mask)
+# Load dataset
+def load_data(batch_size=16):
+    dataset = UrineStripDataset(TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+# Evaluate the model
+def evaluate_model(model, dataloader):
+    model.eval()
+    all_preds = []
+    all_targets = []
+    
+    with torch.no_grad():
+        for images, targets, _ in dataloader:
+            outputs = model(images)
+            preds = torch.argmax(outputs, dim=1)
+            all_preds.extend(preds.cpu().numpy())
+            all_targets.extend(targets.cpu().numpy())
+    
+    return np.array(all_targets), np.array(all_preds)
+
+# Calculate metrics
+def calculate_metrics(targets, preds):
+    precision = precision_score(targets, preds, average='weighted', zero_division=0)
+    recall = recall_score(targets, preds, average='weighted', zero_division=0)
+    f1 = f1_score(targets, preds, average='weighted', zero_division=0)
+    return precision, recall, f1
+
+# Main function
+if __name__ == "__main__":
+    # Load model
+    model = UNetYOLO(in_channels=3, out_channels=NUM_CLASSES)
+    
+    # Fix path using raw string or forward slashes to avoid escape sequence warning
+    weights_path = r'models/weights.pt'  # Use raw string with forward slashes
+    
+    try:
+        # Load the model with the security fix
+        model.load_state_dict(torch.load(weights_path, map_location=torch.device('cpu')))
+        print("Successfully loaded model weights!")
+    except Exception as e:
+        print(f"Error loading model weights: {e}")
+        print("Trying alternative loading method...")
+        try:
+            # Alternative: explicitly set weights_only to False (less secure but may work)
+            model.load_state_dict(torch.load(weights_path, map_location=torch.device('cpu'), weights_only=False))
+            print("Successfully loaded model weights with weights_only=False!")
+        except Exception as e2:
+            print(f"Failed to load model: {e2}")
+            print("Continuing with uninitialized model...")
+
+    # Load data
+    dataloader = load_data()
+
+    # Evaluate model
+    targets, preds = evaluate_model(model, dataloader)
+
+    # Calculate metrics
+    precision, recall, f1 = calculate_metrics(targets, preds)
+
+    # Print metrics
+    print(f'Precision: {precision:.4f}, Recall: {recall:.4f}, F1 Score: {f1:.4f}')
+    
+    # Generate and save confusion matrix
+    plt.figure(figsize=(10, 8))
+    cm = confusion_matrix(targets, preds)
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm)
+    disp.plot(cmap='Blues', values_format='d')
+    plt.title('Confusion Matrix')
+    plt.savefig('confusion_matrix.png')
+    plt.close()
+    
+    print("Evaluation complete! Confusion matrix saved to confusion_matrix.png")
+    
+    # Train UNet-YOLO model
+    train_model(num_epochs=10, batch_size=16, learning_rate=0.001)
+    
+    # Train SVM classifier
+    unet_model_path = r'models/weights.pt'
+    train_svm_classifier(unet_model_path)
