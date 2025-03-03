@@ -180,3 +180,17 @@ def compute_class_weights(dataset, max_weight=50.0, min_weight=0.5):
     print(f"Class weights: {weights}")
     
     return weights
+
+def extract_features_and_labels(dataset, model):
+    """Extract features and labels from the dataset using the given model."""
+    features = []
+    labels = []
+    
+    model.eval()
+    with torch.no_grad():
+        for images, targets, _ in dataset:
+            outputs = model(images)
+            features.extend(outputs.cpu().numpy())
+            labels.extend(targets.cpu().numpy())
+    
+    return np.array(features), np.array(labels)
