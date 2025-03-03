@@ -194,3 +194,8 @@ def extract_features_and_labels(dataset, model):
             labels.extend(targets.cpu().numpy())
     
     return np.array(features), np.array(labels)
+
+def save_svm_model(model, filepath):
+    """Save the SVM model to a file."""
+    with open(filepath, 'wb') as f:
+        pickle.dump(model, f)

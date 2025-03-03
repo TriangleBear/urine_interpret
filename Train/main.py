@@ -13,6 +13,9 @@ from train_svm import train_svm_classifier  # Import train_svm_classifier functi
 # Add DetectionModel to safe globals for model loading
 torch.serialization.add_safe_globals([DetectionModel])
 
+# Check if GPU is available
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 # Load dataset
 def load_data(batch_size=16):
     dataset = UrineStripDataset(TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER)
@@ -26,6 +29,7 @@ def evaluate_model(model, dataloader):
     
     with torch.no_grad():
         for images, targets, _ in dataloader:
+            images, targets = images.to(device), targets.to(device)  # Move to GPU
             outputs = model(images)
             preds = torch.argmax(outputs, dim=1)
             all_preds.extend(preds.cpu().numpy())
@@ -43,26 +47,8 @@ def calculate_metrics(targets, preds):
 # Main function
 if __name__ == "__main__":
     # Load model
-    model = UNetYOLO(in_channels=3, out_channels=NUM_CLASSES)
+    model = UNetYOLO(in_channels=3, out_channels=NUM_CLASSES).to(device)  # Move model to GPU
     
-    # Fix path using raw string or forward slashes to avoid escape sequence warning
-    weights_path = r'models/weights.pt'  # Use raw string with forward slashes
-    
-    try:
-        # Load the model with the security fix
-        model.load_state_dict(torch.load(weights_path, map_location=torch.device('cpu')))
-        print("Successfully loaded model weights!")
-    except Exception as e:
-        print(f"Error loading model weights: {e}")
-        print("Trying alternative loading method...")
-        try:
-            # Alternative: explicitly set weights_only to False (less secure but may work)
-            model.load_state_dict(torch.load(weights_path, map_location=torch.device('cpu'), weights_only=False))
-            print("Successfully loaded model weights with weights_only=False!")
-        except Exception as e2:
-            print(f"Failed to load model: {e2}")
-            print("Continuing with uninitialized model...")
-
     # Load data
     dataloader = load_data()
 
@@ -90,5 +76,5 @@ if __name__ == "__main__":
     train_model(num_epochs=10, batch_size=16, learning_rate=0.001)
     
     # Train SVM classifier
-    unet_model_path = r'models/weights.pt'
+    unet_model_path = r'D:\Programming\urine_interpret\models\weights_will_save_us.pt'
     train_svm_classifier(unet_model_path)
