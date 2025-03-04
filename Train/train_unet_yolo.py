@@ -18,6 +18,8 @@ from config import (
     PATIENCE,
     get_model_folder
 )
+from utils import compute_class_weights  # Import the new function
+from config import LR_SCHEDULER_STEP_SIZE, LR_SCHEDULER_GAMMA  # Import scheduler config
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -29,7 +31,7 @@ def mixup_data(x, y, alpha=0.2):
     else:
         lam = 1
 
-    batch_size = x.size(3)
+    batch_size = x.size(0)
     index = torch.randperm(batch_size).to(device)
 
     mixed_x = lam * x + (1 - lam) * x[index, :]
@@ -85,10 +87,10 @@ def validate_model(model, dataloader, epoch):
     
     return val_loss, val_accuracy
 
-def train_model(num_epochs=50, batch_size=16, learning_rate=0.001, save_interval=1, 
-               weight_decay=1e-4, dropout_prob=0.4, mixup_alpha=0.2, 
+def train_model(num_epochs=50, batch_size=3, learning_rate=0.001, save_interval=1, 
+               weight_decay=1e-4, dropout_prob=0.5, mixup_alpha=0.2, 
                label_smoothing_factor=0.1, grad_clip_value=1.0):    
-    """
+    """ 
     Train the UNet-YOLO model with enhanced features and regularization:
     - Validation after each epoch
     - Model saving (best and latest)
@@ -149,8 +151,11 @@ def train_model(num_epochs=50, batch_size=16, learning_rate=0.001, save_interval
     model = UNetYOLO(in_channels=3, out_channels=NUM_CLASSES, dropout_prob=dropout_prob).to(device)
     
     # Use mixed precision training if available
-    scaler = torch.amp.GradScaler() if torch.cuda.is_available() else None
+    scaler = torch.amp.GradScaler('cuda') if torch.cuda.is_available() else None
     
+    # Compute class weights
+    class_weights = compute_class_weights(train_dataset, NUM_CLASSES).to(device)
+
     # Setup optimizer with weight decay (L2 regularization)
     optimizer = torch.optim.AdamW(
         model.parameters(), 
@@ -159,19 +164,8 @@ def train_model(num_epochs=50, batch_size=16, learning_rate=0.001, save_interval
         amsgrad=True  # Use AMSGrad variant for more stable training
     )
     
-    # Multi-step LR scheduler with warmup
-    warmup_epochs = 3
-    milestones = [int(num_epochs * 0.5), int(num_epochs * 0.75)]
-    
-    def get_lr_lambda(epoch):
-        if epoch < warmup_epochs:
-            # Linear warmup
-            return (epoch + 1) / warmup_epochs
-        else:
-            # Step decay
-            return 1.0 * (0.1 ** sum(epoch >= milestone for milestone in milestones))
-            
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=get_lr_lambda)
+    # Learning rate scheduler
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=LR_SCHEDULER_STEP_SIZE, gamma=LR_SCHEDULER_GAMMA)
 
     # Early stopping variables
     best_val_loss = float('inf')
@@ -223,11 +217,11 @@ def train_model(num_epochs=50, batch_size=16, learning_rate=0.001, save_interval
                     if apply_mixup:
                         mixed_images, targets_a, targets_b, lam = mixup_data(images, targets, alpha=mixup_alpha)
                         outputs = model(mixed_images)
-                        loss = lam * dice_loss(outputs, targets_a) + (1 - lam) * dice_loss(outputs, targets_b)
-                        loss += lam * focal_loss(outputs, targets_a) + (1 - lam) * focal_loss(outputs, targets_b)
+                        loss = lam * dice_loss(outputs, targets_a, class_weights=class_weights) + (1 - lam) * dice_loss(outputs, targets_b, class_weights=class_weights)
+                        loss += lam * focal_loss(outputs, targets_a, class_weights=class_weights) + (1 - lam) * focal_loss(outputs, targets_b, class_weights=class_weights)
                     else:
                         outputs = model(images)
-                        loss = dice_loss(outputs, targets) + focal_loss(outputs, targets)
+                        loss = dice_loss(outputs, targets, class_weights=class_weights) + focal_loss(outputs, targets, class_weights=class_weights)
                 
                 # Scale loss and compute gradients
                 scaler.scale(loss).backward()
@@ -244,11 +238,11 @@ def train_model(num_epochs=50, batch_size=16, learning_rate=0.001, save_interval
                 if apply_mixup:
                     mixed_images, targets_a, targets_b, lam = mixup_data(images, targets, alpha=mixup_alpha)
                     outputs = model(mixed_images)
-                    loss = lam * dice_loss(outputs, targets_a) + (1 - lam) * dice_loss(outputs, targets_b)
-                    loss += lam * focal_loss(outputs, targets_a) + (1 - lam) * focal_loss(outputs, targets_b)
+                    loss = lam * dice_loss(outputs, targets_a, class_weights=class_weights) + (1 - lam) * dice_loss(outputs, targets_b, class_weights=class_weights)
+                    loss += lam * focal_loss(outputs, targets_a, class_weights=class_weights) + (1 - lam) * focal_loss(outputs, targets_b, class_weights=class_weights)
                 else:
                     outputs = model(images)
-                    loss = dice_loss(outputs, targets) + focal_loss(outputs, targets)
+                    loss = dice_loss(outputs, targets, class_weights=class_weights) + focal_loss(outputs, targets, class_weights=class_weights)
                 
                 loss.backward()
                 
