@@ -62,7 +62,12 @@ def post_process_mask(mask, kernel_size=3):
     return mask_cleaned
 
 def post_process_segmentation(logits, apply_layering=True):
-    """Optimized post-processing with better memory usage."""
+    """
+    Post-processing with correct prioritization:
+    1. Reagent pads (0-8, 10) - highest priority
+    2. Strip (11) - second priority 
+    3. Background (9) - lowest priority
+    """
     if not apply_layering:
         # Standard argmax approach (highest probability wins)
         return torch.argmax(F.softmax(logits, dim=1), dim=1)
@@ -73,6 +78,7 @@ def post_process_segmentation(logits, apply_layering=True):
     
     # Process in smaller chunks if needed for memory efficiency
     masks = torch.zeros((batch_size, height, width), device=device, dtype=torch.long)
+    masks.fill_(9)  # Start with everything as background
     
     # More efficient softmax calculation
     with torch.no_grad():
@@ -80,21 +86,23 @@ def post_process_segmentation(logits, apply_layering=True):
         log_probs = F.log_softmax(logits, dim=1)
         probs = torch.exp(log_probs)  # Convert to probabilities
         
-        # Get background and strip probabilities 
-        bg_prob = probs[:, -1]  # Class 11 (background)
-        strip_prob = probs[:, 10]  # Class 10 (strip)
+        # First: Apply strip (class 11) where it beats background
+        strip_prob = probs[:, 11]  # Class 11 (strip)
+        background_prob = probs[:, 9]  # Class 9 (background)
+        strip_wins = strip_prob > background_prob
+        masks[strip_wins] = 11  # Apply strip where it beats background
         
-        # Apply strip where it beats background
-        strip_wins = strip_prob > bg_prob
-        masks[strip_wins] = 10
-        
-        # Apply reagent pads (0-9) where they beat both strip and background
-        max_lower_prob = torch.maximum(strip_prob, bg_prob)
-        
-        # Process each class separately to save memory
-        for class_id in range(10):  # 0-9 = reagent pads 
+        # Then: Apply reagent pads (0-8, 10) where they beat both strip and background
+        # These are highest priority and overrule everything else
+        for class_id in list(range(9)) + [10]:  # 0-8, 10 = reagent pads
             pad_prob = probs[:, class_id]
-            pad_wins = pad_prob > max_lower_prob
+            
+            # Reagent pad wins if its probability is highest
+            pad_wins_strip = pad_prob > strip_prob
+            pad_wins_bg = pad_prob > background_prob
+            pad_wins = pad_wins_strip & pad_wins_bg
+            
+            # Apply this pad where it wins
             masks[pad_wins] = class_id
             
     return masks
@@ -120,7 +128,7 @@ def compute_class_weights(dataset, max_weight=50.0, min_weight=0.5):
         total_samples += 1
             
         # Track empty labels for reporting
-        if label_val == NUM_CLASSES:  # NUM_CLASSES (11) indicates an empty label
+        if label_val == NUM_CLASSES:  # NUM_CLASSES (12) indicates an empty label
             empty_label_count += 1
     
     # Print class distribution summary
@@ -128,7 +136,7 @@ def compute_class_weights(dataset, max_weight=50.0, min_weight=0.5):
     valid_classes = []
     missing_classes = []
     
-    for cls in range(NUM_CLASSES):  # Only iterate through valid classes (0-10)
+    for cls in range(NUM_CLASSES):  # Only iterate through valid classes (0-11)
         count = class_counts.get(cls, 0)
         if count > 0:
             valid_classes.append(cls)
@@ -166,11 +174,68 @@ def compute_class_weights(dataset, max_weight=50.0, min_weight=0.5):
                 weights[i] = 1.0
     
     # Normalize weights
-    if weights[:NUM_CLASSES].sum() > 0:  # Only normalize actual classes (0-10)
+    if weights[:NUM_CLASSES].sum() > 0:  # Only normalize actual classes (0-11)
         avg_weight = weights[:NUM_CLASSES].sum() / NUM_CLASSES
         weights[:NUM_CLASSES] = weights[:NUM_CLASSES] / avg_weight
     
     # Cap minimum and maximum weights for actual classes
     weights[:NUM_CLASSES] = torch.clamp(weights[:NUM_CLASSES], min_weight, max_weight)
     
+    # Debug: Print the final weights to make sure they're correct
+    print(f"Final class weights shape: {weights.shape}")
+    print(f"Class weights: {weights}")
+    
     return weights
+
+def extract_features_and_labels(dataset, model):
+    """Extract features and labels from the dataset using the given model."""
+    features = []
+    labels = []
+    
+    model.eval()
+    with torch.no_grad():
+        for images, targets, _ in dataset:
+            outputs = model(images)
+            features.extend(outputs.cpu().numpy())
+            labels.extend(targets.cpu().numpy())
+    
+    return np.array(features), np.array(labels)
+
+def save_svm_model(model, filepath):
+    """Save the SVM model to a file."""
+    with open(filepath, 'wb') as f:
+        pickle.dump(model, f)
+
+def explain_tensor_dimensions(tensor):
+    """
+    Explains the dimensions of an image tensor in human-readable format.
+    Useful for debugging deep learning image processing code.
+    """
+    if len(tensor.shape) == 2:
+        h, w = tensor.shape
+        return f"2D image: height={h}, width={w}"
+    
+    elif len(tensor.shape) == 3:
+        # Check if it's in PyTorch format [C,H,W] or numpy/OpenCV format [H,W,C]
+        if tensor.shape[0] <= 4:  # Likely channel-first format
+            c, h, w = tensor.shape
+            return f"Channel-first image: channels={c}, height={h}, width={w}"
+        else:  # Likely channel-last format
+            h, w, c = tensor.shape
+            return f"Channel-last image: height={h}, width={w}, channels={c}"
+            
+    elif len(tensor.shape) == 4:
+        b, c, h, w = tensor.shape
+        return f"Batch of images: batch_size={b}, channels={c}, height={h}, width={w}"
+    
+    else:
+        return f"Tensor with shape {tensor.shape} (not standard image format)"
+
+def compute_class_weights(dataset, num_classes):
+    """Compute class weights to handle class imbalance."""
+    class_counts = [0] * num_classes
+    for _, label, _ in dataset:
+        class_counts[label] += 1
+    total_samples = sum(class_counts)
+    class_weights = [total_samples / (num_classes * count) if count > 0 else 0 for count in class_counts]
+    return torch.tensor(class_weights, dtype=torch.float32)

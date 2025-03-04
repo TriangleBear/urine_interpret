@@ -10,6 +10,13 @@ import torchvision.transforms as T
 from config import NUM_CLASSES, IMAGE_SIZE
 import random  # Add this missing import at the top
 
+# Define class names for reporting
+CLASS_NAMES = {
+    0: 'Bilirubin', 1: 'Blood', 2: 'Glucose', 3: 'Ketone',
+    4: 'Leukocytes', 5: 'Nitrite', 6: 'Protein', 7: 'SpGravity',
+    8: 'Urobilinogen', 9: 'Background', 10: 'pH', 11: 'Strip'
+}
+
 class UrineStripDataset(Dataset):
     def __init__(self, image_dir, mask_dir, transform=None, cache_size=100):
         self.image_dir = image_dir
@@ -22,8 +29,11 @@ class UrineStripDataset(Dataset):
 
         if self.transform is None:
             self.transform = T.Compose([
-                T.Resize(IMAGE_SIZE),
+                T.Resize((512, 512)),  # Change size to 512x512
+                T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),  # Added color jitter
+                T.RandomRotation(degrees=15),  # Added random rotation
                 T.ToTensor(),
+
             ])
         
         # Add caching to speed up repeated access
@@ -45,93 +55,103 @@ class UrineStripDataset(Dataset):
         # Load image
         image = Image.open(img_path).convert('RGB')
         
-        # Debug print to check what's happening
-        if idx < 5:  # Just print the first few for debugging
-            print(f"\nProcessing image: {img_name}")
-            print(f"Loading mask from: {mask_path}")
-            
-        # Load mask - check if file exists and has content
-        mask, is_empty_label = self._create_mask_from_yolo(mask_path)
+        # CRITICAL FIX: Read ALL classes from the YOLO file and prioritize them correctly
+        all_classes_found = []  # Keep track of all classes found in this file
         
-        # Debug: check what classes are in the raw mask
-        unique_classes = np.unique(mask)
-        if idx < 5:
-            print(f"Classes in raw mask: {unique_classes}")
+        try:
+            if os.path.exists(mask_path) and os.path.getsize(mask_path) > 0:
+                with open(mask_path, 'r') as f:
+                    lines = f.readlines()
+                    
+                    for line in lines:
+                        parts = line.strip().split()
+                        if parts and len(parts) >= 5:  # Valid YOLO format
+                            try:
+                                class_id = int(parts[0])
+                                all_classes_found.append(class_id)
+                            except ValueError:
+                                continue
+        except Exception as e:
+            print(f"Error reading YOLO file {mask_path}: {e}")
+        
+        # FIX: Use correct class prioritization:
+        # 1. Reagent pads (0-8, 10) - highest priority
+        # 2. Strip (11) - medium priority
+        # 3. Background (9) - lowest priority
+        
+        # Default to background class if no annotations
+        selected_class = 9  # Background
+        
+        if all_classes_found:
+            # Check for reagent pad classes (highest priority)
+            reagent_pad_classes = [cls for cls in all_classes_found if cls < 9 or cls == 10]
+            if reagent_pad_classes:
+                # IMPROVEMENT: Instead of always taking the first reagent pad class,
+                # rotate them based on the sample index to increase diversity
+                if len(reagent_pad_classes) > 1:
+                    # Use sample index to select different classes for different samples
+                    selected_class = reagent_pad_classes[idx % len(reagent_pad_classes)]
+                else:
+                    selected_class = reagent_pad_classes[0]
+            # Otherwise, check if we have strip class (medium priority)
+            elif 11 in all_classes_found:
+                selected_class = 11
+        
+        # Debug output to show what classes were found and which one was selected
+        # if idx < 5 or idx % 500 == 0:  # Print debug info for the first 5 and every 500th sample
+        #     if all_classes_found:
+        #         all_classes_str = ', '.join(f"{cls} ({CLASS_NAMES.get(cls, 'Unknown')})" for cls in all_classes_found)
+        #         if len(all_classes_found) > 1:
+        #             print(f"Sample {idx}: Multiple classes found: [{all_classes_str}], Selected: {selected_class} ({CLASS_NAMES.get(selected_class, 'Unknown')})")
+        #         else:
+        #             print(f"Sample {idx}: Single class found: {all_classes_found[0]} ({CLASS_NAMES.get(all_classes_found[0], 'Unknown')})")
+        #     else:
+        #         print(f"Sample {idx}: No classes found, using default: {selected_class} ({CLASS_NAMES.get(selected_class, 'Unknown')})")
+        
+        # Create segmentation mask based on all annotations
+        mask, is_empty_label = self._create_mask_from_yolo(mask_path, debug=False)
         
         # Resize mask to match image size
-        mask = cv2.resize(mask, (IMAGE_SIZE[1], IMAGE_SIZE[0]), interpolation=cv2.INTER_NEAREST)
+        mask = cv2.resize(mask, (512, 512), interpolation=cv2.INTER_NEAREST)
         
-        # Debug: check if resizing affected the classes
-        unique_after_resize = np.unique(mask)
-        if idx < 5 and not np.array_equal(unique_classes, unique_after_resize):
-            print(f"Warning: Classes changed after resize: {unique_after_resize}")
-
         # Apply transform if provided
         image_tensor = self.transform(image)
-
-        # Convert mask to tensor and add channel dimension
-        mask_tensor = torch.from_numpy(mask).unsqueeze(0).long()  # Ensure mask has a channel dimension
         
-        # Debug: check tensor mask classes
-        unique_tensor = torch.unique(mask_tensor).cpu().numpy()
-        if idx < 5:
-            print(f"Classes in tensor mask: {unique_tensor}")
-
-        # Extract class label from mask
-        if is_empty_label:
-            # Use NUM_CLASSES for empty labels
-            label = NUM_CLASSES
-            if idx < 5:
-                print(f"Empty label detected, setting label to: {label}")
-        else:
-            unique_labels = torch.unique(mask_tensor)
-            if idx < 5:
-                print(f"Unique labels found: {unique_labels}")
-                
-            if len(unique_labels) == 1:
-                label = unique_labels.item()
-                if idx < 5:
-                    print(f"Single label detected: {label}")
-            else:
-                # Here's the problem! We're defaulting to 10 when multiple classes are found
-                # Instead let's prefer reagent pad classes (0-9) over strip (10)
-                reagent_labels = [l.item() for l in unique_labels if l.item() < 10]
-                if reagent_labels:
-                    # If any reagent pad classes are found, use the first one
-                    label = reagent_labels[0]
-                    if idx < 5:
-                        print(f"Multiple labels found, using reagent pad class: {label}")
-                else:
-                    label = 10  # Default to strip class only if no reagent pads are found
-                    if idx < 5:
-                        print(f"No reagent pad classes found, using strip class: {label}")
+        # Convert mask to tensor
+        mask_tensor = torch.from_numpy(mask).long()
+        
+        # Use our properly selected class as the label
+        label = selected_class
         
         # Update class distribution
-        if isinstance(label, int):  # Check if label is already an integer
-            if label in self.class_distribution:
-                self.class_distribution[label] += 1
-            else:
-                self.class_distribution[label] = 1
-
+        if label in self.class_distribution:
+            self.class_distribution[label] += 1
+        else:
+            self.class_distribution[label] = 1
+        
         # Add to cache if not full
         if len(self.cache) < self.cache_size:
             self.cache[idx] = (image_tensor, label, self.class_distribution)
-
+        
         return image_tensor, label, self.class_distribution
 
 
-    def _create_mask_from_yolo(self, txt_path, image_size=(256, 256), target_classes=None):
+    def _create_mask_from_yolo(self, txt_path, image_size=(512, 512), target_classes=None, debug=False):
         """
         Create a segmentation mask from YOLO format annotations.
-        Respects class hierarchy: Classes 0-9 (pads) > Class 10 (strip) > Class 11 (background)
+        Clear prioritization of classes:
+        1. Classes 0-8, 10 (reagent pads) - highest priority
+        2. Class 11 (strip) - second priority
+        3. Class 9 (background) - lowest priority
         """
-        # Start with zeros (background/class 11)
+        # Start with zeros (background/class 9)
         mask = np.zeros(image_size, dtype=np.uint8)
+        mask.fill(9)  # Fill with background class explicitly
         is_empty_label = False
         
         # Check if file exists
         if not os.path.exists(txt_path):
-            print(f"Warning: Missing label file: {os.path.basename(txt_path)}")
+            if debug: print(f"Warning: Missing label file: {os.path.basename(txt_path)}")
             is_empty_label = True
             return mask, is_empty_label
         
@@ -142,7 +162,7 @@ class UrineStripDataset(Dataset):
                 
                 # If file is empty or has no valid lines, return empty mask
                 if len(lines) == 0 or all(not line.strip() for line in lines):
-                    print(f"Note: Empty label file: {os.path.basename(txt_path)}")
+                    if debug: print(f"Note: Empty label file: {os.path.basename(txt_path)}")
                     is_empty_label = True
                     return mask, is_empty_label
                 
@@ -158,32 +178,29 @@ class UrineStripDataset(Dataset):
                         class_id = int(parts[0])
                         class_annotations[class_id].append(parts)
                     except Exception as e:
-                        print(f"Error processing line: {line.strip()}, Error: {e}")
+                        if debug: print(f"Error processing line: {line.strip()}, Error: {e}")
                 
-                # Process annotations in Z-order (from back to front)
-                # First: Draw background (class 11) if present - lowest layer
+                # Process annotations in Z-order (from back to front, per prioritization)
+                
+                # First: Draw background (class 9) - already filled by default
+                
+                # Second: Draw strip (class 11) - overwrites background
                 if class_annotations[11]:
-                    # Background is already set to zeros, so we don't need to do anything here
-                    pass
-                
-                # Second: Draw strip (class 10) - middle layer
-                if class_annotations[10]:
-                    for parts in class_annotations[10]:
-                        class_id = 10
+                    for parts in class_annotations[11]:
                         try:
                             # Handle different annotation formats
                             if len(parts) > 5:  # Polygon format
                                 polygon_points = self._parse_polygon(parts, image_size)
                                 if len(polygon_points) >= 3:  # Need at least 3 points for a polygon
-                                    cv2.fillPoly(mask, [polygon_points], class_id)
+                                    cv2.fillPoly(mask, [polygon_points], 11)  # Strip class
                             elif len(parts) == 5:  # Bounding box format
                                 x, y, w, h = self._parse_bbox(parts, image_size)
-                                cv2.rectangle(mask, (x, y), (x+w, y+h), class_id, -1)
+                                cv2.rectangle(mask, (x, y), (x+w, y+h), 11, -1)  # Strip class
                         except Exception as e:
-                            print(f"Error processing strip annotation: {e}")
+                            if debug: print(f"Error processing strip annotation: {e}")
                 
-                # Last: Draw reagent pads (classes 0-9) - top layers
-                for class_id in range(10):
+                # Last: Draw reagent pads (classes 0-8, 10) - highest priority, overwrites strip and background
+                for class_id in list(range(9)) + [10]:  # 0-8, 10 = reagent pads
                     if class_annotations[class_id]:
                         for parts in class_annotations[class_id]:
                             try:
@@ -196,22 +213,22 @@ class UrineStripDataset(Dataset):
                                     x, y, w, h = self._parse_bbox(parts, image_size)
                                     cv2.rectangle(mask, (x, y), (x+w, y+h), class_id, -1)
                             except Exception as e:
-                                print(f"Error processing reagent pad annotation: {e}")
+                                if debug: print(f"Error processing reagent pad annotation: {e}")
                 
         except Exception as e:
-            print(f"Error reading label file {txt_path}: {e}")
+            if debug: print(f"Error reading label file {txt_path}: {e}")
             is_empty_label = True
             return mask, is_empty_label
         
-        # If after processing all lines, mask is still empty (no successful annotations),
+        # If after processing all lines, mask is still only background (no successful annotations),
         # consider it an empty label
-        if np.all(mask == 0):
+        if np.all(mask == 9):
             is_empty_label = True
-            print(f"Warning: No valid annotations found in {os.path.basename(txt_path)}")
+            if debug: print(f"Warning: No valid annotations found in {os.path.basename(txt_path)}")
         
         # Optionally filter mask for target classes
         if target_classes is not None:
-            mask = np.where(np.isin(mask, target_classes), mask, 0)
+            mask = np.where(np.isin(mask, target_classes), mask, 9)  # Default to background if not in target classes
         
         return mask, is_empty_label
 
@@ -308,7 +325,7 @@ class RandomTrainTransformations:
             RandomAffine(translate=(0.1, 0.1)),  # Reduced translation range
         ])
         self.image_transform = transforms.Compose([
-            transforms.RandomResizedCrop(256, scale=(0.6, 1.0)),  # Adjusted scale range
+            transforms.RandomResizedCrop(512, scale=(0.6, 1.0)),  # Change size to 512x512
             transforms.ColorJitter(brightness=0.8, contrast=0.8, saturation=0.8, hue=0.3),  # Adjusted hue range
             transforms.RandomAffine(degrees=30, translate=(0.1, 0.1), scale=(0.8, 1.2), shear=10),  # Reduced affine range
             transforms.RandomGrayscale(p=0.3),  # Adjusted grayscale probability
@@ -317,7 +334,7 @@ class RandomTrainTransformations:
             transforms.Normalize(mean=mean, std=std)
         ])
         self.mask_transform = transforms.Compose([
-            transforms.Resize((256, 256), interpolation=Image.NEAREST),
+            transforms.Resize((512, 512), interpolation=Image.NEAREST),  # Change size to 512x512
             mask_to_tensor
         ])
     def __call__(self, sample):
@@ -340,12 +357,12 @@ class RandomTrainTransformations:
 class SimpleValTransformations:
     def __init__(self, mean, std):
         self.image_transform = transforms.Compose([
-            transforms.Resize((256, 256)),
+            transforms.Resize((512, 512)),  # Change size to 512x512
             transforms.ToTensor(),
             transforms.Normalize(mean=mean, std=std)
         ])
         self.mask_transform = transforms.Compose([
-            transforms.Resize((256, 256), interpolation=Image.NEAREST),
+            transforms.Resize((512, 512), interpolation=Image.NEAREST),  # Change size to 512x512
             mask_to_tensor
         ])
     def __call__(self, sample):

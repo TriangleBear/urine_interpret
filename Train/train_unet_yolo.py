@@ -1,547 +1,372 @@
 import torch
-import torch.nn.functional as F
-import torchvision.transforms as T
-from torch.utils.data import DataLoader
-from torch.optim import AdamW
-from torch.amp import autocast, GradScaler
-from tqdm import tqdm
-from icecream import ic
-from config import *
-from models import UNetYOLO
-from datasets import UrineStripDataset
-from losses import dice_loss, focal_loss
-from utils import compute_mean_std, dynamic_normalization, compute_class_weights, post_process_segmentation
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, ReduceLROnPlateau
-import gc
+import numpy as np
+import logging
 import os
-import matplotlib.pyplot as plt
-from ultralytics.nn.tasks import DetectionModel
+from tqdm import tqdm
+import time
+from torch.utils.data import DataLoader
+from datasets import UrineStripDataset
+from models import UNetYOLO
+from losses import dice_loss, focal_loss
+from config import (
+    TRAIN_IMAGE_FOLDER, 
+    TRAIN_MASK_FOLDER,
+    VALID_IMAGE_FOLDER, 
+    VALID_MASK_FOLDER,
+    NUM_CLASSES, 
+    BATCH_SIZE,
+    PATIENCE,
+    get_model_folder
+)
+from utils import compute_class_weights  # Import the new function
+from config import LR_SCHEDULER_STEP_SIZE, LR_SCHEDULER_GAMMA  # Import scheduler config
 
-def train_unet_yolo(batch_size=BATCH_SIZE, accumulation_steps=ACCUMULATION_STEPS, patience=PATIENCE, pre_trained_weights=None):
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:64'
+# Regularization techniques
+def mixup_data(x, y, alpha=0.2):
+    """Apply mixup augmentation to the batch"""
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1
+
+    batch_size = x.size(0)
+    index = torch.randperm(batch_size).to(device)
+
+    mixed_x = lam * x + (1 - lam) * x[index, :]
+    y_a, y_b = y, y[index]
+    return mixed_x, y_a, y_b, lam
+
+def label_smoothing(targets, num_classes, smoothing=0.1):
+    """Apply label smoothing to reduce overconfidence"""
+    batch_size = targets.size(0)
+    targets_one_hot = torch.zeros(batch_size, num_classes).to(device)
+    targets_one_hot.scatter_(1, targets.unsqueeze(1), 1)
+    targets_one_hot = targets_one_hot * (1 - smoothing) + smoothing / num_classes
+    return targets_one_hot
+
+def validate_model(model, dataloader, epoch):
+    """Run validation on the model and return metrics."""
+    model.eval()
+    val_loss = 0.0
+    correct = 0
+    total = 0
     
-    # Clear memory at start
-    torch.cuda.empty_cache()
-    gc.collect()
-
-    # Reduce image size and batch size further
-    max_size = 256  # Further reduced from 512 to 256
+    with torch.no_grad():
+        val_progress = tqdm(dataloader, desc=f"Validation Epoch {epoch+1}", 
+                            position=2, leave=False)
+        
+        for images, targets, _ in val_progress:
+            images = images.to(device, non_blocking=True)
+            targets = targets.to(device, non_blocking=True)
+            
+            # Forward pass
+            outputs = model(images)
+            loss = dice_loss(outputs, targets) + focal_loss(outputs, targets)
+            
+            # Track loss and accuracy
+            val_loss += loss.item()
+            preds = torch.argmax(outputs, dim=1)
+            
+            # Calculate accuracy per image (using most common class)
+            for i in range(preds.shape[0]):
+                img_pred = preds[i].flatten()
+                values, counts = torch.unique(img_pred, return_counts=True)
+                mode_idx = torch.argmax(counts)
+                most_common_class = values[mode_idx].item()
+                
+                if most_common_class == targets[i].item():
+                    correct += 1
+                total += 1
+                
+            val_progress.set_postfix({"Loss": f"{loss.item():.4f}"})
     
-    # Create datasets with reduced size and data augmentation
-    train_transform = T.Compose([
-        T.RandomHorizontalFlip(),
-        T.RandomVerticalFlip(),
-        T.RandomRotation(30),
-        T.RandomResizedCrop(max_size, scale=(0.8, 1.0)),
-        T.ToTensor(),
-        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
-    val_transform = T.Compose([
-        T.Resize(max_size),
-        T.ToTensor(),
-        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
+    val_loss = val_loss / len(dataloader)
+    val_accuracy = correct / total if total > 0 else 0
     
-    train_dataset = UrineStripDataset(TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER, transform=train_transform)
-    val_dataset = UrineStripDataset(VALID_IMAGE_FOLDER, VALID_MASK_FOLDER, transform=val_transform)
-    test_dataset = UrineStripDataset(TEST_IMAGE_FOLDER, TEST_MASK_FOLDER, transform=val_transform)
+    return val_loss, val_accuracy
 
-    # Create data loaders with memory optimizations
+def train_model(num_epochs=50, batch_size=3, learning_rate=0.001, save_interval=1, 
+               weight_decay=1e-4, dropout_prob=0.5, mixup_alpha=0.2, 
+               label_smoothing_factor=0.1, grad_clip_value=1.0):    
+    """ 
+    Train the UNet-YOLO model with enhanced features and regularization:
+    - Validation after each epoch
+    - Model saving (best and latest)
+    - Early stopping
+    - GPU optimization
+    - Advanced regularization techniques
+    """
+    # Set up logging
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger("training")
+    
+    # Create output directory for model checkpoints
+    model_dir = get_model_folder()
+    os.makedirs(model_dir, exist_ok=True)
+    
+    # File paths for model saving
+    best_model_path = os.path.join(model_dir, "best_model.pt")
+    latest_model_path = os.path.join(model_dir, "latest_model.pt")
+    
+    # Save training parameters for reproducibility
+    training_params = {
+        'num_epochs': num_epochs,
+        'batch_size': batch_size,
+        'learning_rate': learning_rate,
+        'weight_decay': weight_decay,
+        'dropout_prob': dropout_prob,
+        'mixup_alpha': mixup_alpha,
+        'label_smoothing': label_smoothing_factor,
+        'grad_clip': grad_clip_value
+    }
+    
+    with open(os.path.join(model_dir, "training_params.txt"), "w") as f:
+        for param, value in training_params.items():
+            f.write(f"{param}: {value}\n")
+    
+    # Load datasets with data augmentation
+    train_dataset = UrineStripDataset(TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER)
+    valid_dataset = UrineStripDataset(VALID_IMAGE_FOLDER, VALID_MASK_FOLDER)
+    
     train_loader = DataLoader(
         train_dataset, 
-        batch_size=BATCH_SIZE,
-        shuffle=True, 
-        num_workers=0,
-        pin_memory=False
+        batch_size=batch_size,
+        shuffle=True,
+        pin_memory=True,  # Speed up data transfer to GPU
+        num_workers=2,    # Parallel data loading
+        drop_last=True    # Avoid problems with small batches
     )
-    val_loader = DataLoader(
-        val_dataset, 
-        batch_size=BATCH_SIZE, 
-        num_workers=0, 
-        pin_memory=False
-    )
-    test_loader = DataLoader(
-        test_dataset, 
-        batch_size=BATCH_SIZE, 
-        num_workers=0, 
-        pin_memory=False
-    )
-
-    # Compute class weights with special handling for missing classes
-    print("Computing class weights...")
-    class_weights = compute_class_weights(train_dataset, max_weight=50.0)
-    class_weights = class_weights.clone().detach().to(device)
     
-    print(f"Computed class weights: {class_weights}")
+    valid_loader = DataLoader(
+        valid_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        pin_memory=True,
+        num_workers=2
+    )
 
-    # Standard multiclass approach using CrossEntropyLoss with class weights
-    # Use only the first NUM_CLASSES weights (0-10), exclude the empty label weight
-    print(f"Using class weights: {class_weights[:NUM_CLASSES]}")
-
-    criterion_ce = torch.nn.CrossEntropyLoss(weight=class_weights[:NUM_CLASSES], 
-                                           label_smoothing=0.1, 
-                                           reduction='mean', 
-                                           ignore_index=NUM_CLASSES)  # Ignore empty labels during loss calculation
-    criterion_dice = dice_loss
-
-    # Model initialization with memory optimization
-    model = UNetYOLO(3, NUM_CLASSES, dropout_prob=0.5).to(device)
+    # Initialize model with specified dropout probability
+    model = UNetYOLO(in_channels=3, out_channels=NUM_CLASSES, dropout_prob=dropout_prob).to(device)
     
-    # Enable gradient checkpointing to save memory
-    model.unet.eval()  # Set UNet to eval mode
+    # Use mixed precision training if available
+    scaler = torch.amp.GradScaler('cuda') if torch.cuda.is_available() else None
+    
+    # Compute class weights
+    class_weights = compute_class_weights(train_dataset, NUM_CLASSES).to(device)
 
-    # Only train decoder initially
-    for layer in model.unet.up1, model.unet.up2, model.unet.up3, model.unet.up4:
-        layer.train()
+    # Setup optimizer with weight decay (L2 regularization)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), 
+        lr=learning_rate, 
+        weight_decay=weight_decay,
+        amsgrad=True  # Use AMSGrad variant for more stable training
+    )
+    
+    # Learning rate scheduler
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=LR_SCHEDULER_STEP_SIZE, gamma=LR_SCHEDULER_GAMMA)
 
-    # Load pre-trained weights if specified
-    if pre_trained_weights:
-        try:
-            torch.serialization.add_safe_globals([DetectionModel])
-            model.load_state_dict(torch.load(pre_trained_weights, map_location=device, weights_only=False), strict=False)
-            ic(f"Successfully loaded pre-trained weights from {pre_trained_weights}")
-        except Exception as e:
-            print(f"Error loading pre-trained weights: {e}")
-            print("Continuing with randomly initialized weights.")
-
-    # Use a smaller learning rate for better convergence with imbalanced data
-    optimizer = AdamW(model.parameters(), lr=5e-6, weight_decay=1e-6)
-    scaler = GradScaler()
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
-
-
+    # Early stopping variables
+    best_val_loss = float('inf')
+    epochs_no_improve = 0
+    early_stop = False
+    
+    # Training metrics tracking
     train_losses = []
     val_losses = []
     val_accuracies = []
-
-    # Initialize training loop variables
-    best_val_loss = float('inf')
-    early_stop_counter = 0
-    model_folder = get_model_folder()
-    model_filename = os.path.join(model_folder, "unet_model.pt")
-    best_model_path = os.path.join(model_folder, "unet_model_best.pt")
-    metrics_folder = os.path.join(model_folder, "metrics")
-    os.makedirs(metrics_folder, exist_ok=True)
-
-    class_counts = {i: 0 for i in range(NUM_CLASSES + 1)}  # Include background class
     
-    # Add this line to initialize the confusion matrix
-    confmat = torch.zeros((NUM_CLASSES + 1, NUM_CLASSES + 1), device='cpu')
-
-    # Add a function to save plots during training
-    def save_epoch_plots(epoch, train_losses, val_losses, val_accuracies, class_correct, class_total, lr, metrics_folder):
-        """Save plots for monitoring training progress at each epoch."""
-        plt.figure(figsize=(15, 10))
-        
-        # Plot 1: Training and validation loss
-        plt.subplot(2, 2, 1)
-        plt.plot(range(1, len(train_losses) + 1), train_losses, 'b-', label='Train Loss')
-        plt.plot(range(1, len(val_losses) + 1), val_losses, 'r-', label='Val Loss')
-        plt.xlabel('Epoch')
-        plt.ylabel('Loss')
-        plt.title(f'Training Progress - Epoch {epoch+1}')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        
-        # Plot 2: Validation accuracy
-        plt.subplot(2, 2, 2)
-        plt.plot(range(1, len(val_accuracies) + 1), val_accuracies, 'g-')
-        plt.xlabel('Epoch')
-        plt.ylabel('Accuracy (%)')
-        plt.title('Validation Accuracy')
-        plt.grid(True, alpha=0.3)
-        
-        # Plot 3: Per-class accuracy for key classes
-        plt.subplot(2, 2, 3)
-        key_classes = [0, 1, 5, 10]  # Example: focus on a few important classes
-        class_names = ['Bilirubin', 'Blood', 'Nitrite', 'Strip']  # Corresponding names
-        accuracies = []
-        for cls in key_classes:
-            if cls in class_total and class_total[cls] > 0:
-                acc = 100 * class_correct[cls] / class_total[cls]
-                accuracies.append(acc)
-            else:
-                accuracies.append(0)
-        
-        plt.bar(class_names, accuracies)
-        plt.xlabel('Class')
-        plt.ylabel('Accuracy (%)')
-        plt.title('Per-class Accuracy')
-        plt.ylim(0, 100)
-        
-        # Plot 4: Learning rate progression
-        plt.subplot(2, 2, 4)
-        plt.plot(range(1, epoch+2), lr, 'mo-')
-        plt.xlabel('Epoch')
-        plt.ylabel('Learning Rate')
-        plt.title('Learning Rate Progression')
-        plt.yscale('log')
-        plt.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        
-        # Save the plot
-        plot_filename = os.path.join(metrics_folder, f'epoch_{epoch+1:03d}_metrics.png')
-        plt.savefig(plot_filename, dpi=100)
-        plt.close()
-        
-        # Also save a "latest" version that always gets overwritten
-        latest_plot = os.path.join(metrics_folder, 'latest_metrics.png')
-        plt.figure(figsize=(15, 10))
-        
-        # Same plots as above
-        # Plot 1
-        plt.subplot(2, 2, 1)
-        plt.plot(range(1, len(train_losses) + 1), train_losses, 'b-', label='Train Loss')
-        plt.plot(range(1, len(val_losses) + 1), val_losses, 'r-', label='Val Loss')
-        plt.xlabel('Epoch')
-        plt.ylabel('Loss')
-        plt.title(f'Training Progress - Epoch {epoch+1}')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        
-        # Plot 2
-        plt.subplot(2, 2, 2)
-        plt.plot(range(1, len(val_accuracies) + 1), val_accuracies, 'g-')
-        plt.xlabel('Epoch')
-        plt.ylabel('Accuracy (%)')
-        plt.title('Validation Accuracy')
-        plt.grid(True, alpha=0.3)
-        
-        # Plot 3
-        plt.subplot(2, 2, 3)
-        plt.bar(class_names, accuracies)
-        plt.xlabel('Class')
-        plt.ylabel('Accuracy (%)')
-        plt.title('Per-class Accuracy')
-        plt.ylim(0, 100)
-        
-        # Plot 4
-        plt.subplot(2, 2, 4)
-        plt.plot(range(1, epoch+2), lr, 'mo-')
-        plt.xlabel('Epoch')
-        plt.ylabel('Learning Rate')
-        plt.title('Learning Rate Progression')
-        plt.yscale('log')
-        plt.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        plt.savefig(latest_plot, dpi=100)
-        plt.close()
-
-    # Track learning rate for plotting
-    learning_rates = []
-
-    for epoch in range(NUM_EPOCHS):  # Start training loop
-
-        # Clear memory at the start of each epoch to prevent OOM
-        torch.cuda.empty_cache()
-        gc.collect()
-        
-        # First 5 epochs: train only decoder to save memory and reduce GPU load
-        if epoch == 5:
-            for layer in model.unet.inc, model.unet.down1, model.unet.down2, model.unet.down3, model.unet.down4:
-                layer.train()  # Start training encoder after 5 epochs
-        
+    # Create tqdm progress bars
+    epoch_progress = tqdm(range(num_epochs), desc="Training epochs", position=0)
+    
+    # Main training loop
+    for epoch in epoch_progress:
+        # Training phase
         model.train()
-        epoch_loss = 0
-        optimizer.zero_grad(set_to_none=True)
-
-        # Training loop - with correct handling of empty labels
-        with tqdm(total=len(train_loader), desc=f"Training Epoch {epoch+1}") as pbar:
-            for i, (images, labels, _) in enumerate(train_loader):
-                try:
-                    # Skip batches that consist entirely of empty labels
-                    if torch.all(labels == NUM_CLASSES):
-                        print(f"Skipping batch {i} - all empty labels")
-                        pbar.update(1)
-                        continue
-                    
-                    # For mixed batches, keep training but the loss function will
-                    # ignore the empty labels thanks to ignore_index=NUM_CLASSES
-                    
-                    # Move to GPU and free CPU memory
-                    images = images.to(device, non_blocking=True)
-                    labels = labels.to(device, non_blocking=True)
-                    images = dynamic_normalization(images)
-                    
-                    # Resize images to reduce memory
-                    if images.shape[2] > max_size or images.shape[3] > max_size:
-                        scale_factor = max_size / max(images.shape[2], images.shape[3])
-                        new_h, new_w = int(images.shape[2] * scale_factor), int(images.shape[3] * scale_factor)
-                        images = F.interpolate(images, size=(new_h, new_w), mode='bilinear', align_corners=False)
-                    
-                    # Use autocast for mixed precision to further reduce memory usage
-                    with autocast(device_type="cuda"):
+        epoch_loss = 0.0
+        
+        # Track batch times for performance monitoring
+        batch_times = []
+        
+        # Progress bar for training batches
+        batch_progress = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}", 
+                              position=1, leave=False)
+        
+        # Clear GPU cache before training
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        start_time = time.time()
+        for images, targets, _ in batch_progress:
+            batch_start = time.time()
+            
+            # Move data to device
+            images = images.to(device, non_blocking=True)
+            targets = targets.to(device, non_blocking=True)
+            
+            # Apply mixup augmentation with probability 0.5
+            apply_mixup = epoch >= 5 and np.random.random() < 0.5  # Start mixup after 5 epochs
+            
+            # Zero gradients
+            optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
+            
+            if scaler is not None:
+                # Use mixed precision training
+                with torch.amp.autocast('cuda'):
+                    if apply_mixup:
+                        mixed_images, targets_a, targets_b, lam = mixup_data(images, targets, alpha=mixup_alpha)
+                        outputs = model(mixed_images)
+                        loss = lam * dice_loss(outputs, targets_a, class_weights=class_weights) + (1 - lam) * dice_loss(outputs, targets_b, class_weights=class_weights)
+                        loss += lam * focal_loss(outputs, targets_a, class_weights=class_weights) + (1 - lam) * focal_loss(outputs, targets_b, class_weights=class_weights)
+                    else:
                         outputs = model(images)
-                        
-                        # Global Average Pooling for classification
-                        pooled_outputs = F.adaptive_avg_pool2d(outputs, 1).squeeze(-1).squeeze(-1)
-                        
-                        # CrossEntropy loss (handled by ignore_index)
-                        loss_ce = criterion_ce(pooled_outputs, labels)
-                        
-                        # Only compute dice and focal losses if there are non-background samples
-                        background_mask = labels == NUM_CLASSES
-                        if not torch.all(background_mask):
-                            try:
-                                # Wrap these in try-except - if they fail, fallback to CE loss only
-                                with autocast(device_type="cuda"):  # Temporarily disable autocast for dice_loss
-                                    loss_dice = criterion_dice(outputs, labels)
-                                    loss_focal = focal_loss(outputs, labels, gamma=2.0)
-                                
-                                # Combined loss with balanced weights 
-                                loss = loss_ce * 0.4 + loss_dice * 0.3 + loss_focal * 0.3
-                            except RuntimeError as e:
-                                print(f"Error in loss calculation: {e}")
-                                print("Using CE loss only for this batch.")
-                                loss = loss_ce
-                        else:
-                            # If all samples are background, use CE loss only
-                            loss = loss_ce
-                    
-                    # Scale loss and backward pass
-                    loss = loss / accumulation_steps
-                    scaler.scale(loss).backward()
-                    
-                    # Gradient clipping
-                    if scaler.get_scale() != 1.0:
-                        scaler.unscale_(optimizer)
-
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
-                    
-                    if (i + 1) % accumulation_steps == 0:
-                        scaler.unscale_(optimizer)
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
-                        scaler.step(optimizer)
-                        scaler.update()  # Ensure update is called after step
-                        optimizer.zero_grad(set_to_none=True)
-                        torch.cuda.empty_cache()
-                    
-                        # Free up memory after processing
-
-                    del images, labels, outputs, pooled_outputs
-                    torch.cuda.empty_cache()
-                    
-                    epoch_loss += loss.item() * accumulation_steps
-                    pbar.update(1)
+                        loss = dice_loss(outputs, targets, class_weights=class_weights) + focal_loss(outputs, targets, class_weights=class_weights)
                 
-                except RuntimeError as e:
-                    if "out of memory" in str(e):
-                        print(f"OOM error in batch {i}, skipping...")
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-                        continue
-                    else:
-                        raise e
-
-        avg_loss = epoch_loss / len(train_loader)
-        train_losses.append(avg_loss)
-        print(f"Epoch {epoch+1} Train Loss: {avg_loss:.4f}")
-
-        # Validation with memory optimization to handle OOM
-        val_loss = 0
-        correct = 0
-        total = 0
-        model.eval()
-        class_correct = {i: 0 for i in range(NUM_CLASSES)}
-        class_total = {i: 0 for i in range(NUM_CLASSES)}
-        
-        # Validation with memory optimization - update to use layered post-processing
-        with torch.no_grad():
-            for images, labels, _ in tqdm(val_loader, desc="Validation"):
-                try:
-                    images = images.to(device, non_blocking=True)
-                    labels = labels.to(device, non_blocking=True)
-                    
-                    # Resize images to reduce memory
-                    if images.shape[2] > max_size or images.shape[3] > max_size:
-                        scale_factor = max_size / max(images.shape[2], images.shape[3])
-                        new_h, new_w = int(images.shape[2] * scale_factor), int(images.shape[3] * scale_factor)
-                        images = F.interpolate(images, size=(new_h, new_w), mode='bilinear', align_corners=False)
-                    
+                # Scale loss and compute gradients
+                scaler.scale(loss).backward()
+                
+                # Apply gradient clipping
+                if grad_clip_value > 0:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_value)
+                
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                # Standard training
+                if apply_mixup:
+                    mixed_images, targets_a, targets_b, lam = mixup_data(images, targets, alpha=mixup_alpha)
+                    outputs = model(mixed_images)
+                    loss = lam * dice_loss(outputs, targets_a, class_weights=class_weights) + (1 - lam) * dice_loss(outputs, targets_b, class_weights=class_weights)
+                    loss += lam * focal_loss(outputs, targets_a, class_weights=class_weights) + (1 - lam) * focal_loss(outputs, targets_b, class_weights=class_weights)
+                else:
                     outputs = model(images)
-                    
-                    # Apply post-processing that respects class hierarchy
-                    processed_outputs = post_process_segmentation(outputs, apply_layering=True)
-                    
-                    # Global Average Pooling for classification
-                    pooled_outputs = F.adaptive_avg_pool2d(outputs, 1).squeeze(-1).squeeze(-1)
-                    
-                    loss_val = criterion_ce(pooled_outputs, labels)
-                    val_loss += loss_val.item()
-                    
-                    # Calculate accuracy using hierarchical predictions
-                    _, predicted = torch.max(pooled_outputs, 1)
-                    total += labels.size(0)
-                    correct += (predicted == labels).sum().item()
-                    
-                    # Track per-class accuracy
-                    for cls in range(NUM_CLASSES):
-                        mask = (labels == cls)
-                        if mask.sum().item() > 0:
-                            class_correct[cls] += (predicted[mask] == cls).sum().item()
-                            class_total[cls] += mask.sum().item()
-                    
-                    # Free memory
-                    del images, labels, outputs, pooled_outputs, predicted, loss_val
-                    torch.cuda.empty_cache()
+                    loss = dice_loss(outputs, targets, class_weights=class_weights) + focal_loss(outputs, targets, class_weights=class_weights)
                 
-                except RuntimeError as e:
-                    if "out of memory" in str(e):
-                        print(f"OOM error in validation, skipping batch...")
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-                        continue
-                    else:
-                        raise e
+                loss.backward()
+                
+                # Apply gradient clipping
+                if grad_clip_value > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_value)
+                
+                optimizer.step()
+            
+            # Update metrics
+            current_loss = loss.item()
+            epoch_loss += current_loss
+            
+            # Update progress bar
+            batch_end = time.time()
+            batch_time = batch_end - batch_start
+            batch_times.append(batch_time)
+            
+            batch_progress.set_postfix({
+                "Loss": f"{current_loss:.4f}",
+                "Batch time": f"{batch_time:.3f}s"
+            })
         
-        # Calculate overall metrics
-        avg_val_loss = val_loss / len(val_loader)
-        val_losses.append(avg_val_loss)
-        val_accuracy = 100 * correct / total if total > 0 else 0
+        # Calculate training metrics
+        avg_epoch_loss = epoch_loss / len(train_loader)
+        avg_batch_time = sum(batch_times) / len(batch_times)
+        epoch_time = time.time() - start_time
+        train_losses.append(avg_epoch_loss)
+        
+        # Validation phase
+        val_loss, val_accuracy = validate_model(model, valid_loader, epoch)
+        val_losses.append(val_loss)
         val_accuracies.append(val_accuracy)
         
-        print(f"Epoch {epoch+1}: Train Loss {avg_loss:.4f}, Val Loss {avg_val_loss:.4f}, Val Accuracy {val_accuracy:.2f}%")
-        
-        # Report per-class metrics
-        for cls in range(NUM_CLASSES):
-            if cls in class_counts and class_total[cls] > 0:
-                cls_acc = 100 * class_correct[cls] / class_total[cls]
-                print(f"  Class {cls} accuracy: {cls_acc:.2f}% ({class_correct[cls]}/{class_total[cls]})")
-        
-        # Adjust learning rate based on validation loss
-        scheduler.step(avg_val_loss)
-        
-        # Get current learning rate
+        # Update learning rate
+        scheduler.step()
         current_lr = optimizer.param_groups[0]['lr']
-        learning_rates.append(current_lr)
         
-        # Save plots for monitoring at each epoch
-        save_epoch_plots(
-            epoch, 
-            train_losses, 
-            val_losses, 
-            val_accuracies, 
-            class_correct,
-            class_total,
-            learning_rates,
-            metrics_folder
+        # Update epoch progress bar
+        epoch_progress.set_postfix({
+            "Train Loss": f"{avg_epoch_loss:.4f}",
+            "Val Loss": f"{val_loss:.4f}", 
+            "Val Acc": f"{val_accuracy:.4f}",
+            "LR": f"{current_lr:.6f}"
+        })
+        
+        # Log metrics
+        logger.info(
+            f"Epoch {epoch+1}/{num_epochs} - "
+            f"Train Loss: {avg_epoch_loss:.4f}, "
+            f"Val Loss: {val_loss:.4f}, "
+            f"Val Accuracy: {val_accuracy:.4f}, "
+            f"LR: {current_lr:.6f}, "
+            f"Time: {epoch_time:.2f}s"
         )
         
-        print(f"Saved monitoring plots for epoch {epoch+1}")
+        # Save latest model every save_interval epochs
+        if epoch % save_interval == 0:
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'train_loss': avg_epoch_loss,
+                'val_loss': val_loss,
+                'val_accuracy': val_accuracy
+            }, latest_model_path)
         
-        # Save model checkpoint periodically
-        if (epoch + 1) % 5 == 0:  # Save every 5 epochs
-            checkpoint_path = os.path.join(model_folder, f"unet_model_epoch{epoch+1}.pt")
-            torch.save(model.state_dict(), checkpoint_path)
-            print(f"Saved model checkpoint to {checkpoint_path}")
-        
-        # Save best model based on validation loss
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
-            torch.save(model.state_dict(), best_model_path)
-            print(f"New best model saved! Validation loss: {best_val_loss:.4f}")
-            early_stop_counter = 0  # Reset counter when we find a better model
+        # Save best model
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            epochs_no_improve = 0
+            
+            # Save best model
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'train_loss': avg_epoch_loss,
+                'val_loss': val_loss,
+                'val_accuracy': val_accuracy,
+                'best_val_loss': best_val_loss
+            }, best_model_path)
+            
+            logger.info(f"✓ Saved best model with val_loss: {val_loss:.4f}")
         else:
-            early_stop_counter += 1
-            print(f"Early stopping counter: {early_stop_counter}/{patience}")
+            epochs_no_improve += 1
+            logger.info(f"No improvement for {epochs_no_improve} epochs")
             
-        # Check for early stopping
-        if early_stop_counter >= patience:
-            print(f"Early stopping triggered after {epoch+1} epochs")
-            # Save final model before stopping
-            torch.save(model.state_dict(), model_filename)
-            print(f"Saved final model to {model_filename}")
-            break  # Exit the training loop
-    
-    # Save the final model if not stopped early
-    if early_stop_counter < patience:
-        torch.save(model.state_dict(), model_filename)
-        print(f"Saved final model to {model_filename}")
+            # Check for early stopping
+            if epochs_no_improve >= PATIENCE:
+                logger.info(f"Early stopping triggered after {epoch+1} epochs")
+                early_stop = True
+                break
         
-    # If training completed, load the best model for evaluation
-    print("Loading best model for evaluation...")
-    model.load_state_dict(torch.load(best_model_path))
+        # Clear GPU memory cache after each epoch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    
+    # Final model saving
+    final_model_path = os.path.join(model_dir, "final_model.pt")
+    torch.save(model.state_dict(), final_model_path)
+    
+    # Report training completion
+    status = "Early stopped" if early_stop else "Completed"
+    logger.info(f"Training {status} after {epoch+1} epochs")
+    logger.info(f"Best validation loss: {best_val_loss:.4f}")
+    logger.info(f"Models saved in {model_dir}")
+    
+    print(f"\nTraining {status}! Models saved to {model_dir}")
+    
+    # Load the best model for return
+    model.load_state_dict(torch.load(best_model_path)['model_state_dict'])
+    
+    return model, {
+        'train_losses': train_losses,
+        'val_losses': val_losses,
+        'val_accuracies': val_accuracies,
+        'best_val_loss': best_val_loss,
+        'early_stopped': early_stop,
+        'epochs_completed': epoch + 1,
+        'model_directory': model_dir
+    }
 
-    test_total = 0
-    test_loss = 0
-    test_correct = 0
-    
-    # Test loop - update to unpack 3 values
-    print("\nEvaluating on test set...")
-    with torch.no_grad():
-        for images, labels, _ in tqdm(test_loader, desc="Testing"):  # Added _ to unpack class_distribution
-            try:
-                images = images.to(device, non_blocking=True)
-                labels = labels.to(device, non_blocking=True)
-                
-                # Resize images to reduce memory
-                if images.shape[2] > max_size or images.shape[3] > max_size:
-                    scale_factor = max_size / max(images.shape[2], images.shape[3])
-                    new_h, new_w = int(images.shape[2] * scale_factor), int(images.shape[3] * scale_factor)
-                    images = F.interpolate(images, size=(new_h, new_w), mode='bilinear', align_corners=False)
-                
-                outputs = model(images)
-                
-                # Global Average Pooling for classification
-                pooled_outputs = F.adaptive_avg_pool2d(outputs, 1).squeeze(-1).squeeze(-1)
-                
-                loss = criterion_ce(pooled_outputs, labels)  # Use pooled_outputs directly for loss
-                test_loss += loss.item()
-                
-                # Calculate accuracy
-                _, predicted = torch.max(pooled_outputs, 1)  # Use pooled_outputs directly for accuracy
-                test_total += labels.size(0)
-                test_correct += (predicted == labels).sum().item()
-                
-                # Free memory
-                del images, labels, outputs, pooled_outputs, predicted, loss
-                torch.cuda.empty_cache()
-            
-            except RuntimeError as e:
-                if "out of memory" in str(e):
-                    print(f"OOM error in testing, skipping batch...")
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                    continue
-                else:
-                    raise e
-    
-    test_accuracy = 100 * test_correct / test_total if test_total > 0 else 0
-    print(f"\nTest Set Results:")
-    print(f"Average Loss: {test_loss/len(test_loader):.4f}")
-    print(f"Accuracy: {test_accuracy:.2f}%")
-    
-    # Create a confusion matrix at the end of training to analyze performance
-    print("\nGenerating final confusion matrix...")
-    # Reset the confusion matrix before using it
-    confmat.zero_()  # Clear any existing values
-    
-    # Confusion matrix generation - update to unpack 3 values
-    with torch.no_grad():
-        for images, labels, _ in tqdm(val_loader, desc="Confusion Matrix"):  # Added _ to unpack class_distribution
-            images = images.to(device)
-            labels = labels.to(device)
-            outputs = model(images)
-            pooled_outputs = F.adaptive_avg_pool2d(outputs, 1).squeeze(-1).squeeze(-1)
-            _, preds = torch.max(pooled_outputs, 1)
-            for t, p in zip(labels, preds):
-                confmat[t, p] += 1
-    
-    # Print confusion matrix
-    print("\nConfusion Matrix:")
-    print(confmat)
-    
-    # Calculate per-class accuracy
-    per_class_acc = confmat.diag().float() / confmat.sum(1).float() * 100
-    for i in range(NUM_CLASSES):
-        if i in class_counts:
-            print(f"Class {i} accuracy: {per_class_acc[i]:.2f}%")
-    
-    # Clear final memory before returning
-    torch.cuda.empty_cache()
-    gc.collect()
-    
-    return model, train_losses, val_losses, val_accuracies, test_accuracy
+if __name__ == "__main__":
+    train_model()
