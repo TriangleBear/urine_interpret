@@ -98,15 +98,15 @@ class UrineStripDataset(Dataset):
                 selected_class = 11
         
         # Debug output to show what classes were found and which one was selected
-        if idx < 5 or idx % 500 == 0:  # Print debug info for the first 5 and every 500th sample
-            if all_classes_found:
-                all_classes_str = ', '.join(f"{cls} ({CLASS_NAMES.get(cls, 'Unknown')})" for cls in all_classes_found)
-                if len(all_classes_found) > 1:
-                    print(f"Sample {idx}: Multiple classes found: [{all_classes_str}], Selected: {selected_class} ({CLASS_NAMES.get(selected_class, 'Unknown')})")
-                else:
-                    print(f"Sample {idx}: Single class found: {all_classes_found[0]} ({CLASS_NAMES.get(all_classes_found[0], 'Unknown')})")
-            else:
-                print(f"Sample {idx}: No classes found, using default: {selected_class} ({CLASS_NAMES.get(selected_class, 'Unknown')})")
+        # if idx < 5 or idx % 500 == 0:  # Print debug info for the first 5 and every 500th sample
+        #     if all_classes_found:
+        #         all_classes_str = ', '.join(f"{cls} ({CLASS_NAMES.get(cls, 'Unknown')})" for cls in all_classes_found)
+        #         if len(all_classes_found) > 1:
+        #             print(f"Sample {idx}: Multiple classes found: [{all_classes_str}], Selected: {selected_class} ({CLASS_NAMES.get(selected_class, 'Unknown')})")
+        #         else:
+        #             print(f"Sample {idx}: Single class found: {all_classes_found[0]} ({CLASS_NAMES.get(all_classes_found[0], 'Unknown')})")
+        #     else:
+        #         print(f"Sample {idx}: No classes found, using default: {selected_class} ({CLASS_NAMES.get(selected_class, 'Unknown')})")
         
         # Create segmentation mask based on all annotations
         mask, is_empty_label = self._create_mask_from_yolo(mask_path, debug=False)
