@@ -20,6 +20,7 @@ from config import (
 )
 from utils import compute_class_weights  # Import the new function
 from config import LR_SCHEDULER_STEP_SIZE, LR_SCHEDULER_GAMMA  # Import scheduler config
+from torch.amp import GradScaler, autocast  # Import mixed precision training tools
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -87,7 +88,7 @@ def validate_model(model, dataloader, epoch):
     
     return val_loss, val_accuracy
 
-def train_model(num_epochs=50, batch_size=3, learning_rate=0.001, save_interval=1, 
+def train_model(num_epochs=50, batch_size=8, learning_rate=0.001, save_interval=1, 
                weight_decay=1e-4, dropout_prob=0.5, mixup_alpha=0.2, 
                label_smoothing_factor=0.1, grad_clip_value=1.0):    
     """ 
@@ -151,7 +152,7 @@ def train_model(num_epochs=50, batch_size=3, learning_rate=0.001, save_interval=
     model = UNetYOLO(in_channels=3, out_channels=NUM_CLASSES, dropout_prob=dropout_prob).to(device)
     
     # Use mixed precision training if available
-    scaler = torch.amp.GradScaler('cuda') if torch.cuda.is_available() else None
+    scaler = GradScaler() if torch.cuda.is_available() else None
     
     # Compute class weights
     class_weights = compute_class_weights(train_dataset, NUM_CLASSES).to(device)
@@ -213,7 +214,7 @@ def train_model(num_epochs=50, batch_size=3, learning_rate=0.001, save_interval=
             
             if scaler is not None:
                 # Use mixed precision training
-                with torch.amp.autocast('cuda'):
+                with autocast():
                     if apply_mixup:
                         mixed_images, targets_a, targets_b, lam = mixup_data(images, targets, alpha=mixup_alpha)
                         outputs = model(mixed_images)

@@ -58,10 +58,10 @@ for dir_path in [TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER,
 
 # Training Hyperparameters
 # Adjust batch size based on GPU memory
-BATCH_SIZE = 3
+BATCH_SIZE = 8  # Increased batch size for T4 GPU
 
-# For RTX 4050 (mobile GPU), use conservative settings
-ACCUMULATION_STEPS = 8 if BATCH_SIZE < 4 else 4  # Adjust based on batch size
+# For NVIDIA T4, use optimized settings
+ACCUMULATION_STEPS = 4  # Adjust based on batch size
 NUM_CLASSES = 12  # Updated number of classes
 NUM_EPOCHS = 100
 PATIENCE = 15
@@ -77,7 +77,7 @@ LR_SCHEDULER_GAMMA = 0.1
 # Memory Management - safer approach
 torch.cuda.empty_cache()
 
-# Set safer CUDA memory allocation limits for RTX 4050
+# Set safer CUDA memory allocation limits for T4 GPU
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:64,expandable_segments:True'
 
 # Model Saving
