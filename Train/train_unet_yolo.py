@@ -214,7 +214,7 @@ def train_model(num_epochs=50, batch_size=8, learning_rate=0.001, save_interval=
             
             if scaler is not None:
                 # Use mixed precision training
-                with autocast():
+                with autocast(device_type='cuda'):
                     if apply_mixup:
                         mixed_images, targets_a, targets_b, lam = mixup_data(images, targets, alpha=mixup_alpha)
                         outputs = model(mixed_images)
