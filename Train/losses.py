@@ -98,6 +98,9 @@ def dice_loss(outputs, targets, smooth=1e-6, max_size=512, class_weights=None):
             intersection = (probs * targets_one_hot).sum(dim=(2,3))
             union = probs.sum(dim=(2,3)) + targets_one_hot.sum(dim=(2,3))
             dice = 1 - (2 * intersection + smooth) / (union + smooth)
+            if class_weights is not None:
+                class_weights = class_weights[targets]  # Get weights for the current targets
+                dice = dice * class_weights  # Apply class weights to the dice loss
             return dice.mean()
         else:
             # Otherwise, process batch by batch as before
@@ -128,7 +131,7 @@ def dice_loss(outputs, targets, smooth=1e-6, max_size=512, class_weights=None):
             return dice_sum / batch_size if batch_size > 0 else torch.tensor(0.0, device='cuda')
 
 # More optimized focal loss with better memory usage
-def focal_loss(outputs, targets, alpha=0.25, gamma=2, max_size=512):
+def focal_loss(outputs, targets, alpha=0.25, gamma=2, max_size=512, class_weights=None):
     """
     Compute focal loss for multi-class segmentation with support for class indices.
     Now handles background/empty label (NUM_CLASSES) properly.
@@ -211,6 +214,8 @@ def focal_loss(outputs, targets, alpha=0.25, gamma=2, max_size=512):
 
     pt = torch.exp(-bce_loss)
     focal_loss = alpha * (1 - pt) ** gamma * bce_loss
+    if class_weights is not None:
+        focal_loss = focal_loss * class_weights  # Apply class weights to the focal loss
     
     # Average over batch and classes
     focal_loss = focal_loss.mean()
