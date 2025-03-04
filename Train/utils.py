@@ -230,3 +230,12 @@ def explain_tensor_dimensions(tensor):
     
     else:
         return f"Tensor with shape {tensor.shape} (not standard image format)"
+
+def compute_class_weights(dataset, num_classes):
+    """Compute class weights to handle class imbalance."""
+    class_counts = [0] * num_classes
+    for _, label, _ in dataset:
+        class_counts[label] += 1
+    total_samples = sum(class_counts)
+    class_weights = [total_samples / (num_classes * count) if count > 0 else 0 for count in class_counts]
+    return torch.tensor(class_weights, dtype=torch.float32)
