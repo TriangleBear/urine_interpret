@@ -136,7 +136,7 @@ def train_model(num_epochs=50, batch_size=4, learning_rate=0.001, save_interval=
         batch_size=batch_size,
         shuffle=True,
         pin_memory=True,  # Speed up data transfer to GPU
-        num_workers=4,    # Increase number of workers for faster data loading
+        num_workers=2,    # Increase number of workers for faster data loading
         drop_last=True    # Avoid problems with small batches
     )
     
@@ -145,7 +145,7 @@ def train_model(num_epochs=50, batch_size=4, learning_rate=0.001, save_interval=
         batch_size=batch_size,
         shuffle=False,
         pin_memory=True,
-        num_workers=4  # Increase number of workers for faster data loading
+        num_workers=2  # Increase number of workers for faster data loading
     )
 
     # Initialize model with specified dropout probability
