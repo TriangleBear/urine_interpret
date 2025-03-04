@@ -88,7 +88,7 @@ def validate_model(model, dataloader, epoch):
     
     return val_loss, val_accuracy
 
-def train_model(num_epochs=50, batch_size=8, learning_rate=0.001, save_interval=1, 
+def train_model(num_epochs=50, batch_size=4, learning_rate=0.001, save_interval=1, 
                weight_decay=1e-4, dropout_prob=0.5, mixup_alpha=0.2, 
                label_smoothing_factor=0.1, grad_clip_value=1.0):    
     """ 
@@ -136,7 +136,7 @@ def train_model(num_epochs=50, batch_size=8, learning_rate=0.001, save_interval=
         batch_size=batch_size,
         shuffle=True,
         pin_memory=True,  # Speed up data transfer to GPU
-        num_workers=2,    # Parallel data loading
+        num_workers=4,    # Increase number of workers for faster data loading
         drop_last=True    # Avoid problems with small batches
     )
     
@@ -145,7 +145,7 @@ def train_model(num_epochs=50, batch_size=8, learning_rate=0.001, save_interval=
         batch_size=batch_size,
         shuffle=False,
         pin_memory=True,
-        num_workers=2
+        num_workers=4  # Increase number of workers for faster data loading
     )
 
     # Initialize model with specified dropout probability
@@ -266,6 +266,10 @@ def train_model(num_epochs=50, batch_size=8, learning_rate=0.001, save_interval=
                 "Loss": f"{current_loss:.4f}",
                 "Batch time": f"{batch_time:.3f}s"
             })
+            
+            # Clear GPU cache after each batch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         
         # Calculate training metrics
         avg_epoch_loss = epoch_loss / len(train_loader)
