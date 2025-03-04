@@ -64,7 +64,7 @@ CLASS_COLORS = [
 
 # Fixed normalization: using fixed mean/std (e.g., ImageNet values)
 def fixed_normalization(image):
-    image = image.resize((256, 256))
+    image = image.resize((512, 512))  # Change size to 512x512
     tensor_image = T.ToTensor()(image)
     normalize = T.Normalize(mean=[0.485, 0.456, 0.406], 
                             std=[0.229, 0.224, 0.225])
@@ -300,11 +300,24 @@ def classify_pads(image_np, mask, svm_model):
     
     return pad_results
 
-def predict_image(model, svm_model, image_path, confidence_threshold=0.5):
+def save_strip_region(image_np, strip_bbox, save_path):
+    """Save the bounding box region of the strip"""
+    if strip_bbox:
+        x, y, w, h = strip_bbox
+        strip_region = image_np[y:y+h, x:x+w]
+        cv2.imwrite(save_path, strip_region)
+        print(f"Strip region saved to {save_path}")
+
+def predict_image(model, svm_model, image_path, confidence_threshold=0.5, save_strip=False, strip_save_path=None):
     """Main function to predict and visualize results on a single image"""
+    # Check if the image file exists
+    if not os.path.exists(image_path):
+        print(f"Error: Image file '{image_path}' not found.")
+        return None
+    
     # Load and preprocess image
     image = Image.open(image_path).convert("RGB")
-    image_np = np.array(image.resize((256, 256)))
+    image_np = np.array(image.resize((512, 512)))  # Change size to 512x512
     image_tensor = fixed_normalization(image).unsqueeze(0).to(device)
     
     # Get segmentation prediction
@@ -312,6 +325,10 @@ def predict_image(model, svm_model, image_path, confidence_threshold=0.5):
     
     # Extract strip and pads using two-stage approach
     strip_bbox, pad_masks = extract_strip_and_pads(mask)
+    
+    # Save the strip region if requested
+    if save_strip and strip_bbox:
+        save_strip_region(image_np, strip_bbox, strip_save_path)
     
     # Draw results on the image
     result_image = draw_results(image_np, strip_bbox, pad_masks, 
@@ -343,10 +360,10 @@ def update_image_on_canvas(image_np):
     canvas.itemconfig(image_on_canvas, image=image_tk)
     canvas.image = image_tk
 
-def process_and_display(image_path, confidence_threshold):
+def process_and_display(image_path, confidence_threshold, save_strip=False, strip_save_path=None):
     """Process an image and display the results"""
     # Process the image
-    results = predict_image(model, svm_model, image_path, confidence_threshold)
+    results = predict_image(model, svm_model, image_path, confidence_threshold, save_strip, strip_save_path)
     
     # Update the display
     update_image_on_canvas(results['result_image'])
@@ -369,7 +386,7 @@ def update_confidence_threshold(val):
     global current_image_path
     confidence_threshold = float(val)
     if current_image_path:
-        process_and_display(current_image_path, confidence_threshold)
+        process_and_display(current_image_path, confidence_threshold, save_strip_var.get(), strip_save_path_var.get())
 
 def select_image():
     """Open a file dialog to select an image"""
@@ -378,7 +395,7 @@ def select_image():
     if image_path:
         current_image_path = image_path
         confidence_threshold = float(scale.get())
-        process_and_display(image_path, confidence_threshold)
+        process_and_display(image_path, confidence_threshold, save_strip_var.get(), strip_save_path_var.get())
 
 # Main GUI setup
 if __name__ == "__main__":
@@ -403,7 +420,7 @@ if __name__ == "__main__":
     # Create the main window
     root = tk.Tk()
     root.title("Urine Strip Analyzer")
-    root.geometry("800x600")
+    root.geometry("1200x600")
     
     # Create frames for layout
     top_frame = tk.Frame(root)
@@ -420,6 +437,17 @@ if __name__ == "__main__":
                     resolution=0.01, command=update_confidence_threshold, length=200)
     scale.set(0.5)  # Default value
     scale.pack(side=tk.LEFT, padx=10, pady=10)
+    
+    # Add checkbox to save strip region
+    save_strip_var = tk.BooleanVar()
+    save_strip_checkbox = tk.Checkbutton(top_frame, text="Save Strip Region", variable=save_strip_var)
+    save_strip_checkbox.pack(side=tk.LEFT, padx=10, pady=10)
+    
+    # Add entry for strip save path
+    strip_save_path_var = tk.StringVar()
+    strip_save_path_entry = tk.Entry(top_frame, textvariable=strip_save_path_var, width=30)
+    strip_save_path_entry.pack(side=tk.LEFT, padx=10, pady=10)
+    strip_save_path_var.set(r'D:\Programming\urine_interpret\strip_region.jpg')  # Default save path
     
     # Create a canvas to display the image
     canvas_frame = tk.Frame(root)
@@ -446,23 +474,3 @@ if __name__ == "__main__":
     
     # Run the application
     root.mainloop()
-
-if __name__ == "__main__":
-    model_path = r'D:\Programming\urine_interpret\models\weights.pt'
-    svm_model_path = r'D:\Programming\urine_interpret\models\svm_rbf_model.pkl'
-    
-    # Load the neural network model from weights.pt
-    print("Loading UNetYOLO model from weights.pt...")
-    model = load_model(model_path)
-    
-    # Load the SVM model
-    print("Loading SVM RBF model...")
-    svm_model = joblib.load(svm_model_path)
-    
-    # Test the models on a sample image
-    image_path = r'D:\Programming\urine_interpret\test_image.jpg'
-    results = predict_image(model, svm_model, image_path)
-    
-    # Display the results
-    plt.imshow(results['result_image'])
-    plt.show()
