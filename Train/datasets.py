@@ -29,7 +29,7 @@ class UrineStripDataset(Dataset):
 
         if self.transform is None:
             self.transform = T.Compose([
-                T.Resize(IMAGE_SIZE),
+                T.Resize((512, 512)),  # Change size to 512x512
                 T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),  # Added color jitter
                 T.RandomRotation(degrees=15),  # Added random rotation
                 T.ToTensor(),
@@ -112,7 +112,7 @@ class UrineStripDataset(Dataset):
         mask, is_empty_label = self._create_mask_from_yolo(mask_path, debug=False)
         
         # Resize mask to match image size
-        mask = cv2.resize(mask, (IMAGE_SIZE[1], IMAGE_SIZE[0]), interpolation=cv2.INTER_NEAREST)
+        mask = cv2.resize(mask, (512, 512), interpolation=cv2.INTER_NEAREST)
         
         # Apply transform if provided
         image_tensor = self.transform(image)
@@ -136,7 +136,7 @@ class UrineStripDataset(Dataset):
         return image_tensor, label, self.class_distribution
 
 
-    def _create_mask_from_yolo(self, txt_path, image_size=(256, 256), target_classes=None, debug=False):
+    def _create_mask_from_yolo(self, txt_path, image_size=(512, 512), target_classes=None, debug=False):
         """
         Create a segmentation mask from YOLO format annotations.
         Clear prioritization of classes:
@@ -325,7 +325,7 @@ class RandomTrainTransformations:
             RandomAffine(translate=(0.1, 0.1)),  # Reduced translation range
         ])
         self.image_transform = transforms.Compose([
-            transforms.RandomResizedCrop(256, scale=(0.6, 1.0)),  # Adjusted scale range
+            transforms.RandomResizedCrop(512, scale=(0.6, 1.0)),  # Change size to 512x512
             transforms.ColorJitter(brightness=0.8, contrast=0.8, saturation=0.8, hue=0.3),  # Adjusted hue range
             transforms.RandomAffine(degrees=30, translate=(0.1, 0.1), scale=(0.8, 1.2), shear=10),  # Reduced affine range
             transforms.RandomGrayscale(p=0.3),  # Adjusted grayscale probability
@@ -334,7 +334,7 @@ class RandomTrainTransformations:
             transforms.Normalize(mean=mean, std=std)
         ])
         self.mask_transform = transforms.Compose([
-            transforms.Resize((256, 256), interpolation=Image.NEAREST),
+            transforms.Resize((512, 512), interpolation=Image.NEAREST),  # Change size to 512x512
             mask_to_tensor
         ])
     def __call__(self, sample):
@@ -357,12 +357,12 @@ class RandomTrainTransformations:
 class SimpleValTransformations:
     def __init__(self, mean, std):
         self.image_transform = transforms.Compose([
-            transforms.Resize((256, 256)),
+            transforms.Resize((512, 512)),  # Change size to 512x512
             transforms.ToTensor(),
             transforms.Normalize(mean=mean, std=std)
         ])
         self.mask_transform = transforms.Compose([
-            transforms.Resize((256, 256), interpolation=Image.NEAREST),
+            transforms.Resize((512, 512), interpolation=Image.NEAREST),  # Change size to 512x512
             mask_to_tensor
         ])
     def __call__(self, sample):
