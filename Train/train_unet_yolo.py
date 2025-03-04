@@ -29,7 +29,7 @@ def mixup_data(x, y, alpha=0.2):
     else:
         lam = 1
 
-    batch_size = x.size(0)
+    batch_size = x.size(3)
     index = torch.randperm(batch_size).to(device)
 
     mixed_x = lam * x + (1 - lam) * x[index, :]
@@ -149,7 +149,7 @@ def train_model(num_epochs=50, batch_size=16, learning_rate=0.001, save_interval
     model = UNetYOLO(in_channels=3, out_channels=NUM_CLASSES, dropout_prob=dropout_prob).to(device)
     
     # Use mixed precision training if available
-    scaler = torch.cuda.amp.GradScaler() if torch.cuda.is_available() else None
+    scaler = torch.amp.GradScaler() if torch.cuda.is_available() else None
     
     # Setup optimizer with weight decay (L2 regularization)
     optimizer = torch.optim.AdamW(
@@ -219,7 +219,7 @@ def train_model(num_epochs=50, batch_size=16, learning_rate=0.001, save_interval
             
             if scaler is not None:
                 # Use mixed precision training
-                with torch.cuda.amp.autocast():
+                with torch.amp.autocast('cuda'):
                     if apply_mixup:
                         mixed_images, targets_a, targets_b, lam = mixup_data(images, targets, alpha=mixup_alpha)
                         outputs = model(mixed_images)
