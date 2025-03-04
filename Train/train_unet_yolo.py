@@ -21,6 +21,7 @@ from config import (
 from utils import compute_class_weights  # Import the new function
 from config import LR_SCHEDULER_STEP_SIZE, LR_SCHEDULER_GAMMA  # Import scheduler config
 from torch.amp import GradScaler, autocast  # Import mixed precision training tools
+import tracemalloc  # Import for memory profiling
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -88,7 +89,7 @@ def validate_model(model, dataloader, epoch):
     
     return val_loss, val_accuracy
 
-def train_model(num_epochs=50, batch_size=4, learning_rate=0.001, save_interval=1, 
+def train_model(num_epochs=50, batch_size=2, learning_rate=0.001, save_interval=1, 
                weight_decay=1e-4, dropout_prob=0.5, mixup_alpha=0.2, 
                label_smoothing_factor=0.1, grad_clip_value=1.0):    
     """ 
@@ -99,6 +100,9 @@ def train_model(num_epochs=50, batch_size=4, learning_rate=0.001, save_interval=
     - GPU optimization
     - Advanced regularization techniques
     """
+    # Start memory profiling
+    tracemalloc.start()
+
     # Set up logging
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger("training")
@@ -131,12 +135,18 @@ def train_model(num_epochs=50, batch_size=4, learning_rate=0.001, save_interval=
     train_dataset = UrineStripDataset(TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER)
     valid_dataset = UrineStripDataset(VALID_IMAGE_FOLDER, VALID_MASK_FOLDER)
     
+    # Use a smaller subset for initial testing
+    train_subset_size = min(100, len(train_dataset))
+    valid_subset_size = min(20, len(valid_dataset))
+    train_dataset = torch.utils.data.Subset(train_dataset, range(train_subset_size))
+    valid_dataset = torch.utils.data.Subset(valid_dataset, range(valid_subset_size))
+    
     train_loader = DataLoader(
         train_dataset, 
         batch_size=batch_size,
         shuffle=True,
         pin_memory=True,  # Speed up data transfer to GPU
-        num_workers=2,    # Increase number of workers for faster data loading
+        num_workers=4,    # Increase number of workers for faster data loading
         drop_last=True    # Avoid problems with small batches
     )
     
@@ -145,7 +155,7 @@ def train_model(num_epochs=50, batch_size=4, learning_rate=0.001, save_interval=
         batch_size=batch_size,
         shuffle=False,
         pin_memory=True,
-        num_workers=2  # Increase number of workers for faster data loading
+        num_workers=4  # Increase number of workers for faster data loading
     )
 
     # Initialize model with specified dropout probability
@@ -347,6 +357,10 @@ def train_model(num_epochs=50, batch_size=4, learning_rate=0.001, save_interval=
         # Clear GPU memory cache after each epoch
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        
+        # Memory profiling
+        current, peak = tracemalloc.get_traced_memory()
+        logger.info(f"Memory usage: Current={current / 10**6:.2f}MB; Peak={peak / 10**6:.2f}MB")
     
     # Final model saving
     final_model_path = os.path.join(model_dir, "final_model.pt")
@@ -362,6 +376,9 @@ def train_model(num_epochs=50, batch_size=4, learning_rate=0.001, save_interval=
     
     # Load the best model for return
     model.load_state_dict(torch.load(best_model_path)['model_state_dict'])
+    
+    # Stop memory profiling
+    tracemalloc.stop()
     
     return model, {
         'train_losses': train_losses,
