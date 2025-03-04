@@ -151,9 +151,9 @@ class YOLOHead(nn.Module):
         features = self.conv(x)
         return features
 
-class UNetYOLO(nn.Module):
-    """Combined UNet with YOLO detection head for segmentation."""
-    def __init__(self, in_channels, out_channels, dropout_prob=0.5):
+class UNetYOLO(nn.Module):  
+    def __init__(self, in_channels, out_channels, dropout_prob=0.5):  
+        """Combined UNet with YOLO detection head for segmentation.""" 
         super(UNetYOLO, self).__init__()
         self.unet = UNet(in_channels, 64, bilinear=False, dropout_prob=dropout_prob)
         
@@ -164,11 +164,10 @@ class UNetYOLO(nn.Module):
         self.bn = nn.BatchNorm2d(64)
         
         # YOLO head for segmentation
-        self.yolo_head = YOLOHead(64, out_channels)
-        
+        self.yolo_head = YOLOHead(64, out_channels)  # YOLO head for segmentation
+
         self._init_weights()
 
-    
     def _init_weights(self):
         # More careful initialization for better convergence
         for m in self.modules():
@@ -192,4 +191,4 @@ class UNetYOLO(nn.Module):
         # Get segmentation map from YOLO head
         segmentation_map = self.yolo_head(features)
         
-        return segmentation_map
+        return segmentation_map  # Return the final segmentation map
