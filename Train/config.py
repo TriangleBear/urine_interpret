@@ -58,7 +58,7 @@ for dir_path in [TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER,
 
 # Training Hyperparameters
 # Adjust batch size based on GPU memory
-BATCH_SIZE = 4  # Reduced batch size for better memory management
+BATCH_SIZE = 2  # Further reduced batch size for better memory management
 
 # For NVIDIA T4, use optimized settings
 ACCUMULATION_STEPS = 4  # Adjust based on batch size
