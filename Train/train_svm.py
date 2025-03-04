@@ -21,6 +21,7 @@ from ultralytics.nn.tasks import DetectionModel
 from icecream import ic
 import os
 import cv2
+from tqdm import tqdm  # Import tqdm for progress bars
 
 # Define class names
 CLASS_NAMES = {
@@ -91,6 +92,23 @@ def extract_features_from_segmentation(image, segmentation_map):
     
     return np.array(features, dtype=np.float32)
 
+def extract_features_and_labels_with_progress(dataset, model):
+    """Extract features and labels from the dataset using the given model with progress bar."""
+    features = []
+    labels = []
+    
+    model.eval()
+    with torch.no_grad():
+        # Add progress bar for feature extraction
+        progress_bar = tqdm(dataset, desc="Extracting features", total=len(dataset))
+        for images, targets, _ in progress_bar:
+            images = images.to(device)  # Move to GPU if available
+            outputs = model(images)
+            features.extend(outputs.cpu().numpy())
+            labels.extend(targets.cpu().numpy())
+            
+    return np.array(features), np.array(labels)
+
 def train_svm_classifier(unet_model_path, model_path=None):
     ic("Loading training, validation, and test datasets...")
     train_dataset = UrineStripDataset(TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER)
@@ -104,9 +122,9 @@ def train_svm_classifier(unet_model_path, model_path=None):
     unet_model.eval()
     
     ic("Extracting features and labels...")
-    train_features, train_labels = extract_features_and_labels(train_dataset, unet_model)
-    valid_features, valid_labels = extract_features_and_labels(valid_dataset, unet_model)
-    test_features, test_labels = extract_features_and_labels(test_dataset, unet_model)
+    train_features, train_labels = extract_features_and_labels_with_progress(train_dataset, unet_model)
+    valid_features, valid_labels = extract_features_and_labels_with_progress(valid_dataset, unet_model)
+    test_features, test_labels = extract_features_and_labels_with_progress(test_dataset, unet_model)
     
     ic(f"Training set: {len(train_features)} samples")
     ic(f"Validation set: {len(valid_features)} samples")
@@ -135,15 +153,20 @@ def train_svm_classifier(unet_model_path, model_path=None):
     valid_features_scaled = scaler.transform(valid_features)
     test_features_scaled = scaler.transform(test_features)
     
-    # Train SVM with RBF kernel
-    svm_model = SVC(
-        kernel='rbf',
-        C=1.0,
-        gamma='scale',
-        probability=True
-    )
-    
-    svm_model.fit(train_features_scaled, svm_labels)
+    # Train SVM with RBF kernel (with progress indicator)
+    ic("Training SVM classifier with RBF kernel...")
+    with tqdm(total=100, desc="SVM Training") as progress:
+        svm_model = SVC(
+            kernel='rbf',
+            C=1.0,
+            gamma='scale',
+            probability=True,
+            verbose=False  # Set to False to avoid conflicting output with tqdm
+        )
+        
+        # Fit the model
+        svm_model.fit(train_features_scaled, svm_labels)
+        progress.update(100)  # Update to 100% when done
     
     # Evaluate on validation set
     valid_pred = svm_model.predict(valid_features_scaled)
