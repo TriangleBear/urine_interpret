@@ -48,19 +48,13 @@ class UrineStripDataset(Dataset):
         # Load image
         image = Image.open(img_path).convert('RGB')
         
-        # Debug print to check what's happening
-        if idx < 5:  # Just print the first few for debugging
-            print(f"\nProcessing image: {img_name}")
-            print(f"Loading mask from: {mask_path}")
-            
         # Load mask - check if file exists and has content
-        mask, is_empty_label = self._create_mask_from_yolo(mask_path)
+        # Turn off debugging output completely
+        mask, is_empty_label = self._create_mask_from_yolo(mask_path, debug=False)
         
-        # Debug: check what classes are in the raw mask
+        # Get unique classes (but don't print)
         unique_classes = np.unique(mask)
-        if idx < 5:
-            print(f"Classes in raw mask: {unique_classes}")
-        
+
         # IMPROVEMENT: Apply more aggressive augmentation for reagent pad classes
         # Check if this sample contains any reagent pad classes
         has_reagent_pads = any(cls in unique_classes for cls in list(range(9)) + [10])
@@ -86,22 +80,12 @@ class UrineStripDataset(Dataset):
         # Resize mask to match image size
         mask = cv2.resize(mask, (IMAGE_SIZE[1], IMAGE_SIZE[0]), interpolation=cv2.INTER_NEAREST)
         
-        # Debug: check if resizing affected the classes
-        unique_after_resize = np.unique(mask)
-        if idx < 5 and not np.array_equal(unique_classes, unique_after_resize):
-            print(f"Warning: Classes changed after resize: {unique_after_resize}")
-
         # Apply transform if provided
         image_tensor = self.transform(image)
 
         # Convert mask to tensor and add channel dimension
         mask_tensor = torch.from_numpy(mask).unsqueeze(0).long()  # Ensure mask has a channel dimension
         
-        # Debug: check tensor mask classes
-        unique_tensor = torch.unique(mask_tensor).cpu().numpy()
-        if idx < 5:
-            print(f"Classes in tensor mask: {unique_tensor}")
-
         # Extract class label from mask
         if is_empty_label:
             label = NUM_CLASSES
@@ -131,7 +115,7 @@ class UrineStripDataset(Dataset):
         return image_tensor, label, self.class_distribution
 
 
-    def _create_mask_from_yolo(self, txt_path, image_size=(256, 256), target_classes=None):
+    def _create_mask_from_yolo(self, txt_path, image_size=(256, 256), target_classes=None, debug=False):
         """
         Create a segmentation mask from YOLO format annotations.
         Respects class hierarchy: Classes 0-8, 10 (pads) > Class 11 (strip) > Class 9 (background)
@@ -142,7 +126,7 @@ class UrineStripDataset(Dataset):
         
         # Check if file exists
         if not os.path.exists(txt_path):
-            print(f"Warning: Missing label file: {os.path.basename(txt_path)}")
+            if debug: print(f"Warning: Missing label file: {os.path.basename(txt_path)}")
             is_empty_label = True
             return mask, is_empty_label
         
@@ -153,7 +137,7 @@ class UrineStripDataset(Dataset):
                 
                 # If file is empty or has no valid lines, return empty mask
                 if len(lines) == 0 or all(not line.strip() for line in lines):
-                    print(f"Note: Empty label file: {os.path.basename(txt_path)}")
+                    if debug: print(f"Note: Empty label file: {os.path.basename(txt_path)}")
                     is_empty_label = True
                     return mask, is_empty_label
                 
@@ -169,7 +153,7 @@ class UrineStripDataset(Dataset):
                         class_id = int(parts[0])
                         class_annotations[class_id].append(parts)
                     except Exception as e:
-                        print(f"Error processing line: {line.strip()}, Error: {e}")
+                        if debug: print(f"Error processing line: {line.strip()}, Error: {e}")
                 
                 # Process annotations in Z-order (from back to front)
                 # First: Draw background (class 9) if present - lowest layer
@@ -186,7 +170,7 @@ class UrineStripDataset(Dataset):
                                 x, y, w, h = self._parse_bbox(parts, image_size)
                                 cv2.rectangle(mask, (x, y), (x+w, y+h), class_id, -1)
                         except Exception as e:
-                            print(f"Error processing background annotation: {e}")
+                            if debug: print(f"Error processing background annotation: {e}")
                 
                 # Second: Draw strip (class 11) - middle layer
                 if class_annotations[11]:
@@ -202,7 +186,7 @@ class UrineStripDataset(Dataset):
                                 x, y, w, h = self._parse_bbox(parts, image_size)
                                 cv2.rectangle(mask, (x, y), (x+w, y+h), class_id, -1)
                         except Exception as e:
-                            print(f"Error processing strip annotation: {e}")
+                            if debug: print(f"Error processing strip annotation: {e}")
                 
                 # Last: Draw reagent pads (classes 0-8, 10) - top layers
                 for class_id in list(range(9)) + [10]:
@@ -218,10 +202,10 @@ class UrineStripDataset(Dataset):
                                     x, y, w, h = self._parse_bbox(parts, image_size)
                                     cv2.rectangle(mask, (x, y), (x+w, y+h), class_id, -1)
                             except Exception as e:
-                                print(f"Error processing reagent pad annotation: {e}")
+                                if debug: print(f"Error processing reagent pad annotation: {e}")
                 
         except Exception as e:
-            print(f"Error reading label file {txt_path}: {e}")
+            if debug: print(f"Error reading label file {txt_path}: {e}")
             is_empty_label = True
             return mask, is_empty_label
         
@@ -229,7 +213,7 @@ class UrineStripDataset(Dataset):
         # consider it an empty label
         if np.all(mask == 0):
             is_empty_label = True
-            print(f"Warning: No valid annotations found in {os.path.basename(txt_path)}")
+            if debug: print(f"Warning: No valid annotations found in {os.path.basename(txt_path)}")
         
         # Optionally filter mask for target classes
         if target_classes is not None:
