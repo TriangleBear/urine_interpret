@@ -1,121 +1,66 @@
 import torch
 import torchvision.transforms as T
 import torch.nn.functional as F
-import torch.nn as nn
 import numpy as np 
-import cv2  # Ensure cv2 is imported
+import cv2
 import matplotlib.pyplot as plt
 import torch.serialization
 from PIL import Image, ImageTk
-from ultralytics.nn.tasks import DetectionModel  # Import the required module
+from ultralytics.nn.tasks import DetectionModel
 import tkinter as tk
 from tkinter import ttk, filedialog
-import joblib  # Import joblib to load the SVM model
-from skimage import color  # Import color from skimage
+import joblib
+from skimage import color
+import sys
+import os
+
+# Add both the parent directory and Train directory to the path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../Train')))
+
+# Import config first to ensure it's in the module cache
+from Train.config import NUM_CLASSES
+# Then import the model
+from Train.models import UNetYOLO
 
 # Device configuration
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-CONFIDENCE = 0.5
-IOU_THRESHOLD = 0.5
+# Class names and configuration
+CLASS_NAMES = {
+    0: 'Bilirubin',
+    1: 'Blood',
+    2: 'Glucose',
+    3: 'Ketone',
+    4: 'Leukocytes',
+    5: 'Nitrite',
+    6: 'Protein',
+    7: 'SpGravity',
+    8: 'Urobilinogen',
+    9: 'Background',
+    10: 'pH',
+    11: 'Strip'
+}
 
-# Define the UNet model
-class UNet(nn.Module):
-    def __init__(self, in_channels, out_channels=11, dropout_prob=0.3):
-        super(UNet, self).__init__()
-        self.enc1 = nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(32),
-            nn.LeakyReLU(negative_slope=0.01, inplace=True),
-            nn.Dropout(p=dropout_prob)
-        )
-        self.enc2 = nn.Sequential(
-            nn.Conv2d(32, 64, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(64),
-            nn.LeakyReLU(negative_slope=0.01, inplace=True),
-            nn.Dropout(p=dropout_prob)
-        )
-        self.enc3 = nn.Sequential(
-            nn.Conv2d(64, 128, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(128),
-            nn.LeakyReLU(negative_slope=0.01, inplace=True),
-            nn.Dropout(p=dropout_prob)
-        )
-        self.enc4 = nn.Sequential(
-            nn.Conv2d(128, 256, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(256),
-            nn.LeakyReLU(negative_slope=0.01, inplace=True),
-            nn.Dropout(p=dropout_prob)
-        )
-        self.bottleneck = nn.Sequential(
-            nn.Conv2d(256, 512, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(512),
-            nn.LeakyReLU(negative_slope=0.01, inplace=True),
-            nn.Dropout(p=dropout_prob)
-        )
-        self.upconv3 = nn.ConvTranspose2d(512, 256, kernel_size=2, stride=2)
-        self.upconv2 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
-        self.upconv1 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
-        self.conv_up3 = nn.Sequential(
-            nn.Conv2d(512, 256, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(256),
-            nn.LeakyReLU(negative_slope=0.01, inplace=True),
-            nn.Dropout(p=dropout_prob)
-        )
-        self.conv_up2 = nn.Sequential(
-            nn.Conv2d(256, 128, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(128),
-            nn.LeakyReLU(negative_slope=0.01, inplace=True),
-            nn.Dropout(p=dropout_prob)
-        )
-        self.conv_up1 = nn.Sequential(
-            nn.Conv2d(128, 64, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(64),
-            nn.LeakyReLU(negative_slope=0.01, inplace=True),
-            nn.Dropout(p=dropout_prob)
-        )
-        self.output = nn.Conv2d(64, out_channels, kernel_size=1, bias=False)
-        self.initialize_weights()
+# Lists of class IDs for multi-stage approach
+STRIP_CLASS = 11  # Strip class ID
+PAD_CLASSES = list(range(9)) + [10]  # Reagent pad classes (0-8, 10)
 
-    def initialize_weights(self):
-        for m in self.modules():
-            if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
-                nn.init.kaiming_uniform_(m.weight, nonlinearity='leaky_relu')
-
-    def forward(self, x):
-        enc1 = self.enc1(x)
-        enc2 = self.enc2(enc1)
-        enc3 = self.enc3(enc2)
-        enc4 = self.enc4(enc3)
-        bottleneck = self.bottleneck(enc4)
-        
-        up3 = self.upconv3(bottleneck)
-        up3 = F.interpolate(up3, size=enc4.size()[2:], mode='bilinear', align_corners=False)
-        up3 = torch.cat([up3, enc4], dim=1)
-        up3 = self.conv_up3(up3)
-
-        up2 = self.upconv2(up3)
-        up2 = F.interpolate(up2, size=enc3.size()[2:], mode='bilinear', align_corners=False)
-        up2 = torch.cat([up2, enc3], dim=1)
-        up2 = self.conv_up2(up2)
-
-        up1 = self.upconv1(up2)
-        up1 = F.interpolate(up1, size=enc2.size()[2:], mode='bilinear', align_corners=False)
-        up1 = torch.cat([up1, enc2], dim=1)
-        up1 = self.conv_up1(up1)
-
-        output = self.output(up1)
-        return output
-
-# Dynamic normalization: computes per-image mean and std.
-def dynamic_normalization(image):
-    image = image.resize((256, 256))
-    tensor_image = T.ToTensor()(image)
-    mean = torch.mean(tensor_image, dim=[1, 2], keepdim=True)
-    std = torch.std(tensor_image, dim=[1, 2], keepdim=True)
-    std = torch.clamp(std, min=1e-6)
-    normalize = T.Normalize(mean.squeeze().tolist(), std.squeeze().tolist())
-    return normalize(tensor_image)
+# Define color scheme for visualization
+CLASS_COLORS = [
+    (255, 0, 0),    # 0: Bilirubin (Red)
+    (0, 0, 255),    # 1: Blood (Blue)
+    (0, 255, 0),    # 2: Glucose (Green)
+    (255, 255, 0),  # 3: Ketone (Yellow)
+    (255, 0, 255),  # 4: Leukocytes (Magenta)
+    (0, 255, 255),  # 5: Nitrite (Cyan)
+    (128, 0, 0),    # 6: Protein (Maroon)
+    (0, 128, 0),    # 7: SpGravity (Dark Green)
+    (0, 0, 128),    # 8: Urobilinogen (Navy)
+    (128, 128, 128),# 9: Background (Gray)
+    (255, 165, 0),  # 10: pH (Orange)
+    (75, 0, 130)    # 11: Strip (Indigo)
+]
 
 # Fixed normalization: using fixed mean/std (e.g., ImageNet values)
 def fixed_normalization(image):
@@ -126,204 +71,398 @@ def fixed_normalization(image):
     return normalize(tensor_image)
 
 def load_model(model_path):
-    """
-    Load the model with a workaround to handle the weights.pt file which has 99% accuracy.
-    This approach uses additional error handling and alternative methods to ensure
-    the weights are loaded properly.
-    """
-    model = UNet(in_channels=3, out_channels=11)
+    """Load the UNetYOLO model from weights.pt"""
+    print(f"Loading model from {model_path}...")
     
     # Add safe modules for loading
     torch.serialization.add_safe_globals([DetectionModel])
     
-    # Attempt to load with different approaches to work around potential issues
-    try:
-        # First try: Standard loading with weights_only=False
-        state_dict = torch.load(model_path, map_location=device, weights_only=False)
-        model.load_state_dict(state_dict, strict=False)
-        print("Model loaded successfully using primary method")
-    except Exception as e1:
-        print(f"Primary loading method failed: {e1}")
-        try:
-            # Second try: Load as pickle
-            state_dict = torch.load(model_path, map_location=device, pickle_module=torch.serialization.pickle)
-            model.load_state_dict(state_dict, strict=False)
-            print("Model loaded successfully using pickle method")
-        except Exception as e2:
-            print(f"Pickle loading method failed: {e2}")
-            # Third try: Load using a custom approach for legacy files
-            try:
-                # For compatibility with legacy weights format
-                with open(model_path, 'rb') as f:
-                    state_dict = torch.load(f, map_location=device)
-                # Filter out problematic keys if necessary
-                filtered_state_dict = {k: v for k, v in state_dict.items() 
-                                     if k in model.state_dict() and v.shape == model.state_dict()[k].shape}
-                model.load_state_dict(filtered_state_dict, strict=False)
-                print("Model loaded successfully using custom filtering method")
-            except Exception as e3:
-                print(f"All loading methods failed. Using initialized model without weights: {e3}")
+    # Initialize model
+    model = UNetYOLO(in_channels=3, out_channels=NUM_CLASSES)
     
-    print("Model accuracy should be approximately 99% when properly loaded")
+    # Load weights
+    try:
+        # First try: Standard loading
+        state_dict = torch.load(model_path, map_location=device)
+        model.load_state_dict(state_dict, strict=False)
+        print("Model loaded successfully")
+    except Exception as e:
+        print(f"Standard loading failed: {e}")
+        try:
+            # Second try: Try loading with DetectionModel in safe globals
+            state_dict = torch.load(model_path, map_location=device)
+            model.load_state_dict(state_dict, strict=False)
+            print("Model loaded with alternate method")
+        except Exception as e2:
+            print(f"All loading methods failed: {e2}")
+            print("Using uninitialized model (results will be poor)")
+    
     model.to(device)
     model.eval()
     return model
 
-def load_svm_model(svm_model_path):
-    return joblib.load(svm_model_path)
+def create_svm_classifier():
+    """Create an SVM classifier with RBF kernel on the fly"""
+    from sklearn.svm import SVC
+    
+    # Create SVM classifier with RBF kernel
+    svm = SVC(
+        kernel='rbf',
+        C=1.0,
+        gamma='scale',
+        probability=True,
+        verbose=False
+    )
+    
+    return svm
 
-def draw_bounding_boxes(image_np, mask, confidence_map, confidence_threshold):
-    class_colors = [
-        (255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255),
-        (0, 255, 255), (128, 0, 0), (0, 128, 0), (0, 0, 128), (128, 128, 0), (128, 0, 128)
-    ]  # Define different colors for each class
+def train_svm_on_features(features, labels):
+    """Train SVM classifier on extracted features"""
+    from sklearn.preprocessing import StandardScaler
+    
+    # Create and fit the classifier
+    svm = create_svm_classifier()
+    
+    # Scale features
+    scaler = StandardScaler()
+    scaled_features = scaler.fit_transform(features)
+    
+    # Train SVM
+    svm.fit(scaled_features, labels)
+    
+    return {
+        'model': svm,
+        'scaler': scaler
+    }
 
-    for class_id in range(11):  # Loop through all classes
-        binary_mask = (mask == class_id).astype(np.uint8) * 255
-        contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        print(f"Class {class_id}: Found {len(contours)} contours")  # Debugging output
-        for cnt in contours:
-            x, y, w, h = cv2.boundingRect(cnt)
-            # Calculate average confidence within this bounding box
-            region_confidence = confidence_map[y:y+h, x:x+w]
-            avg_conf = np.mean(region_confidence)
-            if avg_conf >= confidence_threshold:
-                label = f"Class {class_id} ({avg_conf:.2f})"
-                color = class_colors[class_id % len(class_colors)]  # Use different color for each class
+def predict_masks(model, image_tensor):
+    """Run the model to predict segmentation masks"""
+    with torch.no_grad():
+        # Get model prediction
+        outputs = model(image_tensor)
+        probs = F.softmax(outputs, dim=1)
+        
+        # Get segmentation mask (pixel-wise prediction)
+        mask = torch.argmax(probs, dim=1).cpu().numpy()[0]  # Shape: (H, W)
+        
+        # Get confidence map (max probability per pixel)
+        confidence_map = torch.max(probs, dim=1)[0].cpu().numpy()[0]  # Shape: (H, W)
+        
+    return mask, confidence_map, probs.cpu()
 
-                print(f"{label}: x={x}, y={y}, w={w}, h={h}")  # Debugging output
-                cv2.rectangle(image_np, (x, y), (x+w, y+h), color, 2)
-                cv2.putText(image_np, label, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+def extract_strip_and_pads(mask):
+    """
+    Two-stage extraction:
+    1. First extract the strip (class 11)
+    2. Then extract the reagent pads (classes 0-8, 10) within the strip area
+    """
+    # Create strip mask (class 11)
+    strip_mask = (mask == STRIP_CLASS).astype(np.uint8)
+    
+    # Find contours of the strip
+    strip_contours, _ = cv2.findContours(strip_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # If no strip found, return empty results
+    if not strip_contours:
+        print("No strip detected!")
+        return None, []
+    
+    # Take the largest contour as the strip
+    strip_contour = max(strip_contours, key=cv2.contourArea)
+    strip_bbox = cv2.boundingRect(strip_contour)
+    
+    # Create a mask for reagent pads (classes 0-8, 10)
+    pad_masks = []
+    for pad_class in PAD_CLASSES:
+        pad_mask = (mask == pad_class).astype(np.uint8)
+        
+        # Find contours of this pad class
+        pad_contours, _ = cv2.findContours(pad_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Process each contour of this pad class
+        for contour in pad_contours:
+            # Filter only pads that have significant overlap with the strip
+            pad_bbox = cv2.boundingRect(contour)
+            pad_masks.append({
+                'class_id': pad_class,
+                'contour': contour,
+                'bbox': pad_bbox
+            })
+    
+    return strip_bbox, pad_masks
+
+def draw_results(image_np, strip_bbox, pad_masks, confidence_map, confidence_threshold=0.5):
+    """Draw the strip and pads bounding boxes with labels"""
+    # Create a copy of the image for drawing
+    result_image = image_np.copy()
+    
+    # Draw strip bbox
+    if strip_bbox:
+        x, y, w, h = strip_bbox
+        cv2.rectangle(result_image, (x, y), (x+w, y+h), CLASS_COLORS[STRIP_CLASS], 2)
+        cv2.putText(result_image, f"Strip", (x, y - 5), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, CLASS_COLORS[STRIP_CLASS], 2)
+    
+    # Draw each pad with sufficient confidence
+    for pad in pad_masks:
+        x, y, w, h = pad['bbox']
+        class_id = pad['class_id']
+        
+        # Calculate average confidence in this region
+        region_confidence = confidence_map[y:y+h, x:x+w]
+        avg_confidence = np.mean(region_confidence)
+        
+        if avg_confidence >= confidence_threshold:
+            color = CLASS_COLORS[class_id]
+            cv2.rectangle(result_image, (x, y), (x+w, y+h), color, 2)
+            cv2.putText(result_image, f"{CLASS_NAMES[class_id]}", 
+                      (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+    
+    return result_image
+
+def classify_pads(image_np, mask, svm_model):
+    """Classify reagent pads using the SVM model"""
+    pad_results = {}
+    
+    # Extract features for each pad class
+    for pad_class in PAD_CLASSES:
+        # Create binary mask for this class
+        pad_mask = (mask == pad_class)
+        if np.any(pad_mask):  # If this class exists in the mask
+            # Extract features from the pad region
+            lab_image = color.rgb2lab(image_np)
+            pad_region = lab_image[pad_mask]
+            
+            if len(pad_region) > 0:
+                # Get only the color features (L, a, b)
+                color_features = pad_region.mean(axis=0)  # Mean LAB color
+                
+                # Create feature vector with only the color features
+                # SVM model expects 3 features (L, a, b)
+                feature_vector = np.array(color_features).reshape(1, -1)
+                
+                # Check if feature dimensions match what model expects
+                expected_features = getattr(svm_model, 'n_features_in_', 3)
+                if feature_vector.shape[1] != expected_features:
+                    print(f"Warning: Feature mismatch. Model expects {expected_features} features, got {feature_vector.shape[1]}")
+                    # Adjust feature vector to match expected size
+                    if feature_vector.shape[1] > expected_features:
+                        feature_vector = feature_vector[:, :expected_features]
+                    else:
+                        # Pad with zeros
+                        padding = np.zeros((1, expected_features - feature_vector.shape[1]))
+                        feature_vector = np.hstack((feature_vector, padding))
+                
+                try:
+                    # Run SVM prediction
+                    if hasattr(svm_model, 'predict'):
+                        # If svm_model is a sklearn model
+                        prediction = svm_model.predict(feature_vector)
+                        confidence = 1.0  # Default confidence
+                        
+                        if hasattr(svm_model, 'predict_proba'):
+                            probas = svm_model.predict_proba(feature_vector)
+                            confidence = np.max(probas)
+                    else:
+                        # If svm_model is our custom format with model and scaler
+                        if isinstance(svm_model, dict) and 'model' in svm_model and 'scaler' in svm_model:
+                            scaled_features = svm_model['scaler'].transform(feature_vector)
+                            prediction = svm_model['model'].predict(scaled_features)
+                            confidence = 1.0
+                            
+                            if hasattr(svm_model['model'], 'predict_proba'):
+                                probas = svm_model['model'].predict_proba(scaled_features)
+                                confidence = np.max(probas)
+                        else:
+                            # Fallback to default prediction
+                            prediction = [pad_class]
+                            confidence = 0.0
+                            print(f"Warning: Unrecognized SVM model format. Using default prediction.")
+                    
+                    # Store results
+                    pad_results[pad_class] = {
+                        'class_name': CLASS_NAMES[pad_class],
+                        'predicted_class': prediction[0],
+                        'predicted_name': CLASS_NAMES.get(prediction[0], 'Unknown'),
+                        'confidence': confidence,
+                    }
+                    
+                except Exception as e:
+                    print(f"Error during prediction for class {pad_class}: {e}")
+                    # Fallback to default prediction on error
+                    pad_results[pad_class] = {
+                        'class_name': CLASS_NAMES[pad_class],
+                        'predicted_class': pad_class,
+                        'predicted_name': CLASS_NAMES[pad_class],
+                        'confidence': 0.0,
+                        'error': str(e)
+                    }
+    
+    return pad_results
+
+def predict_image(model, svm_model, image_path, confidence_threshold=0.5):
+    """Main function to predict and visualize results on a single image"""
+    # Load and preprocess image
+    image = Image.open(image_path).convert("RGB")
+    image_np = np.array(image.resize((256, 256)))
+    image_tensor = fixed_normalization(image).unsqueeze(0).to(device)
+    
+    # Get segmentation prediction
+    mask, confidence_map, probs = predict_masks(model, image_tensor)
+    
+    # Extract strip and pads using two-stage approach
+    strip_bbox, pad_masks = extract_strip_and_pads(mask)
+    
+    # Draw results on the image
+    result_image = draw_results(image_np, strip_bbox, pad_masks, 
+                               confidence_map, confidence_threshold)
+    
+    # Classify pads using SVM
+    pad_results = classify_pads(image_np, mask, svm_model)
+    
+    # Print classification results
+    print("\nClassification Results:")
+    for pad_class, result in pad_results.items():
+        print(f"{result['class_name']}: Predicted as {CLASS_NAMES.get(result['predicted_class'], 'Unknown')} with confidence {result['confidence']:.2f}")
+    
+    return {
+        'original_image': image_np,
+        'segmentation_mask': mask,
+        'confidence_map': confidence_map,
+        'result_image': result_image,
+        'pad_results': pad_results,
+        'strip_bbox': strip_bbox,
+        'pad_masks': pad_masks,
+        'probs': probs.numpy()
+    }
 
 def update_image_on_canvas(image_np):
-    image_pil = Image.fromarray(cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB))
+    """Update the image shown on the canvas"""
+    image_pil = Image.fromarray(cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR))
     image_tk = ImageTk.PhotoImage(image_pil)
     canvas.itemconfig(image_on_canvas, image=image_tk)
     canvas.image = image_tk
 
-def display_image_with_bboxes(image_np):
-    plt.figure(figsize=(8, 8))
-    plt.imshow(cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB))
-    plt.title("Bounding Box Predictions")
-    plt.axis("off")
-    plt.show()
-
-def predict_and_visualize(model, svm_model, image_path, norm_method='dynamic'):
-    image = Image.open(image_path).convert("RGB")
+def process_and_display(image_path, confidence_threshold):
+    """Process an image and display the results"""
+    # Process the image
+    results = predict_image(model, svm_model, image_path, confidence_threshold)
     
-    # Choose normalization method
-    if norm_method == 'dynamic':
-        print("Using dynamic normalization...")
-        image_tensor = dynamic_normalization(image).unsqueeze(0).to(device)
-    else:
-        print("Using fixed normalization...")
-        image_tensor = fixed_normalization(image).unsqueeze(0).to(device)
-
-    with torch.no_grad():
-        prediction = model(image_tensor)
-        prediction = F.softmax(prediction, dim=1)  # Softmax along channel dimension
-        prediction_np = prediction.squeeze().cpu().numpy()  # shape: (11, H, W)
-        print("Prediction tensor:", prediction_np)
-
-    # Create segmentation mask (pixel-wise predicted class)
-    mask = np.argmax(prediction_np, axis=0)  # shape: (H, W)
-    unique_classes = np.unique(mask)
-    print("Unique classes in mask:", unique_classes)
-
-    # Create confidence map (max probability per pixel)
-    confidence_map = np.max(prediction_np, axis=0)
-    mean_confidence = np.mean(confidence_map)
-    print(f"Mean confidence: {mean_confidence:.4f}")
-
-    # Extract features for SVM classification
-    lab_image = color.rgb2lab(np.array(image.resize((256, 256))))  # Convert image to numpy array
-    features = []
-    for class_id in range(11):
-        if np.any(mask == class_id):
-            region = lab_image[mask == class_id]
-            features.append(region.mean(axis=0))
-        else:
-            features.append(np.zeros(3))  # Use zeros instead of random values
-    features = np.array(features).flatten().reshape(1, -1)
-
-    # Ensure the number of features matches the SVM model's expected input
-    if features.shape[1] > svm_model.n_features_in_:
-        features = features[:, :svm_model.n_features_in_]
-    elif features.shape[1] < svm_model.n_features_in_:
-        padding = np.zeros((1, svm_model.n_features_in_ - features.shape[1]))
-        features = np.hstack((features, padding))
-
-    # SVM classification
-    svm_prediction = svm_model.predict(features)
-    print(f"SVM Prediction: {svm_prediction}")
-
-    return mask, confidence_map, svm_prediction
-
-def preload_predictions(model, svm_model, image_path, norm_method='dynamic'):
-    global predictions
-    predictions = {}  # Initialize predictions
-    mask, confidence_map, svm_prediction = predict_and_visualize(model, svm_model, image_path, norm_method)
-    for threshold in np.arange(0.0, 1.01, 0.01):
-        image_np = np.array(Image.open(image_path).resize((256, 256)))
-        image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
-        draw_bounding_boxes(image_np, mask, confidence_map, confidence_threshold=threshold)
-        predictions[threshold] = image_np
+    # Update the display
+    update_image_on_canvas(results['result_image'])
+    
+    # Update results text
+    result_text = "Classification Results:\n"
+    for pad_class, result in results['pad_results'].items():
+        result_text += f"{result['class_name']}: Predicted as {CLASS_NAMES.get(result['predicted_class'], 'Unknown')}"
+        result_text += f" with confidence {result['confidence']:.2f}\n"
+    
+    results_display.config(state=tk.NORMAL)
+    results_display.delete(1.0, tk.END)
+    results_display.insert(tk.END, result_text)
+    results_display.config(state=tk.DISABLED)
+    
+    return results
 
 def update_confidence_threshold(val):
-    global predictions
+    """Update the confidence threshold and re-process the current image"""
+    global current_image_path
     confidence_threshold = float(val)
-    if not predictions:
-        print("No predictions available yet.")
-        return
-    if confidence_threshold in predictions:
-        image_np = predictions[confidence_threshold]
-        update_image_on_canvas(image_np)
-    else:
-        print(f"Confidence threshold {confidence_threshold} not found in predictions.")
+    if current_image_path:
+        process_and_display(current_image_path, confidence_threshold)
 
 def select_image():
-    global image_path, predictions
-    predictions = {}  # Ensure predictions is defined
+    """Open a file dialog to select an image"""
+    global current_image_path
     image_path = filedialog.askopenfilename(filetypes=[("Image files", "*.jpg;*.jpeg;*.png")])
     if image_path:
-        preload_predictions(model, svm_model, image_path, norm_method='fixed')
-        scale.set(0.5)  # Set initial threshold
-        update_confidence_threshold(0.5)  # Call update after preloading
+        current_image_path = image_path
+        confidence_threshold = float(scale.get())
+        process_and_display(image_path, confidence_threshold)
 
+# Main GUI setup
 if __name__ == "__main__":
-    # Only use the weights.pt file for model loading
+    # Only use weights.pt for the neural network model
     model_path = r'D:\Programming\urine_interpret\models\weights.pt'
     
-    # SVM model path
-    svm_model_path = r'D:\Programming\urine_interpret\models\svm_model_20250222-141136.pkl'
-    
+    # Load the neural network model from weights.pt
+    print("Loading UNetYOLO model from weights.pt...")
     model = load_model(model_path)
     
-    # Load the SVM model
-    svm_model = load_svm_model(svm_model_path)
+    # Create a simple SVM classifier on the fly instead of loading from file
+    print("Creating SVM RBF classifier...")
+    # Option 1: Create an empty SVM just for prediction structure
+    svm_model = {
+        'model': create_svm_classifier(),
+        'scaler': None  # Will be initialized during first prediction
+    }
     
-    # Create a tkinter window
+    # Initialize global variables
+    current_image_path = None
+    
+    # Create the main window
     root = tk.Tk()
-    root.title("Confidence Threshold Adjuster")
-
+    root.title("Urine Strip Analyzer")
+    root.geometry("800x600")
+    
+    # Create frames for layout
+    top_frame = tk.Frame(root)
+    top_frame.pack(fill=tk.X)
+    
+    # Add a button to select an image
+    select_button = tk.Button(top_frame, text="Select Image", command=select_image)
+    select_button.pack(side=tk.LEFT, padx=10, pady=10)
+    
+    # Add confidence threshold slider
+    threshold_label = tk.Label(top_frame, text="Confidence Threshold:")
+    threshold_label.pack(side=tk.LEFT, padx=10, pady=10)
+    scale = tk.Scale(top_frame, from_=0.0, to=1.0, orient=tk.HORIZONTAL, 
+                    resolution=0.01, command=update_confidence_threshold, length=200)
+    scale.set(0.5)  # Default value
+    scale.pack(side=tk.LEFT, padx=10, pady=10)
+    
     # Create a canvas to display the image
-    canvas = tk.Canvas(root, width=256, height=256)
-    canvas.pack()
-
+    canvas_frame = tk.Frame(root)
+    canvas_frame.pack(fill=tk.BOTH, expand=True)
+    
+    canvas = tk.Canvas(canvas_frame, width=256, height=256, bd=2, relief=tk.SUNKEN)
+    canvas.pack(side=tk.LEFT, padx=10, pady=10, fill=tk.BOTH, expand=True)
+    
     # Initialize the image on the canvas
     image_np = np.zeros((256, 256, 3), dtype=np.uint8)
     image_pil = Image.fromarray(image_np)
     image_tk = ImageTk.PhotoImage(image_pil)
     image_on_canvas = canvas.create_image(0, 0, anchor=tk.NW, image=image_tk)
-
-    # Create a scale widget with higher resolution
-    scale = tk.Scale(root, from_=0.0, to=1.0, orient='horizontal', command=update_confidence_threshold, length=300, resolution=0.01)
-    scale.set(0.5)  # Set initial value to 0.5
-    scale.pack()
-
-    # Create a button to select an image
-    button = tk.Button(root, text="Select Image", command=select_image)
-    button.pack()
-
-    # Run the tkinter main loop
+    
+    # Text area for displaying results
+    results_display = tk.Text(canvas_frame, height=10, width=30, state=tk.DISABLED)
+    results_display.pack(side=tk.RIGHT, padx=10, pady=10, fill=tk.BOTH, expand=True)
+    
+    # Status bar
+    status_var = tk.StringVar()
+    status_var.set("Ready")
+    status_bar = tk.Label(root, textvariable=status_var, relief=tk.SUNKEN, anchor=tk.W)
+    status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+    
+    # Run the application
     root.mainloop()
+
+if __name__ == "__main__":
+    model_path = r'D:\Programming\urine_interpret\models\weights.pt'
+    svm_model_path = r'D:\Programming\urine_interpret\models\svm_rbf_model.pkl'
+    
+    # Load the neural network model from weights.pt
+    print("Loading UNetYOLO model from weights.pt...")
+    model = load_model(model_path)
+    
+    # Load the SVM model
+    print("Loading SVM RBF model...")
+    svm_model = joblib.load(svm_model_path)
+    
+    # Test the models on a sample image
+    image_path = r'D:\Programming\urine_interpret\test_image.jpg'
+    results = predict_image(model, svm_model, image_path)
+    
+    # Display the results
+    plt.imshow(results['result_image'])
+    plt.show()

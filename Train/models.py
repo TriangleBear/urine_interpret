@@ -1,7 +1,17 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from config import NUM_CLASSES
+
+# Handle the import more robustly
+try:
+    from .config import NUM_CLASSES  # For package imports
+except ImportError:
+    try:
+        from config import NUM_CLASSES  # For direct imports
+    except ImportError:
+        # Fallback default if config can't be imported
+        NUM_CLASSES = 12
+        print("Warning: Could not import config module. Using default NUM_CLASSES=12")
 
 class DoubleConv(nn.Module):
     """Standard double convolution block used in UNet."""
@@ -163,13 +173,18 @@ class UNetYOLO(nn.Module):
         # Add batch normalization after UNet for better stability
         self.bn = nn.BatchNorm2d(64)
         
-        # YOLO head for segmentation
-        self.yolo_head = YOLOHead(64, out_channels)  # YOLO head for segmentation
+        # YOLO head for segmentation (2D output, not 3D or 4D)
+        self.yolo_head = YOLOHead(64, out_channels)
+        
+        # Print dimensionality information during initialization
+        print(f"Model initialized: Input channels={in_channels}, Output classes={out_channels}")
+        print("This model works with 2D images and produces 2D segmentation maps")
+        print("The tensor dimensions are [batch_size, channels, height, width]")
 
         self._init_weights()
 
     def _init_weights(self):
-        # More careful initialization for better convergence
+        """Initialize model weights for better convergence"""
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
@@ -182,13 +197,15 @@ class UNetYOLO(nn.Module):
                 nn.init.normal_(m.weight, 0, 0.01)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
-    
+
     def forward(self, x):
-        # Get UNet features
+        # Get UNet features (working with 2D images represented as 4D tensors)
+        # Input shape: [B, C, H, W]
         features = self.unet(x)
         features = self.bn(features)
         
         # Get segmentation map from YOLO head
+        # Output shape: [B, num_classes, H, W]
         segmentation_map = self.yolo_head(features)
         
-        return segmentation_map  # Return the final segmentation map
+        return segmentation_map

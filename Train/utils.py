@@ -62,7 +62,12 @@ def post_process_mask(mask, kernel_size=3):
     return mask_cleaned
 
 def post_process_segmentation(logits, apply_layering=True):
-    """Optimized post-processing with better memory usage."""
+    """
+    Post-processing with correct prioritization:
+    1. Reagent pads (0-8, 10) - highest priority
+    2. Strip (11) - second priority 
+    3. Background (9) - lowest priority
+    """
     if not apply_layering:
         # Standard argmax approach (highest probability wins)
         return torch.argmax(F.softmax(logits, dim=1), dim=1)
@@ -73,6 +78,7 @@ def post_process_segmentation(logits, apply_layering=True):
     
     # Process in smaller chunks if needed for memory efficiency
     masks = torch.zeros((batch_size, height, width), device=device, dtype=torch.long)
+    masks.fill_(9)  # Start with everything as background
     
     # More efficient softmax calculation
     with torch.no_grad():
@@ -80,24 +86,24 @@ def post_process_segmentation(logits, apply_layering=True):
         log_probs = F.log_softmax(logits, dim=1)
         probs = torch.exp(log_probs)  # Convert to probabilities
         
-        # Get strip probabilities (class 11)
+        # First: Apply strip (class 11) where it beats background
         strip_prob = probs[:, 11]  # Class 11 (strip)
-        
-        # Apply strip where it beats background
-        masks[strip_prob > 0.5] = 11  # Threshold for strip
-        
-        # Apply reagent pads (0-8, 10) where they beat both strip and background
-        for class_id in list(range(9)) + [10]:  # 0-8, 10 = reagent pads 
-            pad_prob = probs[:, class_id]
-            pad_wins = pad_prob > strip_prob
-            masks[pad_wins] = class_id
-        
-        # Apply background (class 9) where it beats all other classes
         background_prob = probs[:, 9]  # Class 9 (background)
-        background_wins = background_prob > strip_prob
-        for class_id in list(range(9)) + [10]:
-            background_wins &= background_prob > probs[:, class_id]
-        masks[background_wins] = 9
+        strip_wins = strip_prob > background_prob
+        masks[strip_wins] = 11  # Apply strip where it beats background
+        
+        # Then: Apply reagent pads (0-8, 10) where they beat both strip and background
+        # These are highest priority and overrule everything else
+        for class_id in list(range(9)) + [10]:  # 0-8, 10 = reagent pads
+            pad_prob = probs[:, class_id]
+            
+            # Reagent pad wins if its probability is highest
+            pad_wins_strip = pad_prob > strip_prob
+            pad_wins_bg = pad_prob > background_prob
+            pad_wins = pad_wins_strip & pad_wins_bg
+            
+            # Apply this pad where it wins
+            masks[pad_wins] = class_id
             
     return masks
 
@@ -199,3 +205,28 @@ def save_svm_model(model, filepath):
     """Save the SVM model to a file."""
     with open(filepath, 'wb') as f:
         pickle.dump(model, f)
+
+def explain_tensor_dimensions(tensor):
+    """
+    Explains the dimensions of an image tensor in human-readable format.
+    Useful for debugging deep learning image processing code.
+    """
+    if len(tensor.shape) == 2:
+        h, w = tensor.shape
+        return f"2D image: height={h}, width={w}"
+    
+    elif len(tensor.shape) == 3:
+        # Check if it's in PyTorch format [C,H,W] or numpy/OpenCV format [H,W,C]
+        if tensor.shape[0] <= 4:  # Likely channel-first format
+            c, h, w = tensor.shape
+            return f"Channel-first image: channels={c}, height={h}, width={w}"
+        else:  # Likely channel-last format
+            h, w, c = tensor.shape
+            return f"Channel-last image: height={h}, width={w}, channels={c}"
+            
+    elif len(tensor.shape) == 4:
+        b, c, h, w = tensor.shape
+        return f"Batch of images: batch_size={b}, channels={c}, height={h}, width={w}"
+    
+    else:
+        return f"Tensor with shape {tensor.shape} (not standard image format)"

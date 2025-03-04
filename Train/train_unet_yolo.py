@@ -21,6 +21,29 @@ from config import (
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# Regularization techniques
+def mixup_data(x, y, alpha=0.2):
+    """Apply mixup augmentation to the batch"""
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1
+
+    batch_size = x.size(0)
+    index = torch.randperm(batch_size).to(device)
+
+    mixed_x = lam * x + (1 - lam) * x[index, :]
+    y_a, y_b = y, y[index]
+    return mixed_x, y_a, y_b, lam
+
+def label_smoothing(targets, num_classes, smoothing=0.1):
+    """Apply label smoothing to reduce overconfidence"""
+    batch_size = targets.size(0)
+    targets_one_hot = torch.zeros(batch_size, num_classes).to(device)
+    targets_one_hot.scatter_(1, targets.unsqueeze(1), 1)
+    targets_one_hot = targets_one_hot * (1 - smoothing) + smoothing / num_classes
+    return targets_one_hot
+
 def validate_model(model, dataloader, epoch):
     """Run validation on the model and return metrics."""
     model.eval()
@@ -62,13 +85,16 @@ def validate_model(model, dataloader, epoch):
     
     return val_loss, val_accuracy
 
-def train_model(num_epochs=50, batch_size=16, learning_rate=0.001, save_interval=1):    
+def train_model(num_epochs=50, batch_size=16, learning_rate=0.001, save_interval=1, 
+               weight_decay=1e-4, dropout_prob=0.4, mixup_alpha=0.2, 
+               label_smoothing_factor=0.1, grad_clip_value=1.0):    
     """
-    Train the UNet-YOLO model with enhanced features:
+    Train the UNet-YOLO model with enhanced features and regularization:
     - Validation after each epoch
     - Model saving (best and latest)
     - Early stopping
     - GPU optimization
+    - Advanced regularization techniques
     """
     # Set up logging
     logging.basicConfig(level=logging.INFO)
@@ -82,7 +108,23 @@ def train_model(num_epochs=50, batch_size=16, learning_rate=0.001, save_interval
     best_model_path = os.path.join(model_dir, "best_model.pt")
     latest_model_path = os.path.join(model_dir, "latest_model.pt")
     
-    # Load datasets
+    # Save training parameters for reproducibility
+    training_params = {
+        'num_epochs': num_epochs,
+        'batch_size': batch_size,
+        'learning_rate': learning_rate,
+        'weight_decay': weight_decay,
+        'dropout_prob': dropout_prob,
+        'mixup_alpha': mixup_alpha,
+        'label_smoothing': label_smoothing_factor,
+        'grad_clip': grad_clip_value
+    }
+    
+    with open(os.path.join(model_dir, "training_params.txt"), "w") as f:
+        for param, value in training_params.items():
+            f.write(f"{param}: {value}\n")
+    
+    # Load datasets with data augmentation
     train_dataset = UrineStripDataset(TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER)
     valid_dataset = UrineStripDataset(VALID_IMAGE_FOLDER, VALID_MASK_FOLDER)
     
@@ -103,19 +145,33 @@ def train_model(num_epochs=50, batch_size=16, learning_rate=0.001, save_interval
         num_workers=2
     )
 
-    # Initialize model, optimizer and scheduler
-    model = UNetYOLO(in_channels=3, out_channels=NUM_CLASSES).to(device)
+    # Initialize model with specified dropout probability
+    model = UNetYOLO(in_channels=3, out_channels=NUM_CLASSES, dropout_prob=dropout_prob).to(device)
     
     # Use mixed precision training if available
     scaler = torch.cuda.amp.GradScaler() if torch.cuda.is_available() else None
     
     # Setup optimizer with weight decay (L2 regularization)
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
-    
-    # Learning rate scheduler - reduce LR when validation loss plateaus
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=5, min_lr=1e-6, verbose=True
+    optimizer = torch.optim.AdamW(
+        model.parameters(), 
+        lr=learning_rate, 
+        weight_decay=weight_decay,
+        amsgrad=True  # Use AMSGrad variant for more stable training
     )
+    
+    # Multi-step LR scheduler with warmup
+    warmup_epochs = 3
+    milestones = [int(num_epochs * 0.5), int(num_epochs * 0.75)]
+    
+    def get_lr_lambda(epoch):
+        if epoch < warmup_epochs:
+            # Linear warmup
+            return (epoch + 1) / warmup_epochs
+        else:
+            # Step decay
+            return 1.0 * (0.1 ** sum(epoch >= milestone for milestone in milestones))
+            
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=get_lr_lambda)
 
     # Early stopping variables
     best_val_loss = float('inf')
@@ -155,24 +211,51 @@ def train_model(num_epochs=50, batch_size=16, learning_rate=0.001, save_interval
             images = images.to(device, non_blocking=True)
             targets = targets.to(device, non_blocking=True)
             
+            # Apply mixup augmentation with probability 0.5
+            apply_mixup = epoch >= 5 and np.random.random() < 0.5  # Start mixup after 5 epochs
+            
             # Zero gradients
             optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
             
             if scaler is not None:
                 # Use mixed precision training
                 with torch.cuda.amp.autocast():
-                    outputs = model(images)
-                    loss = dice_loss(outputs, targets) + focal_loss(outputs, targets)
+                    if apply_mixup:
+                        mixed_images, targets_a, targets_b, lam = mixup_data(images, targets, alpha=mixup_alpha)
+                        outputs = model(mixed_images)
+                        loss = lam * dice_loss(outputs, targets_a) + (1 - lam) * dice_loss(outputs, targets_b)
+                        loss += lam * focal_loss(outputs, targets_a) + (1 - lam) * focal_loss(outputs, targets_b)
+                    else:
+                        outputs = model(images)
+                        loss = dice_loss(outputs, targets) + focal_loss(outputs, targets)
                 
                 # Scale loss and compute gradients
                 scaler.scale(loss).backward()
+                
+                # Apply gradient clipping
+                if grad_clip_value > 0:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_value)
+                
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 # Standard training
-                outputs = model(images)
-                loss = dice_loss(outputs, targets) + focal_loss(outputs, targets)
+                if apply_mixup:
+                    mixed_images, targets_a, targets_b, lam = mixup_data(images, targets, alpha=mixup_alpha)
+                    outputs = model(mixed_images)
+                    loss = lam * dice_loss(outputs, targets_a) + (1 - lam) * dice_loss(outputs, targets_b)
+                    loss += lam * focal_loss(outputs, targets_a) + (1 - lam) * focal_loss(outputs, targets_b)
+                else:
+                    outputs = model(images)
+                    loss = dice_loss(outputs, targets) + focal_loss(outputs, targets)
+                
                 loss.backward()
+                
+                # Apply gradient clipping
+                if grad_clip_value > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_value)
+                
                 optimizer.step()
             
             # Update metrics
@@ -200,8 +283,8 @@ def train_model(num_epochs=50, batch_size=16, learning_rate=0.001, save_interval
         val_losses.append(val_loss)
         val_accuracies.append(val_accuracy)
         
-        # Update learning rate based on validation loss
-        scheduler.step(val_loss)
+        # Update learning rate
+        scheduler.step()
         current_lr = optimizer.param_groups[0]['lr']
         
         # Update epoch progress bar
@@ -219,17 +302,16 @@ def train_model(num_epochs=50, batch_size=16, learning_rate=0.001, save_interval
             f"Val Loss: {val_loss:.4f}, "
             f"Val Accuracy: {val_accuracy:.4f}, "
             f"LR: {current_lr:.6f}, "
-            f"Time: {epoch_time:.2f}s, "
-            f"Avg Batch: {avg_batch_time:.3f}s"
+            f"Time: {epoch_time:.2f}s"
         )
         
-        # Save latest model every epoch
+        # Save latest model every save_interval epochs
         if epoch % save_interval == 0:
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
+                'scheduler_state_dict': scheduler.state_dict(),
                 'train_loss': avg_epoch_loss,
                 'val_loss': val_loss,
                 'val_accuracy': val_accuracy
@@ -245,14 +327,14 @@ def train_model(num_epochs=50, batch_size=16, learning_rate=0.001, save_interval
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
+                'scheduler_state_dict': scheduler.state_dict(),
                 'train_loss': avg_epoch_loss,
                 'val_loss': val_loss,
                 'val_accuracy': val_accuracy,
                 'best_val_loss': best_val_loss
             }, best_model_path)
             
-            logger.info(f"Saved best model with val_loss: {val_loss:.4f}")
+            logger.info(f"✓ Saved best model with val_loss: {val_loss:.4f}")
         else:
             epochs_no_improve += 1
             logger.info(f"No improvement for {epochs_no_improve} epochs")
@@ -288,5 +370,9 @@ def train_model(num_epochs=50, batch_size=16, learning_rate=0.001, save_interval
         'val_accuracies': val_accuracies,
         'best_val_loss': best_val_loss,
         'early_stopped': early_stop,
-        'epochs_completed': epoch + 1
+        'epochs_completed': epoch + 1,
+        'model_directory': model_dir
     }
+
+if __name__ == "__main__":
+    train_model()

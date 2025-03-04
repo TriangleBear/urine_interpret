@@ -41,10 +41,12 @@ device = get_device_info()
 # Path Configuration
 BASE_PATH = r"D:/Programming/urine_interpret"
 DATA_ROOT = os.path.join(BASE_PATH, r"Datasets/Split_70_20_10")
+# IMPORTANT: Make sure we're using the modified labels directory
+# which should contain the missing Strip and Background classes
 TRAIN_IMAGE_FOLDER = os.path.join(DATA_ROOT, "train/images")
-TRAIN_MASK_FOLDER = os.path.join(DATA_ROOT, "train/labels")
+TRAIN_MASK_FOLDER = os.path.join(DATA_ROOT, "train/labels")  # Use modified labels with all classes
 VALID_IMAGE_FOLDER = os.path.join(DATA_ROOT, "valid/images")
-VALID_MASK_FOLDER = os.path.join(DATA_ROOT, "valid/labels")
+VALID_MASK_FOLDER = os.path.join(DATA_ROOT, "valid/labels")  # Also modify validation labels
 TEST_IMAGE_FOLDER = os.path.join(DATA_ROOT, "test/images")
 TEST_MASK_FOLDER = os.path.join(DATA_ROOT, "test/labels")
 
