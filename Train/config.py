@@ -13,11 +13,11 @@ def get_device_info():
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         if torch.cuda.is_available():
             # Print CUDA details
-            print(f"CUDA is available. Using GPU: {torch.cuda.get_device_name(0)}")
-            print(f"CUDA Device Count: {torch.cuda.device_count()}")
-            print(f"CUDA Device Capability: {torch.cuda.get_device_capability(0)}")
-            print(f"CUDA Memory Allocated: {torch.cuda.memory_allocated(0) / 1024**2:.2f} MB")
-            print(f"CUDA Memory Reserved: {torch.cuda.memory_reserved(0) / 1024**2:.2f} MB")
+            # print(f"CUDA is available. Using GPU: {torch.cuda.get_device_name(0)}")
+            # print(f"CUDA Device Count: {torch.cuda.device_count()}")
+            # print(f"CUDA Device Capability: {torch.cuda.get_device_capability(0)}")
+            # print(f"CUDA Memory Allocated: {torch.cuda.memory_allocated(0) / 1024**2:.2f} MB")
+            # print(f"CUDA Memory Reserved: {torch.cuda.memory_reserved(0) / 1024**2:.2f} MB")
             
             # Set safe CUDA optimization flags for RTX 4050
             torch.backends.cudnn.benchmark = True
@@ -25,7 +25,7 @@ def get_device_info():
             
             # Only enable TF32 if architecture supports it (Ampere or newer)
             if torch.cuda.get_device_capability(0)[0] >= 8:
-                print("Enabling TensorFloat-32 for faster computation")
+                # print("Enabling TensorFloat-32 for faster computation")
                 torch.backends.cuda.matmul.allow_tf32 = True
                 torch.backends.cudnn.allow_tf32 = True
         else:
@@ -69,11 +69,16 @@ IMAGE_SIZE = (512, 512)  # Change size to 512x512
 
 # New Learning Rate
 LEARNING_RATE = 1e-4  # Adjusted learning rate
+
+# Learning Rate Scheduler
+LR_SCHEDULER_STEP_SIZE = 10
+LR_SCHEDULER_GAMMA = 0.1
+
 # Memory Management - safer approach
 torch.cuda.empty_cache()
 
 # Set safer CUDA memory allocation limits for RTX 4050
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:64'
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:64,expandable_segments:True'
 
 # Model Saving
 def get_model_folder():
