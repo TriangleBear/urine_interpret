@@ -58,23 +58,14 @@ for dir_path in [TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER,
 
 # Training Hyperparameters
 # Adjust batch size based on GPU memory
-if torch.cuda.is_available():
-    gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1024**3  # GB
-    if gpu_mem > 8:  # High-end GPU
-        BATCH_SIZE = 8
-    elif gpu_mem > 4:  # Mid-range GPU
-        BATCH_SIZE = 4
-    else:  # Entry-level GPU
-        BATCH_SIZE = 2
-else:
-    BATCH_SIZE = 1
+BATCH_SIZE = 3
 
 # For RTX 4050 (mobile GPU), use conservative settings
 ACCUMULATION_STEPS = 8 if BATCH_SIZE < 4 else 4  # Adjust based on batch size
 NUM_CLASSES = 12  # Updated number of classes
 NUM_EPOCHS = 100
 PATIENCE = 15
-IMAGE_SIZE = (224, 224)
+IMAGE_SIZE = (512, 512)  # Change size to 512x512
 
 # New Learning Rate
 LEARNING_RATE = 1e-4  # Adjusted learning rate
