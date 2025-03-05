@@ -29,7 +29,7 @@ from config import (
     get_model_folder,
     clean_memory  # Also import the clean_memory function
 )
-from utils import compute_class_weights  # Import the correct function
+from utils import compute_class_weights, compute_mean_std  # Import the correct function
 from torch.amp import GradScaler, autocast  # Import mixed precision training tools
 import tracemalloc  # Import for memory profiling
 
