@@ -39,7 +39,7 @@ def get_device_info():
 device = get_device_info()
 
 # Path Configuration
-BASE_PATH = r"/content/urine_interpret/"
+BASE_PATH = r"D:/Programming/urine_interpret/"
 DATA_ROOT = os.path.join(BASE_PATH, r"Datasets/Split_70_20_10")
 # IMPORTANT: Make sure we're using the modified label directory
 # which should contain the missing Strip and Background classes
@@ -62,7 +62,7 @@ BATCH_SIZE = 2  # Further reduced batch size for better memory management
 
 # For NVIDIA T4, use optimized settings
 ACCUMULATION_STEPS = 4  # Adjust based on batch size
-NUM_CLASSES = 12  # Updated number of classes
+NUM_CLASSES = 12  # Updated number of classes to include strip and background
 NUM_EPOCHS = 100
 PATIENCE = 15
 IMAGE_SIZE = (512, 512)  # Change size to 512x512
@@ -77,8 +77,8 @@ LR_SCHEDULER_GAMMA = 0.1
 # Memory Management - safer approach
 torch.cuda.empty_cache()
 
-# Set safer CUDA memory allocation limits for T4 GPU
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:64,expandable_segments:True'
+# Set safer CUDA memory allocation limits without expandable_segments
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:64'
 
 # Model Saving
 def get_model_folder():

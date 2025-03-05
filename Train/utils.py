@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import cv2
 import pickle
 from tqdm import tqdm
-from config import device, NUM_CLASSES
+from Train.config import device, NUM_CLASSES
 
 # Standard utility functions
 def compute_mean_std(dataset, batch_size=16):
@@ -97,7 +97,7 @@ def post_process_segmentation(logits, apply_layering=True):
         for class_id in list(range(9)) + [10]:  # 0-8, 10 = reagent pads
             pad_prob = probs[:, class_id]
             
-            # Reagent pad wins if its probability is highest
+            # Reagent pad wins if its probability is highest over both strip and background
             pad_wins_strip = pad_prob > strip_prob
             pad_wins_bg = pad_prob > background_prob
             pad_wins = pad_wins_strip & pad_wins_bg

@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from sklearn.metrics import accuracy_score, classification_report
+from sklearn.metrics import accuracy_score, classification_report, precision_score, recall_score, f1_score
 from sklearn.svm import SVC
 from sklearn.preprocessing import StandardScaler
 from utils import extract_features_and_labels, save_svm_model
@@ -138,7 +138,7 @@ def extract_features_and_labels_with_progress(dataset, model):
             # Extract features through model
             # Instead of using the output directly, extract bottleneck features
             # which contain richer information for classification
-            with torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
+            with torch.amp.autocast(device_type='cuda'):
                 # Forward through encoder part of model
                 x1 = model.unet.inc(images)
                 x2 = model.unet.down1(x1)
@@ -210,70 +210,7 @@ def train_svm_with_real_data():
     raw_label_counts = {}
     for label in raw_labels:
         raw_label_counts[label] = raw_label_counts.get(label, 0) + 1
-    
-    print("\nRaw label distribution in first 100 samples:")
-    for label, count in sorted(raw_label_counts.items()):
-        class_name = CLASS_NAMES.get(label, f"Unknown class {label}")
-        print(f"  Class {label} ({class_name}): {count} samples")
-    
-    # Extract features - using our improved function
-    print("\nExtracting features from training data...")
-    train_features, train_labels = extract_features_and_labels_with_progress(train_dataset, model)
-    
-    print("\nExtracting features from validation data...")
-    valid_features, valid_labels = extract_features_and_labels_with_progress(valid_dataset, model)
-    
-    # Check if we have enough class diversity for SVM training
-    unique_train_classes = np.unique(train_labels)
-    if len(unique_train_classes) <= 1:
-        print("\nERROR: Not enough class diversity for SVM training.")
-        print("SVM requires at least two different classes to train.")
-        
-        # Attempt to diagnose the root cause
-        print("\nDiagnostic information:")
-        print(f"Original dataset length: {len(train_dataset)}")
-        print(f"Extracted features shape: {train_features.shape}")
-        print(f"Extracted labels shape: {train_labels.shape}")
-        print(f"Unique classes in extracted labels: {unique_train_classes}")
-        
-        # Suggest fixes
-        print("\nPossible solutions:")
-        print("1. Check the __getitem__ method in UrineStripDataset to ensure it returns the correct class ID")
-        print("2. Verify the YOLO annotation files have diverse class IDs")
-        print("3. Run the dataset_inspector.py script for a deeper diagnosis")
-        
-        # As a fallback, we can create synthetic data for demonstration
-        print("\nAttempting to create synthetic training data with multiple classes...")
-        
-        # Create balanced synthetic data
-        synthetic_features = []
-        synthetic_labels = []
-        
-        # Base the synthetic features on our real extracted features
-        feature_dim = train_features.shape[1]
-        
-        for cls in range(NUM_CLASSES):
-            if cls not in [9]:  # Skip background class
-                # Create synthetic samples for each class
-                for i in range(20):  # 20 samples per class
-                    # Create synthetic feature vector based on real feature statistics
-                    feature = np.random.randn(feature_dim) * 0.1
-                    if len(train_features) > 0:
-                        # Add some structure based on real features
-                        feature += np.mean(train_features, axis=0)
-                    
-                    synthetic_features.append(feature)
-                    synthetic_labels.append(cls)
-                print(f"Added 20 synthetic samples for class {cls} ({CLASS_NAMES.get(cls, 'Unknown')})")
-        
-        # Combine real and synthetic data
-        train_features = np.vstack([train_features, np.array(synthetic_features)])
-        train_labels = np.concatenate([train_labels, np.array(synthetic_labels)])
-        
-        print(f"Final training set: {train_features.shape}, with {len(np.unique(train_labels))} classes")
 
-    # Continue with SVM training using our (potentially augmented) dataset
-    # ...existing code for SVM training...
 
 def train_svm_classifier(unet_model_path, model_path=None, binary_mode=True):
     ic("Loading training, validation, and test datasets...")
