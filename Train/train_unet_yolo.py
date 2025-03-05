@@ -357,7 +357,7 @@ def train_model(num_epochs=50, batch_size=2, learning_rate=0.001, save_interval=
                 'val_loss': val_loss,
                 'val_accuracy': val_accuracy,
                 'best_val_loss': best_val_loss
-            }, best_model_path)
+            }, best_model_path, _use_new_zipfile_serialization=False)
             
             logger.info(f"✓ Saved best model with val_loss: {val_loss:.4f}")
         else:
@@ -380,7 +380,7 @@ def train_model(num_epochs=50, batch_size=2, learning_rate=0.001, save_interval=
     
     # Final model saving
     final_model_path = os.path.join(model_dir, "final_model.pt")
-    torch.save(model.state_dict(), final_model_path)
+    torch.save(model.state_dict(), final_model_path, _use_new_zipfile_serialization=False)
     
     # Report training completion
     status = "Early stopped" if early_stop else "Completed"
@@ -391,7 +391,7 @@ def train_model(num_epochs=50, batch_size=2, learning_rate=0.001, save_interval=
     print(f"\nTraining {status}! Models saved to {model_dir}")
     
     # Load the best model for return
-    model.load_state_dict(torch.load(best_model_path)['model_state_dict'])
+    model.load_state_dict(torch.load(best_model_path, map_location=device, weights_only=True)['model_state_dict'])
     
     # Stop memory profiling
     tracemalloc.stop()
