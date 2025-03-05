@@ -104,12 +104,7 @@ def train_model(num_epochs=50, batch_size=2, learning_rate=0.001, save_interval=
                weight_decay=1e-4, dropout_prob=0.5, mixup_alpha=0.2, 
                label_smoothing_factor=0.1, grad_clip_value=1.0):    
     """ 
-    Train the UNet-YOLO model with enhanced features and regularization:
-    - Validation after each epoch
-    - Model saving (best and latest)
-    - Early stopping
-    - GPU optimization
-    - Advanced regularization techniques
+    Train the UNet-YOLO model with enhanced features and regularization
     """
     # Start memory profiling
     tracemalloc.start()
@@ -145,6 +140,14 @@ def train_model(num_epochs=50, batch_size=2, learning_rate=0.001, save_interval=
     # Load datasets with data augmentation
     train_dataset = UrineStripDataset(TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER)
     valid_dataset = UrineStripDataset(VALID_IMAGE_FOLDER, VALID_MASK_FOLDER)
+    
+    # Check if datasets are empty
+    if len(train_dataset) == 0:
+        raise ValueError(f"Training dataset is empty! Check path: {TRAIN_IMAGE_FOLDER}")
+    if len(valid_dataset) == 0:
+        raise ValueError(f"Validation dataset is empty! Check path: {VALID_IMAGE_FOLDER}")
+        
+    logger.info(f"Loaded {len(train_dataset)} training samples and {len(valid_dataset)} validation samples")
     
     # Use a smaller subset for initial testing
     train_subset_size = min(100, len(train_dataset))
