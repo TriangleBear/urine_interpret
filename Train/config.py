@@ -67,19 +67,19 @@ for dir_path in [TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER,
                 TEST_IMAGE_FOLDER, TEST_MASK_FOLDER]:
     os.makedirs(dir_path, exist_ok=True)
 
-# T4-optimized Training Hyperparameters
-BATCH_SIZE = 4  # T4 can handle 4-8 batch size with mixed precision
-GRADIENT_ACCUMULATION_STEPS = 8  # Simulate larger batch sizes (effectively 32)
+# T4-optimized Training Hyperparameters with adjustments for better convergence
+BATCH_SIZE = 6  # Increased for more stable gradients
+GRADIENT_ACCUMULATION_STEPS = 4  # Reduced to match increased batch size
 NUM_CLASSES = 12
-NUM_EPOCHS = 100
-PATIENCE = 15
+NUM_EPOCHS = 200  # Increased to allow longer training
+PATIENCE = 30  # Higher patience for early stopping to allow learning rate resets
 IMAGE_SIZE = (512, 512)
 
-# Optimization settings
-LEARNING_RATE = 2e-4  # Slightly higher LR for accumulated gradients
-WEIGHT_DECAY = 2e-5   # Increased for better regularization with T4
-USE_MIXED_PRECISION = True  # Enable mixed precision training (crucial for T4)
-USE_GRADIENT_CHECKPOINTING = True  # Trades computation for memory savings
+# Optimization settings with better learning dynamics
+LEARNING_RATE = 3e-4  # Slightly higher starting LR for cosine schedule
+WEIGHT_DECAY = 1e-4   # Better regularization value
+USE_MIXED_PRECISION = True
+USE_GRADIENT_CHECKPOINTING = True
 
 # Learning Rate Scheduler
 LR_SCHEDULER_STEP_SIZE = 8
