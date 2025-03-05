@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from Train.config import NUM_CLASSES  # Fix: Use absolute import path
+from config import NUM_CLASSES  # Change to direct import since we're already in the Train directory
 
 class DoubleConv(nn.Module):
     """Standard double convolution block used in UNet."""
