@@ -231,11 +231,36 @@ def explain_tensor_dimensions(tensor):
     else:
         return f"Tensor with shape {tensor.shape} (not standard image format)"
 
-def compute_class_weights(dataset, num_classes):
-    """Compute class weights to handle class imbalance."""
+def compute_class_weights(dataset, num_classes, max_weight=100.0, min_weight=0.5):
+    """Compute class weights to handle class imbalance with min/max constraints."""
     class_counts = [0] * num_classes
     for _, label, _ in dataset:
-        class_counts[label] += 1
+        # Handle tensor labels
+        label_val = label.item() if isinstance(label, torch.Tensor) else label
+        if 0 <= label_val < num_classes:  # Ensure label is within valid range
+            class_counts[label_val] += 1
+    
     total_samples = sum(class_counts)
-    class_weights = [total_samples / (num_classes * count) if count > 0 else 0 for count in class_counts]
-    return torch.tensor(class_weights, dtype=torch.float32)
+    
+    # Initial weights calculation with safeguards against division by zero
+    class_weights = []
+    for count in class_counts:
+        if count > 0:
+            weight = total_samples / (num_classes * count)
+        else:
+            # For missing classes, use average weight or default
+            weight = 1.0
+        class_weights.append(weight)
+    
+    # Convert to tensor
+    weights_tensor = torch.tensor(class_weights, dtype=torch.float32)
+    
+    # Normalize weights relative to their mean
+    if weights_tensor.sum() > 0:
+        mean_weight = weights_tensor.mean()
+        weights_tensor = weights_tensor / mean_weight
+    
+    # Apply min/max constraints
+    weights_tensor = torch.clamp(weights_tensor, min_weight, max_weight)
+    
+    return weights_tensor
