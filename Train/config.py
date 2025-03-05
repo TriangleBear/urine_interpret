@@ -42,18 +42,9 @@ def get_device_info():
 # Get device once during module import
 device = get_device_info()
 
-# Path Configuration - Modified for Colab environment
-# Detect if we're running in Colab
-IN_COLAB = 'google.colab' in str(get_ipython()) if 'get_ipython' in globals() else False
 DEVICE = device
 
-if IN_COLAB:
-    # Use Colab paths
-    BASE_PATH = "/content/urine_interpret"
-else:
-    # Use local paths
-    BASE_PATH = r"D:/Programming/urine_interpret" 
-
+BASE_PATH = "/content/urine_interpret"
 DATA_ROOT = os.path.join(BASE_PATH, r"Datasets/Split_70_20_10")
 TRAIN_IMAGE_FOLDER = os.path.join(DATA_ROOT, "train/images")
 TRAIN_MASK_FOLDER = os.path.join(DATA_ROOT, "train/labels")
