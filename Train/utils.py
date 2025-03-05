@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import cv2
 import pickle
 from tqdm import tqdm
-from Train.config import device, NUM_CLASSES
+from config import device, NUM_CLASSES
 
 # Standard utility functions
 def compute_mean_std(dataset, batch_size=16):
