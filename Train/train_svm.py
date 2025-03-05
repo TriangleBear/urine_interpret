@@ -112,7 +112,7 @@ def extract_features_and_labels_with_progress(dataset, model):
             dataset, 
             batch_size=batch_size, 
             shuffle=False,  # Don't shuffle to maintain order
-            num_workers=2,
+            num_workers=4,
             pin_memory=True
         )
         
@@ -301,6 +301,10 @@ def train_svm_classifier(unet_model_path, model_path=None, binary_mode=True):
     ic(f"Unique classes in training set: {unique_train_classes}")
     
     # Check if we have enough unique classes for multi-class classification
+    if len(unique_train_classes) == 0:
+        ic("ERROR: No classes detected in the training set.")
+        return None
+    
     if len(unique_train_classes) <= 1:
         if binary_mode:
             ic("Only one class detected. Switching to binary classification mode.")

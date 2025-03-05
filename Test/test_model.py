@@ -266,12 +266,6 @@ def classify_pads(image_np, mask, svm_model):
                     else:
                         # If svm_model is our custom format with model and scaler
                         if isinstance(svm_model, dict) and 'model' in svm_model and 'scaler' in svm_model:
-                            # Ensure the scaler is initialized
-                            if svm_model['scaler'] is None:
-                                from sklearn.preprocessing import StandardScaler
-                                svm_model['scaler'] = StandardScaler()
-                                svm_model['scaler'].fit(feature_vector)
-                            
                             scaled_features = svm_model['scaler'].transform(feature_vector)
                             prediction = svm_model['model'].predict(scaled_features)
                             confidence = 1.0
