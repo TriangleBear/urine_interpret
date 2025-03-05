@@ -60,6 +60,9 @@ def validate_model(model, dataloader, epoch):
                             position=2, leave=False)
         
         for images, targets, _ in val_progress:
+            # Clear GPU cache after each batch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             images = images.to(device, non_blocking=True)
             targets = targets.to(device, non_blocking=True)
             
@@ -83,6 +86,7 @@ def validate_model(model, dataloader, epoch):
                 total += 1
                 
             val_progress.set_postfix({"Loss": f"{loss.item():.4f}"})
+            
     
     val_loss = val_loss / len(dataloader)
     val_accuracy = correct / total if total > 0 else 0
