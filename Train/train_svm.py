@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from sklearn.metrics import accuracy_score, classification_report
+from sklearn.metrics import accuracy_score, classification_report, precision_score, recall_score, f1_score
 from sklearn.svm import SVC
 from sklearn.preprocessing import StandardScaler
 from utils import extract_features_and_labels, save_svm_model
