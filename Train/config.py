@@ -75,6 +75,9 @@ NUM_EPOCHS = 200  # Increased to allow longer training
 PATIENCE = 30  # Higher patience for early stopping to allow learning rate resets
 IMAGE_SIZE = (512, 512)
 
+# Data loading settings
+NUM_WORKERS = 2  # Number of worker processes for data loading
+
 # Optimization settings with better learning dynamics
 LEARNING_RATE = 3e-4  # Slightly higher starting LR for cosine schedule
 WEIGHT_DECAY = 1e-4   # Better regularization value
