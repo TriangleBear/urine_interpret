@@ -39,7 +39,7 @@ def get_device_info():
 device = get_device_info()
 
 # Path Configuration
-BASE_PATH = r"/content/urine_interpret/"
+BASE_PATH = r"D:/Programming/urine_interpret/"
 DATA_ROOT = os.path.join(BASE_PATH, r"Datasets/Split_70_20_10")
 # IMPORTANT: Make sure we're using the modified label directory
 # which should contain the missing Strip and Background classes
