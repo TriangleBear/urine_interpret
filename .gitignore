@@ -205,3 +205,6 @@ Test/strip_region.jpg
 .vs/urine_interpret/FileContentIndex/2a84ad6f-1a2a-475e-986b-4d3a0f13a277.vsidx
 .vs/slnx.sqlite
 .vs/ProjectSettings.json
+Test/normalization_cache.npz
+temp_pad_image.jpg
+temp_strip_image.jpg
