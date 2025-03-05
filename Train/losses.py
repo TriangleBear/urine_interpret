@@ -101,6 +101,30 @@ def dice_loss(outputs, targets, smooth=1e-6, max_size=512, class_weights=None):
             if class_weights is not None:
                 class_weights = class_weights[targets]  # Get weights for the current targets
                 dice = dice * class_weights  # Apply class weights to the dice loss
+
+            # Add focal component for rare classes with a higher gamma
+            if class_weights is not None:
+                # Get class indices
+                if targets.dim() == 1:  # [B] class labels
+                    target_classes = targets
+                else:  # [B, H, W] segmentation masks
+                    # Get most common class in each target mask
+                    target_classes = []
+                    for i in range(targets.shape[0]):
+                        values, counts = torch.unique(targets[i], return_counts=True)
+                        if len(values) > 0:
+                            idx = torch.argmax(counts)
+                            target_classes.append(values[idx])
+                        else:
+                            target_classes.append(0)  # Default to class 0 if empty
+                    target_classes = torch.tensor(target_classes, device=targets.device)
+                
+                # Apply higher weighting if target belongs to an underrepresented class (weight > 3)
+                high_weight_mask = class_weights[target_classes] > 3.0
+                if high_weight_mask.any():
+                    # Further increase loss for rare classes to improve learning
+                    dice = dice * torch.where(high_weight_mask.float(), 1.2, 1.0)[:, None]
+
             return dice.mean()
         else:
             # Otherwise, process batch by batch as before
@@ -214,6 +238,34 @@ def focal_loss(outputs, targets, alpha=0.25, gamma=2, max_size=512, class_weight
 
     pt = torch.exp(-bce_loss)
     focal_loss = alpha * (1 - pt) ** gamma * bce_loss
+
+    # Modify gamma for rare classes to make the model focus more on them
+    if class_weights is not None:
+        # Identify rare classes (higher weight means rarer)
+        rare_classes = []
+        common_classes = []
+        
+        # Check if we have class info from targets
+        if targets.dim() == 1:  # Class indices
+            for i, target in enumerate(targets):
+                if target < len(class_weights) and class_weights[target] > 3.0:
+                    rare_classes.append(i)
+                else:
+                    common_classes.append(i)
+        
+        # Apply higher gamma (focus parameter) to rare classes
+        if rare_classes:
+            # Extract batch indices for rare classes
+            batch_indices = torch.tensor(rare_classes, device=outputs.device)
+            
+            # For rare classes, use a higher gamma (e.g., 3 instead of 2)
+            if batch_indices.numel() > 0:
+                # Increase gamma for rare classes to 3.0
+                gamma_rare = 3.0
+                pt_rare = torch.exp(-bce_loss[batch_indices])
+                focal_loss_rare = alpha * (1 - pt_rare) ** gamma_rare * bce_loss[batch_indices]
+                focal_loss[batch_indices] = focal_loss_rare
+
     if class_weights is not None:
         focal_loss = focal_loss * class_weights  # Apply class weights to the focal loss
     
