@@ -208,3 +208,9 @@ Test/strip_region.jpg
 Test/normalization_cache.npz
 temp_pad_image.jpg
 temp_strip_image.jpg
+test_features.npy
+train_features.npy
+train_labels.npy
+valid_features.npy
+valid_labels.npy
+test_labels.npy
