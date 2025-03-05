@@ -48,7 +48,7 @@ def label_smoothing(targets, num_classes, smoothing=0.1):
     targets_one_hot = targets_one_hot * (1 - smoothing) + smoothing / num_classes
     return targets_one_hot
 
-def validate_model(model, dataloader, epoch):
+def validate_model(model, dataloader, epoch, logger):
     """Run validation on the model and return metrics."""
     model.eval()
     val_loss = 0.0
@@ -61,6 +61,8 @@ def validate_model(model, dataloader, epoch):
         
         for images, targets, _ in val_progress:
             # Clear GPU cache after each batch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             images = images.to(device, non_blocking=True)
             targets = targets.to(device, non_blocking=True)
             
@@ -302,7 +304,7 @@ def train_model(num_epochs=50, batch_size=2, learning_rate=0.001, save_interval=
         train_losses.append(avg_epoch_loss)
         
         # Validation phase
-        val_loss, val_accuracy = validate_model(model, valid_loader, epoch)
+        val_loss, val_accuracy = validate_model(model, valid_loader, epoch, logger)
         val_losses.append(val_loss)
         val_accuracies.append(val_accuracy)
         
