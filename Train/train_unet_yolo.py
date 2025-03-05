@@ -4,6 +4,8 @@ import logging
 import os
 from tqdm import tqdm
 import time
+import torchvision.transforms as transforms  # Add this import for data augmentation
+import torch.nn.functional as F  # Add this for contrastive_loss function
 from torch.utils.data import DataLoader
 from datasets import UrineStripDataset
 from models import UNetYOLO
@@ -133,16 +135,16 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
     logger = logging.getLogger("training")
-    logger.info(f"💻 Training on device: {device}")
-    logger.info(f"📊 Using batch size: {batch_size} with {GRADIENT_ACCUMULATION_STEPS} gradient accumulation steps")
+    logger.info(f"Training on device: {device}")
+    logger.info(f"Using batch size: {batch_size} with {GRADIENT_ACCUMULATION_STEPS} gradient accumulation steps")
     
     # Create output directory for model checkpoints
     model_dir = get_model_folder()
     os.makedirs(model_dir, exist_ok=True)
-    logger.info(f"💾 Saving models to: {model_dir}")
+    logger.info(f"Saving models to: {model_dir}")
     
     # Load datasets with enhanced data augmentation
-    logger.info("🔄 Loading and preparing datasets...")
+    logger.info("Loading and preparing datasets...")
     train_dataset = UrineStripDataset(
         TRAIN_IMAGE_FOLDER, 
         TRAIN_MASK_FOLDER,
@@ -152,7 +154,7 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
     
     # Check dataset classes and print distribution
     class_dist = train_dataset.class_distribution if hasattr(train_dataset, 'class_distribution') else {}
-    logger.info(f"📈 Class distribution: {class_dist}")
+    logger.info(f"Class distribution: {class_dist}")
     
     # Intelligent handling of class imbalance
     if len(class_dist) > 0:
@@ -188,7 +190,7 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
         num_workers=2
     )
     
-    logger.info(f"🧠 Initializing model with dropout={dropout_prob}...")
+    logger.info(f"Initializing model with dropout={dropout_prob}...")
     
     # Initialize model with specified dropout probability
     model = UNetYOLO(in_channels=3, out_channels=NUM_CLASSES, dropout_prob=dropout_prob).to(device)
@@ -198,7 +200,7 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
     
     # Compute class weights with higher maximum to handle severe imbalance
     class_weights = compute_class_weights(train_dataset, NUM_CLASSES, max_weight=100.0).to(device)
-    logger.info(f"⚖️ Class weights: {class_weights}")
+    logger.info(f"Class weights: {class_weights}")
     
     # Setup optimizer with weight decay
     optimizer = torch.optim.AdamW(
