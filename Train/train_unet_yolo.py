@@ -157,10 +157,19 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
     
     # Compute dataset normalization statistics
     logger.info("Computing dataset normalization statistics...")
-    
     logger.info(f"Dataset statistics - Mean: {mean}, Std: {std}")
     
-    # Analyze class distribution much more carefully
+    # *** FIX: First load the dataset before analyzing class distribution ***
+    # Load datasets with enhanced data augmentation using computed statistics
+    logger.info("Loading and preparing datasets with computed normalization...")
+    train_dataset = UrineStripDataset(
+        TRAIN_IMAGE_FOLDER, 
+        TRAIN_MASK_FOLDER,
+        transform=get_advanced_augmentation(mean, std)  # Pass the computed values
+    )
+    valid_dataset = UrineStripDataset(VALID_IMAGE_FOLDER, VALID_MASK_FOLDER)
+    
+    # Now analyze class distribution after the dataset is loaded
     class_counts = {i: 0 for i in range(NUM_CLASSES)}
     logger.info("Analyzing full dataset class distribution...")
     for i in tqdm(range(len(train_dataset)), desc="Counting classes"):
@@ -222,15 +231,6 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
     # Calculate class weights with higher penalties for rare classes
     class_weights = compute_balanced_class_weights(class_counts, NUM_CLASSES).to(device)
     logger.info(f"Class weights: {class_weights}")
-    
-    # Load datasets with enhanced data augmentation using computed statistics
-    logger.info("Loading and preparing datasets with computed normalization...")
-    train_dataset = UrineStripDataset(
-        TRAIN_IMAGE_FOLDER, 
-        TRAIN_MASK_FOLDER,
-        transform=get_advanced_augmentation(mean, std)  # Pass the computed values
-    )
-    valid_dataset = UrineStripDataset(VALID_IMAGE_FOLDER, VALID_MASK_FOLDER)
     
     # Check dataset classes and print distribution
     class_dist = train_dataset.class_distribution if hasattr(train_dataset, 'class_distribution') else {}
