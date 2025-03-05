@@ -216,8 +216,8 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
     # Use mixed precision training
     scaler = GradScaler() if USE_MIXED_PRECISION and torch.cuda.is_available() else None
     
-    # Compute class weights with higher maximum to handle severe imbalance
-    class_weights = compute_class_weights(train_dataset, NUM_CLASSES, max_weight=100.0).to(device)
+    # Compute class weights - FIX: Remove max_weight parameter that's causing the error
+    class_weights = compute_class_weights(train_dataset, NUM_CLASSES).to(device)
     logger.info(f"Class weights: {class_weights}")
     
     # Setup optimizer with weight decay
