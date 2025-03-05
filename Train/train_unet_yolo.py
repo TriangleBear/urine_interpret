@@ -500,9 +500,7 @@ def get_advanced_augmentation(mean=None, std=None):
         
     return transforms.Compose([
         transforms.RandomResizedCrop(512, scale=(0.7, 1.0), ratio=(0.8, 1.2)),
-        transforms.RandomApply([
-            transforms.RandomRotation(20)
-        ], p=0.7),
+        transforms.RandomApply(p=0.7),
         transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1),
         # Additional augmentations for robust training
         transforms.ToTensor(),
