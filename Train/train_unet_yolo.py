@@ -104,12 +104,12 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
                weight_decay=None, dropout_prob=0.5, mixup_alpha=0.2, 
                label_smoothing_factor=0.1, grad_clip_value=1.0):
     """
-    Train the UNet-YOLO model with T4 GPU optimizations for Colab
+    Train the UNet-YOLO model with improved convergence settings
     """
     # Use config values if not specified
     num_epochs = num_epochs or NUM_EPOCHS
     batch_size = batch_size or BATCH_SIZE
-    learning_rate = learning_rate or LEARNING_RATE  
+    learning_rate = learning_rate or LEARNING_RATE
     save_interval = save_interval or SAVE_INTERVAL
     weight_decay = weight_decay or WEIGHT_DECAY
     
@@ -117,126 +117,141 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
     tracemalloc.start()
     
     # Clean memory before starting
-    clean_memory()  # Use the function from config
+    clean_memory()
     
-    # Set up logging
-    logging.basicConfig(level=logging.INFO)
+    # Set up logging with more detailed format
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s'
+    )
     logger = logging.getLogger("training")
-    logger.info(f"Training on device: {device}")
+    logger.info(f"💻 Training on device: {device}")
+    logger.info(f"📊 Using batch size: {batch_size} with {GRADIENT_ACCUMULATION_STEPS} gradient accumulation steps")
     
     # Create output directory for model checkpoints
     model_dir = get_model_folder()
     os.makedirs(model_dir, exist_ok=True)
+    logger.info(f"💾 Saving models to: {model_dir}")
     
-    # File paths for model saving
-    best_model_path = os.path.join(model_dir, "best_model.pt")
-    latest_model_path = os.path.join(model_dir, "latest_model.pt")
-    
-    # Save training parameters for reproducibility
-    training_params = {
-        'num_epochs': num_epochs,
-        'batch_size': batch_size,
-        'learning_rate': learning_rate,
-        'weight_decay': weight_decay,
-        'dropout_prob': dropout_prob,
-        'mixup_alpha': mixup_alpha,
-        'label_smoothing': label_smoothing_factor,
-        'gradient_accumulation_steps': GRADIENT_ACCUMULATION_STEPS,
-        'mixed_precision': USE_MIXED_PRECISION,
-        'grad_clip': grad_clip_value
-    }
-    
-    # Load datasets with data augmentation
-    train_dataset = UrineStripDataset(TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER)
+    # Load datasets with enhanced data augmentation
+    logger.info("🔄 Loading and preparing datasets...")
+    train_dataset = UrineStripDataset(
+        TRAIN_IMAGE_FOLDER, 
+        TRAIN_MASK_FOLDER,
+        transform=get_advanced_augmentation()  # Use stronger augmentation
+    )
     valid_dataset = UrineStripDataset(VALID_IMAGE_FOLDER, VALID_MASK_FOLDER)
     
-    # Check if datasets are empty
-    if len(train_dataset) == 0:
-        raise ValueError(f"Training dataset is empty! Check path: {TRAIN_IMAGE_FOLDER}")
-    if len(valid_dataset) == 0:
-        raise ValueError(f"Validation dataset is empty! Check path: {VALID_IMAGE_FOLDER}")
+    # Check dataset classes and print distribution
+    class_dist = train_dataset.class_distribution if hasattr(train_dataset, 'class_distribution') else {}
+    logger.info(f"📈 Class distribution: {class_dist}")
+    
+    # Intelligent handling of class imbalance
+    if len(class_dist) > 0:
+        max_class_count = max(class_dist.values()) if class_dist else 1
+        min_class_count = min(class_dist.values()) if class_dist else 1
+        imbalance_ratio = max_class_count / max(min_class_count, 1)
+        logger.info(f"⚖️ Class imbalance ratio: {imbalance_ratio:.2f}")
         
-    logger.info(f"Loaded {len(train_dataset)} training samples and {len(valid_dataset)} validation samples")
+        # If severe imbalance, adjust training accordingly
+        if imbalance_ratio > 10:
+            logger.info("⚠️ Severe class imbalance detected! Applying balancing techniques.")
+            # Increase weight decay for regularization with imbalanced data
+            weight_decay *= 2
+            # Lower learning rate for more stable convergence
+            learning_rate *= 0.5
     
-    # Use a smaller validation subset to save memory
-    valid_subset_size = min(50, len(valid_dataset))
-    valid_dataset = torch.utils.data.Subset(valid_dataset, range(valid_subset_size))
-    
-    # Configure data loaders with T4 optimizations
+    # Configure data loaders with memory optimized settings
     train_loader = DataLoader(
         train_dataset, 
         batch_size=batch_size,
         shuffle=True,
         pin_memory=True,
-        num_workers=2,  # Reduced workers for Colab
-        persistent_workers=True,  # Keep workers alive between epochs
+        num_workers=2,
+        persistent_workers=True,
         drop_last=True
     )
     
     valid_loader = DataLoader(
         valid_dataset,
-        batch_size=batch_size*2,  # Can use larger batch size for validation
+        batch_size=batch_size*2,
         shuffle=False,
         pin_memory=True,
         num_workers=2
     )
-
+    
+    logger.info(f"🧠 Initializing model with dropout={dropout_prob}...")
+    
     # Initialize model with specified dropout probability
     model = UNetYOLO(in_channels=3, out_channels=NUM_CLASSES, dropout_prob=dropout_prob).to(device)
     
-    # Enable gradient checkpointing to save memory
-    if USE_GRADIENT_CHECKPOINTING:
-        model.unet.use_checkpointing = True
-    
-    # Use mixed precision training for T4
+    # Use mixed precision training
     scaler = GradScaler() if USE_MIXED_PRECISION and torch.cuda.is_available() else None
     
-    # Compute class weights
-    class_weights = compute_class_weights(train_dataset, NUM_CLASSES).to(device)
+    # Compute class weights with higher maximum to handle severe imbalance
+    class_weights = compute_class_weights(train_dataset, NUM_CLASSES, max_weight=100.0).to(device)
+    logger.info(f"⚖️ Class weights: {class_weights}")
     
-    # Setup optimizer with weight decay (L2 regularization)
+    # Setup optimizer with weight decay
     optimizer = torch.optim.AdamW(
         model.parameters(), 
         lr=learning_rate, 
         weight_decay=weight_decay,
-        amsgrad=True  # More stable for T4
+        amsgrad=True  # More stable for convergence
     )
     
-    # T4-optimized learning rate scheduler
-    scheduler = torch.optim.OneCycleLR(
-        optimizer, 
-        max_lr=learning_rate*10,
-        epochs=num_epochs,
-        steps_per_epoch=len(train_loader) // GRADIENT_ACCUMULATION_STEPS,
-        pct_start=0.3,  # Warm up for 30% of training
-        div_factor=25,  # LR_max / initial_lr
-        final_div_factor=10000,  # LR_min / initial_lr
+    # *** IMPORTANT FIX: Better learning rate scheduler ***
+    # Instead of OneCycleLR, use CosineAnnealingWarmRestarts which can escape local minima
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer,
+        T_0=10,  # Initial restart period (epochs)
+        T_mult=2,  # Multiply period by this factor after each restart
+        eta_min=learning_rate/100  # Minimum learning rate
     )
-
+    
+    # ***CRITICAL***: Increase patience for early stopping
+    PATIENCE = 30  # Allow more epochs without improvement
+    
     # Early stopping variables
     best_val_loss = float('inf')
     epochs_no_improve = 0
     early_stop = False
     
-    # Main training loop with gradient accumulation
+    # Training metrics tracking
+    train_losses = []
+    val_losses = []
+    val_accuracies = []
+    lr_history = []
+    
+    # Main training loop with improved monitoring
+    logger.info("🚀 Starting training...")
+    
     for epoch in range(num_epochs):
         # Training phase
         model.train()
         epoch_loss = 0.0
-        optimizer.zero_grad(set_to_none=True)  # Start with clean gradients
+        optimizer.zero_grad(set_to_none=True)
         
         # Progress bar for training batches
         batch_progress = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}")
+        
+        # Epoch metrics
+        batch_losses = []
         
         for batch_idx, (images, targets, _) in enumerate(batch_progress):
             # Move data to device
             images = images.to(device, non_blocking=True)
             targets = targets.to(device, non_blocking=True)
             
-            # Apply mixup with probability 0.5 after warmup
-            apply_mixup = epoch >= 5 and np.random.random() < 0.5
+            # Track unique classes in this batch for diagnostics
+            unique_targets = torch.unique(targets).cpu().numpy()
             
-            # Use mixed precision for T4
+            # Apply mixup with probability that increases with epoch
+            # This helps stabilize early training while providing regularization later
+            mixup_prob = min(0.6, epoch * 0.05)  # Gradually increase up to 60%
+            apply_mixup = epoch >= 5 and np.random.random() < mixup_prob
+            
+            # Use mixed precision
             if scaler:
                 with autocast(device_type='cuda'):
                     if apply_mixup:
@@ -248,8 +263,13 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
                                 (1 - lam) * focal_loss(outputs, targets_b, class_weights=class_weights)
                     else:
                         outputs = model(images)
-                        loss = dice_loss(outputs, targets, class_weights=class_weights) + \
-                               focal_loss(outputs, targets, class_weights=class_weights)
+                        # Add label smoothing for regularization
+                        loss = 0.8 * dice_loss(outputs, targets, class_weights=class_weights) + \
+                               0.8 * focal_loss(outputs, targets, class_weights=class_weights)
+                        
+                        # Add a supervised contrastive loss term to better separate classes
+                        if epoch > 5:  # Add after a few epochs of basic training
+                            loss += 0.2 * contrastive_loss(outputs, targets)
                     
                     # Scale loss by accumulation factor
                     loss = loss / GRADIENT_ACCUMULATION_STEPS
@@ -257,7 +277,7 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
                 # Scale loss and compute gradients
                 scaler.scale(loss).backward()
                 
-                # Steps when accumulation is complete or at the end
+                # Steps when accumulation is complete
                 if (batch_idx + 1) % GRADIENT_ACCUMULATION_STEPS == 0 or (batch_idx + 1) == len(train_loader):
                     # Apply gradient clipping
                     if grad_clip_value > 0:
@@ -267,63 +287,52 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
                     # Optimizer step and update scaler
                     scaler.step(optimizer)
                     scaler.update()
-                    optimizer.zero_grad(set_to_none=True)  # More efficient
-                    scheduler.step()  # Update LR scheduler every step for OneCycleLR
-            else:
-                # Standard training path without mixed precision
-                if apply_mixup:
-                    mixed_images, targets_a, targets_b, lam = mixup_data(images, targets, alpha=mixup_alpha)
-                    outputs = model(mixed_images)
-                    loss = lam * dice_loss(outputs, targets_a, class_weights=class_weights) + (1 - lam) * dice_loss(outputs, targets_b, class_weights=class_weights)
-                    loss += lam * focal_loss(outputs, targets_a, class_weights=class_weights) + (1 - lam) * focal_loss(outputs, targets_b, class_weights=class_weights)
-                else:
-                    outputs = model(images)
-                    loss = dice_loss(outputs, targets, class_weights=class_weights) + focal_loss(outputs, targets, class_weights=class_weights)
-                
-                loss.backward()
-                
-                # Apply gradient clipping
-                if grad_clip_value > 0:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_value)
-                
-                optimizer.step()
+                    optimizer.zero_grad(set_to_none=True)
             
-            # Track loss
-            epoch_loss += loss.item() * GRADIENT_ACCUMULATION_STEPS  # Adjust for scaling
+            # Track metrics
+            current_loss = loss.item() * GRADIENT_ACCUMULATION_STEPS
+            batch_losses.append(current_loss)
+            epoch_loss += current_loss
             
             # Update progress bar
             lr = optimizer.param_groups[0]['lr']
             batch_progress.set_postfix({
-                "Loss": f"{loss.item()*GRADIENT_ACCUMULATION_STEPS:.4f}",
-                "LR": f"{lr:.6f}"
+                "Loss": f"{current_loss:.4f}",
+                "LR": f"{lr:.6f}",
+                "Classes": f"{len(unique_targets)}"  # Show class diversity
             })
             
-            # Clear cache periodically to avoid OOM
-            if (batch_idx + 1) % 10 == 0:
+            # Clear cache periodically
+            if (batch_idx + 1) % 5 == 0:
                 clean_memory()
         
         # Calculate average loss
-        avg_epoch_loss = epoch_loss / len(train_loader)
+        avg_epoch_loss = epoch_loss / len(train_loader) if len(train_loader) > 0 else float('inf')
+        train_losses.append(avg_epoch_loss)
         
-        # Clean memory before validation
+        # Clear memory before validation
         clean_memory()
         
-        # Validation phase (simplified for memory efficiency)
-        val_loss, val_accuracy = validate_model(model, valid_loader, epoch, logger)
+        # Update learning rate - important to do this BEFORE validation
+        scheduler.step()
+        current_lr = optimizer.param_groups[0]['lr']
+        lr_history.append(current_lr)
         
-        # Update LR scheduler
-        # scheduler.step(val_loss)  # For ReduceLROnPlateau, not needed for OneCycleLR
+        # Validation phase
+        val_loss, val_accuracy = validate_model(model, valid_loader, epoch, logger)
+        val_losses.append(val_loss)
+        val_accuracies.append(val_accuracy)
         
         # Log metrics
         logger.info(
             f"Epoch {epoch+1}/{num_epochs} - "
             f"Train Loss: {avg_epoch_loss:.4f}, "
             f"Val Loss: {val_loss:.4f}, "
-            f"Val Accuracy: {val_accuracy:.4f}, "
-            f"LR: {lr:.6f}"
+            f"Val Acc: {val_accuracy:.4f}, "
+            f"LR: {current_lr:.6f}"
         )
         
-        # Save checkpoint periodically to reduce I/O overhead
+        # Save checkpoint periodically
         if (epoch + 1) % save_interval == 0:
             torch.save({
                 'epoch': epoch,
@@ -332,45 +341,237 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
                 'scheduler_state_dict': scheduler.state_dict() if hasattr(scheduler, 'state_dict') else None,
                 'train_loss': avg_epoch_loss,
                 'val_loss': val_loss
-            }, latest_model_path)
+            }, os.path.join(model_dir, f"checkpoint_epoch_{epoch+1}.pt"))
         
-        # Save best model (always)
+        # Save best model (if improved)
         if val_loss < best_val_loss:
+            improvement = best_val_loss - val_loss
             best_val_loss = val_loss
             epochs_no_improve = 0
             
-            # Save best model with torch.save
+            # Save best model
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
-                'best_val_loss': best_val_loss
-            }, best_model_path)
+                'best_val_loss': best_val_loss,
+                'val_accuracy': val_accuracy,
+                'train_config': {
+                    'learning_rate': learning_rate,
+                    'batch_size': batch_size,
+                    'weight_decay': weight_decay,
+                    'dropout_prob': dropout_prob
+                }
+            }, os.path.join(model_dir, "best_model.pt"))
             
-            logger.info(f"✓ Saved best model with val_loss: {val_loss:.4f}")
+            logger.info(f"✓ Saved best model with val_loss: {val_loss:.4f} (improved by {improvement:.4f})")
         else:
             epochs_no_improve += 1
+            logger.info(f"! No improvement for {epochs_no_improve} epochs (best: {best_val_loss:.4f})")
             
-            # Early stopping check
+            # Early stopping check with modified strategy
             if epochs_no_improve >= PATIENCE:
-                logger.info(f"Early stopping triggered after {epoch+1} epochs")
-                early_stop = True
-                break
+                # If we've trained for less than half the epochs, try a learning rate reset
+                if epoch < num_epochs / 2 and epochs_no_improve == PATIENCE:
+                    logger.info(f"⚠️ No improvement for {epochs_no_improve} epochs - Attempting learning rate reset")
+                    
+                    # Reset learning rate to initial value * 0.5
+                    for param_group in optimizer.param_groups:
+                        param_group['lr'] = learning_rate * 0.5
+                    
+                    # Reset early stopping counter to give the model another chance
+                    epochs_no_improve = PATIENCE // 2
+                else:
+                    logger.info(f"⛔ Early stopping triggered after {epoch+1} epochs")
+                    early_stop = True
+                    break
         
-        # Clear memory after each epoch
-        clean_memory()
+        # Plot and save training progress
+        if epoch % 5 == 0 or epoch == num_epochs - 1:
+            plot_training_progress(train_losses, val_losses, val_accuracies, lr_history, 
+                                  save_path=os.path.join(model_dir, "training_progress.png"))
     
-    # Final model saving
-    torch.save(model.state_dict(), os.path.join(model_dir, "final_model.pt"))
+    # Save final model
+    torch.save({
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'final_val_loss': val_loss,
+        'best_val_loss': best_val_loss,
+        'train_losses': train_losses,
+        'val_losses': val_losses
+    }, os.path.join(model_dir, "final_model.pt"))
     
-    # Stop memory profiling
+    # Also save a lightweight version with just the weights for easier loading
+    torch.save(model.state_dict(), os.path.join(model_dir, "weights.pt"))
+    
+    # Training summary
+    status = "Early stopped" if early_stop else "Completed"
+    logger.info(f"Training {status} after {epoch+1} epochs")
+    logger.info(f"Best validation loss: {best_val_loss:.4f}")
+    logger.info(f"Final validation accuracy: {val_accuracy:.4f}")
+    
+    # Stop memory profiling and clean up
     tracemalloc.stop()
-    
-    # Clean up
     clean_memory()
     
-    logger.info(f"Training completed after {epoch+1} epochs")
-    logger.info(f"Best validation loss: {best_val_loss:.4f}")
-    return model
+    # Return the model for further use if needed
+    return model, {
+        'train_losses': train_losses,
+        'val_losses': val_losses,
+        'val_accuracies': val_accuracies,
+        'best_val_loss': best_val_loss,
+        'early_stopped': early_stop,
+        'epochs_completed': epoch + 1,
+        'model_directory': model_dir
+    }
+
+def contrastive_loss(outputs, targets, temperature=0.1):
+    """
+    Add a contrastive loss component that helps separate class features
+    """
+    # Get the logits before softmax
+    batch_size, num_classes, h, w = outputs.shape
+    
+    # Global average pooling to get class-level features
+    features = F.adaptive_avg_pool2d(outputs, (1, 1))
+    features = features.view(batch_size, num_classes)
+    
+    # Normalize features (important for stable contrastive learning)
+    norm_features = F.normalize(features, dim=1)
+    
+    # Compute similarity matrix
+    sim_matrix = torch.mm(norm_features, norm_features.t()) / temperature
+    
+    # Create mask for positive pairs (same class)
+    labels = targets.view(-1, 1)
+    mask = (labels == labels.t()).float()
+    
+    # Remove self-contrast cases
+    mask = mask - torch.eye(batch_size, device=mask.device)
+    
+    # Compute loss (InfoNCE)
+    loss = 0
+    for i in range(batch_size):
+        if torch.sum(mask[i]) > 0:  # Skip if no positive pairs
+            pos_sim = sim_matrix[i][mask[i] > 0]
+            neg_sim = sim_matrix[i][mask[i] <= 0]
+            
+            if len(pos_sim) > 0 and len(neg_sim) > 0:
+                loss_i = -torch.log(
+                    torch.sum(torch.exp(pos_sim)) / 
+                    (torch.sum(torch.exp(pos_sim)) + torch.sum(torch.exp(neg_sim)))
+                )
+                loss += loss_i
+    
+    return loss / batch_size if batch_size > 0 else torch.tensor(0.0).to(device)
+
+def get_advanced_augmentation():
+    """Create a more aggressive augmentation pipeline to improve generalization"""
+    return transforms.Compose([
+        transforms.RandomResizedCrop(512, scale=(0.7, 1.0), ratio=(0.8, 1.2)),
+        transforms.RandomApply([
+            transforms.RandomRotation(20),
+            transforms.RandomAffine(
+                degrees=0, translate=(0.2, 0.2), scale=(0.8, 1.2), shear=10),
+        ], p=0.7),
+        transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1),
+        transforms.RandomGrayscale(p=0.1),
+        # Additional augmentations for robust training
+        RandAugment(2, 9),  # Apply 2 random augmentations with strength 9
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        transforms.RandomErasing(p=0.3, scale=(0.02, 0.1)),
+    ])
+
+def plot_training_progress(train_losses, val_losses, val_accuracies, lr_history, save_path=None):
+    """Plot training progress and save to file"""
+    import matplotlib.pyplot as plt
+    
+    # Create a figure with 3 subplots
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 15), sharex=True)
+    
+    # Plot training and validation loss
+    epochs = range(1, len(train_losses) + 1)
+    ax1.plot(epochs, train_losses, 'b-', label='Training Loss')
+    ax1.plot(epochs, val_losses, 'r-', label='Validation Loss')
+    ax1.set_title('Training and Validation Loss')
+    ax1.set_ylabel('Loss')
+    ax1.legend()
+    ax1.grid(True)
+    
+    # Plot validation accuracy
+    ax2.plot(epochs, val_accuracies, 'g-', label='Validation Accuracy')
+    ax2.set_title('Validation Accuracy')
+    ax2.set_ylabel('Accuracy')
+    ax2.legend()
+    ax2.grid(True)
+    
+    # Plot learning rate over time
+    ax3.plot(epochs, lr_history, 'm-', label='Learning Rate')
+    ax3.set_title('Learning Rate Schedule')
+    ax3.set_ylabel('Learning Rate')
+    ax3.set_xlabel('Epochs')
+    ax3.set_yscale('log')  # Log scale for learning rate
+    ax3.legend()
+    ax3.grid(True)
+    
+    plt.tight_layout()
+    
+    # Save the figure if a path is provided
+    if save_path:
+        plt.savefig(save_path, dpi=100)
+        plt.close()
+    else:
+        plt.show()
+
+# Add a utility class for RandAugment
+class RandAugment:
+    """Randomly apply n data augmentations with magnitude m"""
+    def __init__(self, n, m):
+        self.n = n  # Number of augmentations to apply
+        self.m = m  # Magnitude of augmentations (0-10)
+        
+        # Define available operations
+        self.operations = [
+            transforms.AutoContrast(),
+            transforms.Equalize(),
+            self._posterize,
+            self._solarize,
+            self._color,
+            self._contrast,
+            self._brightness,
+            self._sharpness
+        ]
+    
+    def _posterize(self, img):
+        bits = max(4, 8 - int((self.m / 10) * 4))
+        return transforms.functional.posterize(img, bits)
+    
+    def _solarize(self, img):
+        thresh = 256 - int((self.m / 10) * 256)
+        return transforms.functional.solarize(img, thresh)
+    
+    def _color(self, img):
+        factor = 1.0 + self.m/10 * 0.9
+        return transforms.functional.adjust_saturation(img, factor)
+    
+    def _contrast(self, img):
+        factor = 1.0 + self.m/10 * 0.9
+        return transforms.functional.adjust_contrast(img, factor)
+    
+    def _brightness(self, img):
+        factor = 1.0 + self.m/10 * 0.9
+        return transforms.functional.adjust_brightness(img, factor)
+    
+    def _sharpness(self, img):
+        factor = 1.0 + self.m/10 * 0.9
+        return transforms.functional.adjust_sharpness(img, factor)
+    
+    def __call__(self, img):
+        ops = np.random.choice(self.operations, self.n, replace=False)
+        for op in ops:
+            img = op(img)
+        return img
 
 if __name__ == "__main__":
     train_model()
