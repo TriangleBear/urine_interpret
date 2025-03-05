@@ -19,7 +19,7 @@ from config import (
     get_model_folder
 )
 from utils import compute_class_weights  # Import the correct function
-from config import LR_SCHEDULER_STEP_SIZE, LR_SCHEDULER_GAMMA  # Import scheduler config
+from config import NUM_CLASSES, NUM_EPOCHS, LR_SCHEDULER_STEP_SIZE, LR_SCHEDULER_GAMMA  # Import scheduler config
 from torch.amp import GradScaler, autocast  # Import mixed precision training tools
 import tracemalloc  # Import for memory profiling
 
