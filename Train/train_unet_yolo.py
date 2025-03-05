@@ -13,13 +13,20 @@ from config import (
     TRAIN_MASK_FOLDER,
     VALID_IMAGE_FOLDER, 
     VALID_MASK_FOLDER,
+    LEARNING_RATE,
+    WEIGHT_DECAY,
+    USE_MIXED_PRECISION,
+    GRADIENT_ACCUMULATION_STEPS,
+    NUM_WORKERS,
     NUM_CLASSES, 
+    NUM_EPOCHS,
+    SAVE_INTERVAL,
+    DEVICE,
     BATCH_SIZE,
     PATIENCE,
     get_model_folder
 )
 from utils import compute_class_weights  # Import the correct function
-from config import NUM_CLASSES, NUM_EPOCHS, LR_SCHEDULER_STEP_SIZE, LR_SCHEDULER_GAMMA  # Import scheduler config
 from torch.amp import GradScaler, autocast  # Import mixed precision training tools
 import tracemalloc  # Import for memory profiling
 
