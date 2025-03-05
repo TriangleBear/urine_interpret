@@ -35,6 +35,18 @@ import tracemalloc  # Import for memory profiling
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+norm_dataset = UrineStripDataset(
+        TRAIN_IMAGE_FOLDER, 
+        TRAIN_MASK_FOLDER,
+        transform=transforms.Compose([
+            transforms.Resize((512, 512)),
+            transforms.ToTensor()
+        ])
+    )
+    
+    # Compute mean and std using the utility function
+mean, std = compute_mean_std(norm_dataset)
+
 # Regularization techniques
 def mixup_data(x, y, alpha=0.2):
     """Apply mixup augmentation to the batch"""
@@ -143,12 +155,18 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
     os.makedirs(model_dir, exist_ok=True)
     logger.info(f"Saving models to: {model_dir}")
     
-    # Load datasets with enhanced data augmentation
-    logger.info("Loading and preparing datasets...")
+    # Compute dataset normalization statistics
+    logger.info("Computing dataset normalization statistics...")
+    # Create a small dataset for computing mean and std
+    
+    logger.info(f"Dataset statistics - Mean: {mean}, Std: {std}")
+    
+    # Load datasets with enhanced data augmentation using computed statistics
+    logger.info("Loading and preparing datasets with computed normalization...")
     train_dataset = UrineStripDataset(
         TRAIN_IMAGE_FOLDER, 
         TRAIN_MASK_FOLDER,
-        transform=get_advanced_augmentation()  # Use stronger augmentation
+        transform=get_advanced_augmentation(mean, std)  # Pass the computed values
     )
     valid_dataset = UrineStripDataset(VALID_IMAGE_FOLDER, VALID_MASK_FOLDER)
     
@@ -475,22 +493,20 @@ def contrastive_loss(outputs, targets, temperature=0.1):
     
     return loss / batch_size if batch_size > 0 else torch.tensor(0.0).to(device)
 
-def get_advanced_augmentation():
-    """Create a more aggressive augmentation pipeline to improve generalization"""
+def get_advanced_augmentation(mean=None, std=None):
+    """
+    Create a more aggressive augmentation pipeline to improve generalization
+    """
+        
     return transforms.Compose([
         transforms.RandomResizedCrop(512, scale=(0.7, 1.0), ratio=(0.8, 1.2)),
         transforms.RandomApply([
-            transforms.RandomRotation(20),
-            transforms.RandomAffine(
-                degrees=0, translate=(0.2, 0.2), scale=(0.8, 1.2), shear=10),
+            transforms.RandomRotation(20)
         ], p=0.7),
         transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1),
-        transforms.RandomGrayscale(p=0.1),
         # Additional augmentations for robust training
-        RandAugment(2, 9),  # Apply 2 random augmentations with strength 9
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        transforms.RandomErasing(p=0.3, scale=(0.02, 0.1)),
+        transforms.Normalize(mean=mean, std=std),  # Use computed statistics
     ])
 
 def plot_training_progress(train_losses, val_losses, val_accuracies, lr_history, save_path=None):
@@ -533,55 +549,6 @@ def plot_training_progress(train_losses, val_losses, val_accuracies, lr_history,
         plt.close()
     else:
         plt.show()
-
-# Add a utility class for RandAugment
-class RandAugment:
-    """Randomly apply n data augmentations with magnitude m"""
-    def __init__(self, n, m):
-        self.n = n  # Number of augmentations to apply
-        self.m = m  # Magnitude of augmentations (0-10)
-        
-        # Define available operations
-        self.operations = [
-            transforms.AutoContrast(),
-            transforms.Equalize(),
-            self._posterize,
-            self._solarize,
-            self._color,
-            self._contrast,
-            self._brightness,
-            self._sharpness
-        ]
-    
-    def _posterize(self, img):
-        bits = max(4, 8 - int((self.m / 10) * 4))
-        return transforms.functional.posterize(img, bits)
-    
-    def _solarize(self, img):
-        thresh = 256 - int((self.m / 10) * 256)
-        return transforms.functional.solarize(img, thresh)
-    
-    def _color(self, img):
-        factor = 1.0 + self.m/10 * 0.9
-        return transforms.functional.adjust_saturation(img, factor)
-    
-    def _contrast(self, img):
-        factor = 1.0 + self.m/10 * 0.9
-        return transforms.functional.adjust_contrast(img, factor)
-    
-    def _brightness(self, img):
-        factor = 1.0 + self.m/10 * 0.9
-        return transforms.functional.adjust_brightness(img, factor)
-    
-    def _sharpness(self, img):
-        factor = 1.0 + self.m/10 * 0.9
-        return transforms.functional.adjust_sharpness(img, factor)
-    
-    def __call__(self, img):
-        ops = np.random.choice(self.operations, self.n, replace=False)
-        for op in ops:
-            img = op(img)
-        return img
 
 if __name__ == "__main__":
     train_model()
