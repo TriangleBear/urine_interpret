@@ -13,6 +13,7 @@ import joblib
 from skimage import color
 import sys
 import os
+from transformers import ViTModel, ViTFeatureExtractor
 
 # Add both the parent directory and Train directory to the path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -100,6 +101,37 @@ def load_model(model_path):
     model.to(device)
     model.eval()
     return model
+
+def load_svm_model(model_path):
+    """Load the trained SVM model from disk"""
+    try:
+        print(f"Loading SVM model from {model_path}...")
+        svm_data = joblib.load(model_path)
+        print("SVM model loaded successfully")
+        return svm_data
+    except Exception as e:
+        print(f"Error loading SVM model: {e}")
+        print("Creating a default SVM model instead")
+        return create_default_svm_model()
+
+def create_default_svm_model():
+    """Create a simple SVM classifier as a fallback"""
+    from sklearn.svm import SVC
+    from sklearn.preprocessing import StandardScaler
+    
+    # Create SVM classifier with RBF kernel
+    svm = SVC(
+        kernel='rbf',
+        C=1.0,
+        gamma='scale',
+        probability=True
+    )
+    
+    # Return with an empty scaler
+    return {
+        'model': svm,
+        'scaler': StandardScaler()
+    }
 
 def create_svm_classifier():
     """Create an SVM classifier with RBF kernel on the fly"""
@@ -220,9 +252,26 @@ def draw_results(image_np, strip_bbox, pad_masks, confidence_map, confidence_thr
     
     return result_image
 
-def classify_pads(image_np, mask, svm_model):
+def extract_vit_features(image):
+    """Extract features from an image using ViT"""
+    # Add do_rescale=False since image is already scaled to [0,1] by fixed_normalization
+    inputs = vit_feature_extractor(image, return_tensors="pt", do_rescale=False).to(device)
+    outputs = vit_model(**inputs)
+    cls_features = outputs.last_hidden_state[:, 0, :].cpu().numpy()
+    return cls_features
+
+def classify_pads(image_np, mask, svm_data):
     """Classify reagent pads using the SVM model"""
     pad_results = {}
+    
+    # Extract SVM model and scaler from data
+    if isinstance(svm_data, dict) and 'model' in svm_data and 'scaler' in svm_data:
+        svm_model = svm_data['model']
+        scaler = svm_data['scaler']
+    else:
+        print("Warning: SVM data format not recognized, using raw model")
+        svm_model = svm_data
+        scaler = None
     
     # Extract features for each pad class
     for pad_class in PAD_CLASSES:
@@ -253,31 +302,24 @@ def classify_pads(image_np, mask, svm_model):
                         padding = np.zeros((1, expected_features - feature_vector.shape[1]))
                         feature_vector = np.hstack((feature_vector, padding))
                 
+                # Extract features using ViT
+                vit_features = extract_vit_features(image_np)
+                
+                # Apply scaler if available
+                if scaler is not None:
+                    try:
+                        vit_features = scaler.transform(vit_features)
+                    except Exception as e:
+                        print(f"Error scaling features: {e}")
+                
                 try:
                     # Run SVM prediction
-                    if hasattr(svm_model, 'predict'):
-                        # If svm_model is a sklearn model
-                        prediction = svm_model.predict(feature_vector)
-                        confidence = 1.0  # Default confidence
-                        
-                        if hasattr(svm_model, 'predict_proba'):
-                            probas = svm_model.predict_proba(feature_vector)
-                            confidence = np.max(probas)
-                    else:
-                        # If svm_model is our custom format with model and scaler
-                        if isinstance(svm_model, dict) and 'model' in svm_model and 'scaler' in svm_model:
-                            scaled_features = svm_model['scaler'].transform(feature_vector)
-                            prediction = svm_model['model'].predict(scaled_features)
-                            confidence = 1.0
-                            
-                            if hasattr(svm_model['model'], 'predict_proba'):
-                                probas = svm_model['model'].predict_proba(scaled_features)
-                                confidence = np.max(probas)
-                        else:
-                            # Fallback to default prediction
-                            prediction = [pad_class]
-                            confidence = 0.0
-                            print(f"Warning: Unrecognized SVM model format. Using default prediction.")
+                    prediction = svm_model.predict(vit_features)
+                    confidence = 1.0  # Default confidence
+                    
+                    if hasattr(svm_model, 'predict_proba'):
+                        probas = svm_model.predict_proba(vit_features)
+                        confidence = np.max(probas)
                     
                     # Store results
                     pad_results[pad_class] = {
@@ -334,6 +376,9 @@ def predict_image(model, svm_model, image_path, confidence_threshold=0.5, save_s
     result_image = draw_results(image_np, strip_bbox, pad_masks, 
                                confidence_map, confidence_threshold)
     
+    # Extract features using ViT
+    vit_features = extract_vit_features(image)
+    
     # Classify pads using SVM
     pad_results = classify_pads(image_np, mask, svm_model)
     
@@ -350,7 +395,8 @@ def predict_image(model, svm_model, image_path, confidence_threshold=0.5, save_s
         'pad_results': pad_results,
         'strip_bbox': strip_bbox,
         'pad_masks': pad_masks,
-        'probs': probs.numpy()
+        'probs': probs.numpy(),
+        'vit_features': vit_features
     }
 
 def update_image_on_canvas(image_np):
@@ -401,18 +447,19 @@ def select_image():
 if __name__ == "__main__":
     # Only use weights.pt for the neural network model
     model_path = r'D:\Programming\urine_interpret\models\weights.pt'
+    svm_path = r'D:\Programming\urine_interpret\models\vitmodel.pt'
     
     # Load the neural network model from weights.pt
     print("Loading UNetYOLO model from weights.pt...")
     model = load_model(model_path)
     
-    # Create a simple SVM classifier on the fly instead of loading from file
-    print("Creating SVM RBF classifier...")
-    # Option 1: Create an empty SVM just for prediction structure
-    svm_model = {
-        'model': create_svm_classifier(),
-        'scaler': None  # Will be initialized during first prediction
-    }
+    # Load pre-trained ViT model and feature extractor
+    vit_model = ViTModel.from_pretrained('google/vit-base-patch16-224-in21k').to(device)
+    vit_feature_extractor = ViTFeatureExtractor.from_pretrained('google/vit-base-patch16-224-in21k')
+    
+    # Load the SVM RBF model
+    print("Loading SVM RBF classifier...")
+    svm_model = load_svm_model(svm_path)
     
     # Initialize global variables
     current_image_path = None

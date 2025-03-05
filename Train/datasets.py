@@ -142,7 +142,7 @@ class UrineStripDataset(Dataset):
         Clear prioritization of classes:
         1. Classes 0-8, 10 (reagent pads) - highest priority
         2. Class 11 (strip) - second priority
-        3. Class 9 (background) - lowest priority
+        3. Class 9 (background) - lowest priority (only fills empty areas)
         """
         # Start with zeros (background/class 9)
         mask = np.zeros(image_size, dtype=np.uint8)
@@ -167,7 +167,7 @@ class UrineStripDataset(Dataset):
                     return mask, is_empty_label
                 
                 # First pass: Group annotations by class
-                class_annotations = {i: [] for i in range(12)}  # For classes 0-11
+                class_annotations = {i: [] for i in range(NUM_CLASSES)}  # For classes 0-11
                 
                 for line in lines:
                     parts = line.strip().split()
@@ -182,7 +182,7 @@ class UrineStripDataset(Dataset):
                 
                 # Process annotations in Z-order (from back to front, per prioritization)
                 
-                # First: Draw background (class 9) - already filled by default
+                # First: Background class (9) is already filled as default
                 
                 # Second: Draw strip (class 11) - overwrites background
                 if class_annotations[11]:
