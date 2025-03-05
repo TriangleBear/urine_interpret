@@ -45,6 +45,7 @@ device = get_device_info()
 # Path Configuration - Modified for Colab environment
 # Detect if we're running in Colab
 IN_COLAB = 'google.colab' in str(get_ipython()) if 'get_ipython' in globals() else False
+DEVICE = device
 
 if IN_COLAB:
     # Use Colab paths
