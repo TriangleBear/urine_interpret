@@ -61,8 +61,6 @@ def validate_model(model, dataloader, epoch):
         
         for images, targets, _ in val_progress:
             # Clear GPU cache after each batch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
             images = images.to(device, non_blocking=True)
             targets = targets.to(device, non_blocking=True)
             
@@ -86,7 +84,14 @@ def validate_model(model, dataloader, epoch):
                 total += 1
                 
             val_progress.set_postfix({"Loss": f"{loss.item():.4f}"})
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             
+            # Log GPU memory usage
+            if torch.cuda.is_available():
+                logger.info(f"GPU Memory Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+                logger.info(f"GPU Memory Cached: {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
     
     val_loss = val_loss / len(dataloader)
     val_accuracy = correct / total if total > 0 else 0
@@ -284,6 +289,11 @@ def train_model(num_epochs=50, batch_size=2, learning_rate=0.001, save_interval=
             # Clear GPU cache after each batch
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            
+            # Log GPU memory usage
+            if torch.cuda.is_available():
+                logger.info(f"GPU Memory Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+                logger.info(f"GPU Memory Cached: {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
         
         # Calculate training metrics
         avg_epoch_loss = epoch_loss / len(train_loader)
