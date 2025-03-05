@@ -157,9 +157,71 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
     
     # Compute dataset normalization statistics
     logger.info("Computing dataset normalization statistics...")
-    # Create a small dataset for computing mean and std
     
     logger.info(f"Dataset statistics - Mean: {mean}, Std: {std}")
+    
+    # Analyze class distribution much more carefully
+    class_counts = {i: 0 for i in range(NUM_CLASSES)}
+    logger.info("Analyzing full dataset class distribution...")
+    for i in tqdm(range(len(train_dataset)), desc="Counting classes"):
+        _, label, _ = train_dataset[i]
+        class_counts[label] = class_counts.get(label, 0) + 1
+    
+    # Print detailed class distribution
+    logger.info("Class distribution in training dataset:")
+    missing_classes = []
+    underrepresented_classes = []
+    for class_id in range(NUM_CLASSES):
+        count = class_counts.get(class_id, 0)
+        if count == 0:
+            missing_classes.append(class_id)
+            logger.warning(f"⚠️ Class {class_id} has ZERO samples!")
+        elif count < 10:  # Consider fewer than 10 samples as underrepresented
+            underrepresented_classes.append(class_id)
+            logger.warning(f"⚠️ Class {class_id} is underrepresented with only {count} samples")
+        else:
+            logger.info(f"Class {class_id}: {count} samples")
+    
+    # Handle missing classes through synthetic data generation
+    if missing_classes or underrepresented_classes:
+        logger.info("Applying class balancing techniques...")
+        
+        # 1. Oversampling for underrepresented classes
+        # Create a sampler that samples underrepresented classes more frequently
+        weights = [1.0] * len(train_dataset)
+        for i in tqdm(range(len(train_dataset)), desc="Setting sample weights"):
+            _, label, _ = train_dataset[i]
+            if label in missing_classes or label in underrepresented_classes:
+                weights[i] = 10.0  # Sample these 10x more frequently
+                
+        from torch.utils.data.sampler import WeightedRandomSampler
+        sampler = WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
+        
+        # Use the weighted sampler for training
+        train_loader = DataLoader(
+            train_dataset, 
+            batch_size=batch_size,
+            sampler=sampler,  # Use weighted sampler instead of shuffle=True
+            pin_memory=True,
+            num_workers=2,
+            drop_last=True
+        )
+        logger.info("Applied weighted sampling for class balance")
+    else:
+        # Standard DataLoader with shuffling if no class imbalance issues
+        train_loader = DataLoader(
+            train_dataset, 
+            batch_size=batch_size,
+            shuffle=True,
+            pin_memory=True,
+            num_workers=2,
+            persistent_workers=True,
+            drop_last=True
+        )
+    
+    # Calculate class weights with higher penalties for rare classes
+    class_weights = compute_balanced_class_weights(class_counts, NUM_CLASSES).to(device)
+    logger.info(f"Class weights: {class_weights}")
     
     # Load datasets with enhanced data augmentation using computed statistics
     logger.info("Loading and preparing datasets with computed normalization...")
@@ -493,18 +555,62 @@ def contrastive_loss(outputs, targets, temperature=0.1):
     
     return loss / batch_size if batch_size > 0 else torch.tensor(0.0).to(device)
 
+def compute_balanced_class_weights(class_counts, num_classes, max_weight=150.0):
+    """Compute class weights with better handling of rare classes"""
+    # Calculate total samples
+    total_samples = sum(class_counts.values())
+    
+    # Compute weights using inverse frequency with enhanced weighting for rare classes
+    weights = []
+    for i in range(num_classes):
+        count = class_counts.get(i, 0)
+        if count == 0:  # Handle missing classes
+            weights.append(max_weight)  # Maximum weight for missing classes
+        else:
+            # The fewer samples, the higher the weight (inverse frequency)
+            weight = total_samples / (count * num_classes)
+            
+            # Apply exponential penalty for very rare classes (fewer than 20 samples)
+            if count < 20:
+                weight *= 2.0  # Double the weight for very rare classes
+                
+            weights.append(weight)
+    
+    # Convert to tensor
+    weights_tensor = torch.tensor(weights, dtype=torch.float32)
+    
+    # Apply upper bound to avoid exploding gradients
+    weights_tensor = torch.clamp(weights_tensor, 0.1, max_weight)
+    
+    # Normalize weights to have reasonable scale
+    if weights_tensor.sum() > 0:
+        weights_tensor = weights_tensor * (num_classes / weights_tensor.sum())
+        
+    print(f"Balanced class weights: {weights_tensor}")
+    return weights_tensor
+
 def get_advanced_augmentation(mean=None, std=None):
     """
     Create a more aggressive augmentation pipeline to improve generalization
     """
+    # Use provided values or fall back to ImageNet statistics
+    if mean is None:
+        mean = [0.485, 0.456, 0.406]  # ImageNet default
+    if std is None:
+        std = [0.229, 0.224, 0.225]  # ImageNet default
         
     return transforms.Compose([
         transforms.RandomResizedCrop(512, scale=(0.7, 1.0), ratio=(0.8, 1.2)),
-        transforms.RandomApply(p=0.7),
+        transforms.RandomApply([
+            transforms.RandomRotation(20),
+            transforms.RandomAffine(
+                degrees=15, translate=(0.2, 0.2), scale=(0.8, 1.2), shear=10),
+        ], p=0.7),
         transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1),
-        # Additional augmentations for robust training
+        transforms.RandomGrayscale(p=0.1),
         transforms.ToTensor(),
-        transforms.Normalize(mean=mean, std=std),  # Use computed statistics
+        transforms.Normalize(mean=mean, std=std),
+        transforms.RandomErasing(p=0.3, scale=(0.02, 0.1)),
     ])
 
 def plot_training_progress(train_losses, val_losses, val_accuracies, lr_history, save_path=None):
