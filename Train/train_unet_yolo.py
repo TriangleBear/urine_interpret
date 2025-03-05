@@ -24,7 +24,8 @@ from config import (
     DEVICE,
     BATCH_SIZE,
     PATIENCE,
-    get_model_folder
+    get_model_folder,
+    clean_memory  # Also import the clean_memory function
 )
 from utils import compute_class_weights  # Import the correct function
 from torch.amp import GradScaler, autocast  # Import mixed precision training tools
