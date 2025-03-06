@@ -310,7 +310,7 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
     # Training metrics tracking
     train_losses = []
     val_losses = []
-    val_accuracies = []
+    val_accuracies = []  # Add this line to track validation accuracies
     lr_history = []
     
     # Main training loop with improved monitoring
@@ -411,14 +411,14 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
         # Validation phase
         val_loss, val_accuracy = validate_model(model, valid_loader, epoch, logger)
         val_losses.append(val_loss)
-        val_accuracies.append(val_accuracy)
+        val_accuracies.append(val_accuracy)  # Add this line to append validation accuracy
         
         # Log metrics
         logger.info(
             f"Epoch {epoch+1}/{num_epochs} - "
             f"Train Loss: {avg_epoch_loss:.4f}, "
             f"Val Loss: {val_loss:.4f}, "
-            f"Val Acc: {val_accuracy:.4f}, "
+            f"Val Acc: {val_accuracy:.4f}, "  # Add this line to log validation accuracy
             f"LR: {current_lr:.6f}"
         )
         
@@ -488,7 +488,8 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
         'final_val_loss': val_loss,
         'best_val_loss': best_val_loss,
         'train_losses': train_losses,
-        'val_losses': val_losses
+        'val_losses': val_losses,
+        'val_accuracies': val_accuracies  # Add this line to save validation accuracies
     }, os.path.join(model_dir, "final_model.pt"))
     
     # Also save a lightweight version with just the weights for easier loading
@@ -508,7 +509,7 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
     return model, {
         'train_losses': train_losses,
         'val_losses': val_losses,
-        'val_accuracies': val_accuracies,
+        'val_accuracies': val_accuracies,  # Add this line to return validation accuracies
         'best_val_loss': best_val_loss,
         'early_stopped': early_stop,
         'epochs_completed': epoch + 1,
