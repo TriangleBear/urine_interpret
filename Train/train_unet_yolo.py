@@ -195,12 +195,17 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
         count = class_counts.get(class_id, 0)
         if count == 0:
             missing_classes.append(class_id)
-            logger.warning(f"⚠️ Class {class_id} has ZERO samples!")
+            logger.error(f"⚠️ Class {class_id} has ZERO samples!")
         elif count < 10:  # Consider fewer than 10 samples as underrepresented
             underrepresented_classes.append(class_id)
             logger.warning(f"⚠️ Class {class_id} is underrepresented with only {count} samples")
         else:
             logger.info(f"Class {class_id}: {count} samples")
+    
+    # Check if any class is missing and exit if true
+    if missing_classes:
+        logger.error("Training aborted due to missing classes. Ensure all classes have samples before training.")
+        return None, None
     
     # Handle missing classes through synthetic data generation
     if missing_classes or underrepresented_classes:
