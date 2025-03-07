@@ -32,6 +32,7 @@ from config import (
 from utils import compute_class_weights, compute_mean_std  # Import the correct function
 from torch.amp import GradScaler, autocast  # Import mixed precision training tools
 import tracemalloc  # Import for memory profiling
+import subprocess  # Add this import for running shell commands
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -121,6 +122,16 @@ def validate_model(model, dataloader, epoch, logger):
     val_accuracy = correct / total if total > 0 else 0
     
     return val_loss, val_accuracy
+
+def zip_dataset(model_dir):
+    """Zip the dataset directory."""
+    dataset_dir = os.path.join(model_dir, f"{model_dir}")
+    zip_file = os.path.join(model_dir, f"{model_dir}.zip")
+    if os.path.exists(dataset_dir):
+        subprocess.run(["zip", "-r", zip_file, dataset_dir])
+        print(f"Zipped dataset to {zip_file}")
+    else:
+        print(f"Dataset directory {dataset_dir} does not exist")
 
 def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_interval=None, 
                weight_decay=None, dropout_prob=0.5, mixup_alpha=0.2, 
@@ -424,6 +435,7 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
         
         # Save checkpoint periodically
         if (epoch + 1) % save_interval == 0:
+            checkpoint_path = os.path.join(model_dir, f"checkpoint_epoch_{epoch+1}.pt")
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -431,7 +443,7 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
                 'scheduler_state_dict': scheduler.state_dict() if hasattr(scheduler, 'state_dict') else None,
                 'train_loss': avg_epoch_loss,
                 'val_loss': val_loss
-            }, os.path.join(model_dir, f"checkpoint_epoch_{epoch+1}.pt"))
+            }, checkpoint_path)
         
         # Save best model (if improved)
         if val_loss < best_val_loss:
@@ -504,6 +516,9 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
     # Stop memory profiling and clean up
     tracemalloc.stop()
     clean_memory()
+    
+    # Zip the dataset after training completes
+    zip_dataset(model_dir)
     
     # Return the model for further use if needed
     return model, {
