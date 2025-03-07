@@ -45,7 +45,7 @@ norm_dataset = UrineStripDataset(
         ])
     )
     
-    # Compute mean and std using the utility function
+# Compute mean and std using the utility function
 mean, std = compute_mean_std(norm_dataset)
 
 # Regularization techniques
@@ -179,6 +179,29 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
         transform=get_advanced_augmentation(mean, std)  # Pass the computed values
     )
     valid_dataset = UrineStripDataset(VALID_IMAGE_FOLDER, VALID_MASK_FOLDER)
+    
+    # Check the labels file in the dataset to ensure all classes have samples
+    logger.info("Checking labels file in the dataset...")
+    label_counts = {i: 0 for i in range(NUM_CLASSES)}
+    for i in tqdm(range(len(train_dataset)), desc="Counting labels"):
+        _, label, _ = train_dataset[i]
+        label_counts[label] += 1
+    
+    # Print detailed class distribution
+    logger.info("Class distribution in training dataset:")
+    missing_classes = []
+    for class_id in range(NUM_CLASSES):
+        count = label_counts.get(class_id, 0)
+        if count == 0:
+            missing_classes.append(class_id)
+            logger.warning(f"⚠️ Class {class_id} has ZERO samples!")
+        else:
+            logger.info(f"Class {class_id}: {count} samples")
+    
+    # Check if any class is missing and exit if true
+    if missing_classes:
+        logger.error("Training aborted due to missing classes. Ensure all classes have samples before training.")
+        return None, None
     
     # Now analyze class distribution after the dataset is loaded
     class_counts = {i: 0 for i in range(NUM_CLASSES)}
