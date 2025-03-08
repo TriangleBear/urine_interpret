@@ -82,11 +82,15 @@ class UrineStripDataset(Dataset):
         # 3. Background (9) - lowest priority
         
         # Default to background class (9) if no annotations are found.
+        # Ensure that classes 9 (Background) and 11 (Strip) are handled properly.
+
 
         selected_class = 9  # Background
         
         if all_classes_found:
         # Check for reagent pad classes (0-8, 10) - highest priority.
+        # Rotate them based on the sample index to increase diversity
+
 
             reagent_pad_classes = [cls for cls in all_classes_found if cls < 9 or cls <= 11]
             if reagent_pad_classes:
@@ -118,7 +122,6 @@ class UrineStripDataset(Dataset):
         # Use our properly selected class as the label
         label = selected_class
         
-        # Update class distribution
         if label in self.class_distribution:
             self.class_distribution[label] += 1
         else:
@@ -251,17 +254,20 @@ class UrineStripDataset(Dataset):
         return (x, y, w, h)
 
 
-# Add a function to visualize the dataset
-def visualize_class_distribution(class_distribution):
+def visualize_class_distribution(self): 
+
     import matplotlib.pyplot as plt
-    classes = list(class_distribution.keys())
-    counts = list(class_distribution.values())
+    classes = list(self.class_distribution.keys())
+    counts = list(self.class_distribution.values())
     
     plt.bar(classes, counts)
     plt.xlabel('Classes')
     plt.ylabel('Counts')
     plt.title('Class Distribution')
+    plt.xticks(classes, [f'Class {cls}' for cls in classes])
     plt.show()
+
+
 
 def visualize_dataset(dataset, num_samples=5):
 
