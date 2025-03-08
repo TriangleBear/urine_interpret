@@ -55,7 +55,9 @@ class UrineStripDataset(Dataset):
         # Load image
         image = Image.open(img_path).convert('RGB')
         
-        # CRITICAL FIX: Read ALL classes from the YOLO file and prioritize them correctly
+        # CRITICAL FIX: Read ALL classes from the YOLO file and prioritize them correctly.
+        # Ensure that classes 9 (Background) and 11 (Strip) are handled properly.
+
         all_classes_found = []  # Keep track of all classes found in this file
         
         try:
@@ -79,12 +81,14 @@ class UrineStripDataset(Dataset):
         # 2. Strip (11) - medium priority
         # 3. Background (9) - lowest priority
         
-        # Default to background class if no annotations
+        # Default to background class (9) if no annotations are found.
+
         selected_class = 9  # Background
         
         if all_classes_found:
-            # Check for reagent pad classes (highest priority)
-            reagent_pad_classes = [cls for cls in all_classes_found if cls < 9 or cls == 10]
+        # Check for reagent pad classes (0-8, 10) - highest priority.
+
+            reagent_pad_classes = [cls for cls in all_classes_found if cls < 9 or cls <= 11]
             if reagent_pad_classes:
                 # IMPROVEMENT: Instead of always taking the first reagent pad class,
                 # rotate them based on the sample index to increase diversity
@@ -93,22 +97,13 @@ class UrineStripDataset(Dataset):
                     selected_class = reagent_pad_classes[idx % len(reagent_pad_classes)]
                 else:
                     selected_class = reagent_pad_classes[0]
-            # Otherwise, check if we have strip class (medium priority)
+        # Otherwise, check if we have strip class (11) - medium priority.
+
             elif 11 in all_classes_found:
                 selected_class = 11
         
-        # Debug output to show what classes were found and which one was selected
-        # if idx < 5 or idx % 500 == 0:  # Print debug info for the first 5 and every 500th sample
-        #     if all_classes_found:
-        #         all_classes_str = ', '.join(f"{cls} ({CLASS_NAMES.get(cls, 'Unknown')})" for cls in all_classes_found)
-        #         if len(all_classes_found) > 1:
-        #             print(f"Sample {idx}: Multiple classes found: [{all_classes_str}], Selected: {selected_class} ({CLASS_NAMES.get(selected_class, 'Unknown')})")
-        #         else:
-        #             print(f"Sample {idx}: Single class found: {all_classes_found[0]} ({CLASS_NAMES.get(all_classes_found[0], 'Unknown')})")
-        #     else:
-        #         print(f"Sample {idx}: No classes found, using default: {selected_class} ({CLASS_NAMES.get(selected_class, 'Unknown')})")
-        
-        # Create segmentation mask based on all annotations
+        # Create segmentation mask based on all annotations and log class distribution
+
         mask, is_empty_label = self._create_mask_from_yolo(mask_path, debug=False)
         
         # Resize mask to match image size
@@ -133,7 +128,11 @@ class UrineStripDataset(Dataset):
         if len(self.cache) < self.cache_size:
             self.cache[idx] = (image_tensor, label, self.class_distribution)
         
+        # Log class distribution for debugging
+        print(f"Class distribution: {self.class_distribution}")
+        
         return image_tensor, label, self.class_distribution
+
 
 
     def _create_mask_from_yolo(self, txt_path, image_size=(512, 512), target_classes=None, debug=False):
@@ -149,9 +148,11 @@ class UrineStripDataset(Dataset):
         mask.fill(9)  # Fill with background class explicitly
         is_empty_label = False
         
-        # Check if file exists
+        # Check if the annotation file exists
+
         if not os.path.exists(txt_path):
-            if debug: print(f"Warning: Missing label file: {os.path.basename(txt_path)}")
+            if debug: print(f"Warning: Missing annotation file: {os.path.basename(txt_path)}")
+
             is_empty_label = True
             return mask, is_empty_label
         
@@ -162,7 +163,8 @@ class UrineStripDataset(Dataset):
                 
                 # If file is empty or has no valid lines, return empty mask
                 if len(lines) == 0 or all(not line.strip() for line in lines):
-                    if debug: print(f"Note: Empty label file: {os.path.basename(txt_path)}")
+                    if debug: print(f"Note: Empty annotation file: {os.path.basename(txt_path)}")
+
                     is_empty_label = True
                     return mask, is_empty_label
                 
@@ -216,7 +218,8 @@ class UrineStripDataset(Dataset):
                                 if debug: print(f"Error processing reagent pad annotation: {e}")
                 
         except Exception as e:
-            if debug: print(f"Error reading label file {txt_path}: {e}")
+            if debug: print(f"Error reading annotation file {txt_path}: {e}")
+
             is_empty_label = True
             return mask, is_empty_label
         
