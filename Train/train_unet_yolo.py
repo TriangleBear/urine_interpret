@@ -281,7 +281,6 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
     
     # Check dataset classes and print distribution
     class_dist = train_dataset.class_distribution if hasattr(train_dataset, 'class_distribution') else {}
-    logger.info(f"Class distribution: {class_dist}")
     
     # Intelligent handling of class imbalance
     if len(class_dist) > 0:
