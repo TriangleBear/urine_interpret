@@ -185,7 +185,11 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
     label_counts = {i: 0 for i in range(NUM_CLASSES)}
     for i in tqdm(range(len(train_dataset)), desc="Counting labels"):
         _, label, _ = train_dataset[i]
-        label_counts[label] += 1
+        if isinstance(label, list):  # Handle polygon-shaped bounding boxes
+            for lbl in label:
+                label_counts[lbl] += 1
+        else:
+            label_counts[label] += 1
     
     # Print detailed class distribution
     logger.info("Class distribution in training dataset:")
@@ -208,7 +212,11 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
     logger.info("Analyzing full dataset class distribution...")
     for i in tqdm(range(len(train_dataset)), desc="Counting classes"):
         _, label, _ = train_dataset[i]
-        class_counts[label] = class_counts.get(label, 0) + 1
+        if isinstance(label, list):  # Handle polygon-shaped bounding boxes
+            for lbl in label:
+                class_counts[lbl] = class_counts.get(lbl, 0) + 1
+        else:
+            class_counts[label] = class_counts.get(label, 0) + 1
     
     # Print detailed class distribution
     logger.info("Class distribution in training dataset:")
