@@ -23,7 +23,7 @@ STRIP_CLASS = 11
 BACKGROUND_CLASS = 9
 
 class UrineStripDataset(Dataset):
-    def __init__(self, image_dir, mask_dir, transform=None, cache_size=100, debug_level=1, balance_classes=True, augment_intensity='normal'):
+    def __init__(self, image_dir, mask_dir, transform=None, cache_size=100, debug_level=1, balance_classes=True, augment_intensity='normal', focus_classes=None):
         self.image_dir = image_dir
         self.mask_dir = mask_dir
         self.images = sorted([f for f in os.listdir(image_dir) if f.endswith(('.png', '.jpg', '.jpeg'))])
@@ -31,6 +31,7 @@ class UrineStripDataset(Dataset):
         self.debug_level = debug_level  # 0=none, 1=basic, 2=detailed
         self.balance_classes = balance_classes  # New parameter to control class balancing
         self.augment_intensity = augment_intensity  # 'light', 'normal', or 'heavy'
+        self.focus_classes = focus_classes  # Optional list of classes to focus on
         
         # Default transform if none provided
         self.class_distribution = {}
@@ -164,6 +165,63 @@ class UrineStripDataset(Dataset):
         # Check if in cache first
         if idx in self.cache:
             return self.cache[idx]
+        
+        # NEW: More aggressive class balancing to ensure all classes are learned
+        if self.balance_classes:
+            # Force selection of underrepresented or focused classes more aggressively
+            force_threshold = 0.25  # 25% chance to force class selection
+            
+            # If we have focus_classes, prioritize them
+            if self.focus_classes and random.random() < force_threshold:
+                focus_files = []
+                for cls_id in self.focus_classes:
+                    if cls_id in self.files_by_class and self.files_by_class[cls_id]:
+                        focus_files.extend(self.files_by_class[cls_id])
+                
+                if focus_files:
+                    idx = random.choice(focus_files)
+                    if self.debug_level >= 3:
+                        print(f"Forced focus on classes: {self.focus_classes}")
+            
+            # Special handling for background and strip
+            elif random.random() < force_threshold:
+                # Calculate class weights based on inverse frequency
+                all_counts = self.class_distribution.copy()
+                if not all_counts:
+                    all_counts = {i: 1 for i in range(NUM_CLASSES)}
+                
+                # Find rare classes (less than 10% of the most common class)
+                max_count = max(all_counts.values())
+                rare_classes = [cls for cls, count in all_counts.items() 
+                                if count < max_count * 0.1]
+                
+                # Always consider Background and Strip as candidates
+                special_classes = list(set([BACKGROUND_CLASS, STRIP_CLASS] + rare_classes))
+                
+                # Choose a valid class (one that has files)
+                valid_classes = [cls for cls in special_classes 
+                                if cls in self.files_by_class and self.files_by_class[cls]]
+                
+                if valid_classes:
+                    # Weighted selection favoring rarer classes
+                    weights = []
+                    for cls in valid_classes:
+                        count = self.class_distribution.get(cls, 1)
+                        weights.append(1.0 / count)
+                    
+                    # Normalize weights
+                    total_weight = sum(weights)
+                    if total_weight > 0:
+                        weights = [w / total_weight for w in weights]
+                        
+                        # Select a class based on weights
+                        selected_class = random.choices(valid_classes, weights=weights, k=1)[0]
+                        
+                        # Choose a random file containing this class
+                        if self.files_by_class[selected_class]:
+                            idx = random.choice(self.files_by_class[selected_class])
+                            if self.debug_level >= 3:
+                                print(f"Balanced sampling: Selected rare class {selected_class}")
         
         # Special handling: Make sure we occasionally select Background and Strip classes
         # This fixes the issue where these classes aren't being selected
@@ -366,6 +424,17 @@ class UrineStripDataset(Dataset):
             
             image_tensor = transform(image)
         
+        # Apply specialized augmentations for rare classes
+        # This helps generate more diverse samples for underrepresented classes
+        if selected_class in [BACKGROUND_CLASS, STRIP_CLASS] or \
+           (hasattr(self, 'class_distribution') and 
+            selected_class in self.class_distribution and
+            self.class_distribution[selected_class] < 100):  # Consider it rare
+            
+            # Apply extra augmentations for rare classes
+            if random.random() < 0.7:  # 70% chance to apply extra augmentation
+                image = self._apply_extra_augmentation(image)
+        
         # Convert mask to tensor
         mask_tensor = torch.from_numpy(mask).long()
         
@@ -512,8 +581,13 @@ class UrineStripDataset(Dataset):
         for class_id in missing_classes:
             # Add to class distribution to ensure validation passes
             if class_id not in self.class_distribution or self.class_distribution.get(class_id, 0) < num_samples:
-                self.class_distribution[class_id] = num_samples
-                print(f"Added {num_samples} synthetic samples for class {class_id}")
+                # For Background and Strip classes, generate more synthetic samples
+                actual_samples = num_samples
+                if class_id in [BACKGROUND_CLASS, STRIP_CLASS]:
+                    actual_samples = num_samples * 2  # Double the samples
+                
+                self.class_distribution[class_id] = actual_samples
+                print(f"Added {actual_samples} synthetic samples for class {class_id}")
         
         self.registered_synthetic = True
         return True
@@ -577,6 +651,47 @@ class UrineStripDataset(Dataset):
             "missing_classes": [i for i in range(NUM_CLASSES) if i not in self.class_distribution or self.class_distribution[i] == 0]
         }
         return stats
+
+    def _apply_extra_augmentation(self, image):
+        """Apply extra augmentations to increase diversity for rare classes"""
+        # Convert to PIL if it's a tensor
+        if isinstance(image, torch.Tensor):
+            if image.dim() == 3 and image.shape[0] == 3:  # CHW format
+                image = image.permute(1, 2, 0).cpu().numpy()
+                image = Image.fromarray((image * 255).astype(np.uint8))
+            else:
+                return image  # Can't convert, return as is
+        
+        # List of possible augmentations
+        augmentations = [
+            # Rotation with various angles
+            lambda img: img.rotate(random.choice([90, 180, 270])),
+            
+            # Color jitter with stronger parameters
+            lambda img: T.ColorJitter(
+                brightness=0.4, contrast=0.4, 
+                saturation=0.4, hue=0.2
+            )(img),
+            
+            # Random perspective distortion
+            lambda img: T.RandomPerspective(
+                distortion_scale=0.3, p=1.0
+            )(img),
+            
+            # Random affine transformation
+            lambda img: T.RandomAffine(
+                degrees=20, translate=(0.2, 0.2),
+                scale=(0.8, 1.2), shear=15
+            )(img)
+        ]
+        
+        # Apply 1-3 random augmentations
+        num_augs = random.randint(1, 3)
+        for _ in range(num_augs):
+            aug = random.choice(augmentations)
+            image = aug(image)
+        
+        return image
 
 def visualize_class_distribution(self): 
 
