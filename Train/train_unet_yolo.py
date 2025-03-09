@@ -33,6 +33,9 @@ from utils import compute_class_weights, compute_mean_std  # Import the correct 
 from torch.amp import GradScaler, autocast  # Import mixed precision training tools
 import tracemalloc  # Import for memory profiling
 import subprocess  # Add this import for running shell commands
+import torch.cuda.amp as amp
+import torch.utils.checkpoint as checkpoint
+from torch.cuda.amp import autocast
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -237,18 +240,43 @@ def class_balanced_loss(outputs, targets, class_weights=None, gamma=2.0, beta=0.
         
         return balanced_loss.mean()
 
+def get_rtx4050_optimized_settings():
+    """Get optimized training settings for RTX 4050 Mobile GPU (6GB VRAM)."""
+    return {
+        'batch_size': 2,  # Reduced batch size
+        'gradient_accumulation_steps': 8,  # Increased for effective batch size
+        'mixed_precision': True,  # Enable mixed precision
+        'checkpoint_modules': True,  # Enable gradient checkpointing
+        'image_size': (384, 384),  # Reduced image size for efficiency
+        'max_gpu_memory_fraction': 0.9,  # Limit memory usage
+        'torch_compile': True,  # Use torch.compile for performance
+    }
+
 def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_interval=None, 
                weight_decay=None, dropout_prob=0.5, mixup_alpha=0.2, 
                label_smoothing_factor=0.1, grad_clip_value=1.0, use_lite_model=False):
     """
-    Train the UNet-YOLO model with improved convergence settings
+    Train the UNet-YOLO model with memory optimizations for RTX 4050 Mobile
     """
-    # Use config values if not specified
+    # Get optimized settings for RTX 4050
+    rtx4050_settings = get_rtx4050_optimized_settings()
+    
+    # Use config values if not specified, with RTX 4050 optimizations
     num_epochs = num_epochs or NUM_EPOCHS
-    batch_size = batch_size or BATCH_SIZE
+    batch_size = batch_size or rtx4050_settings['batch_size']  # Use smaller batch size
     learning_rate = learning_rate or LEARNING_RATE
     save_interval = save_interval or SAVE_INTERVAL
     weight_decay = weight_decay or WEIGHT_DECAY
+    
+    # Set CUDA memory management settings
+    if torch.cuda.is_available():
+        # Reserve specific amount of memory to avoid OOM
+        torch.cuda.set_per_process_memory_fraction(rtx4050_settings['max_gpu_memory_fraction'])
+        # Enable memory-efficient methods
+        torch.backends.cudnn.benchmark = True
+        # Use TF32 for faster computation on RTX GPUs
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
     
     # Start memory profiling
     tracemalloc.start()
@@ -274,16 +302,27 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
     logger.info("Computing dataset normalization statistics...")
     logger.info(f"Dataset statistics - Mean: {mean}, Std: {std}")
     
-    # *** FIX: First load the dataset before analyzing class distribution ***
-    # Load datasets with enhanced data augmentation using computed statistics
-    logger.info("Loading and preparing datasets with computed normalization...")
+    # Create transform with smaller image size for RTX 4050
+    rtx_transform = transforms.Compose([
+        transforms.Resize(rtx4050_settings['image_size']),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+        transforms.ToTensor(),
+    ])
+    
+    # Load datasets with reduced image size for better memory usage
+    logger.info("Loading and preparing datasets with optimized settings for RTX 4050...")
     train_dataset = UrineStripDataset(
         TRAIN_IMAGE_FOLDER, 
         TRAIN_MASK_FOLDER,
-        transform=get_advanced_augmentation(mean, std),  # Pass the computed values
-        debug_level=2  # Enable detailed debugging
+        transform=rtx_transform,  # Use RTX optimized transform
+        debug_level=1  # Reduce debug level to save memory
     )
-    valid_dataset = UrineStripDataset(VALID_IMAGE_FOLDER, VALID_MASK_FOLDER, debug_level=1)
+    valid_dataset = UrineStripDataset(
+        VALID_IMAGE_FOLDER, 
+        VALID_MASK_FOLDER, 
+        transform=rtx_transform,
+        debug_level=0
+    )
     
     # Check the labels file in the dataset to ensure all classes have samples
     logger.info("Checking labels file in the dataset...")
@@ -437,33 +476,47 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
         train_dataset, 
         batch_size=batch_size,
         shuffle=True,
-        pin_memory=True,
-        num_workers=2,
-        persistent_workers=True,
+        pin_memory=False,  # Changed to False to reduce host memory usage
+        num_workers=1,     # Reduced workers
+        persistent_workers=False,  # Turn off for memory savings
         drop_last=True
     )
     
     valid_loader = DataLoader(
         valid_dataset,
-        batch_size=batch_size*2,
+        batch_size=batch_size,  # Use same batch size for consistency
         shuffle=False,
-        pin_memory=True,
-        num_workers=2
+        pin_memory=False,  # Changed to False
+        num_workers=1      # Reduced workers
     )
     
-    logger.info(f"Initializing model with dropout={dropout_prob}...")
+    logger.info(f"Initializing memory-optimized model with dropout={dropout_prob}...")
     
-    # Initialize model with specified dropout probability
+    # Initialize model with optimized architecture for RTX 4050
     if use_lite_model:
-        logger.info(f"Using LiteUNet model with dropout={dropout_prob}...")
+        logger.info(f"Using LiteUNet model optimized for RTX 4050...")
         from models import LiteUNet
         model = LiteUNet(in_channels=3, out_channels=NUM_CLASSES, dropout_prob=dropout_prob).to(device)
     else:
-        logger.info(f"Using UNetYOLO model with dropout={dropout_prob}...")
+        logger.info(f"Using UNetYOLO model optimized for RTX 4050...")
         model = UNetYOLO(in_channels=3, out_channels=NUM_CLASSES, dropout_prob=dropout_prob).to(device)
     
+    # Enable gradient checkpointing to save memory
+    if rtx4050_settings['checkpoint_modules'] and hasattr(model, 'use_checkpointing'):
+        model.use_checkpointing = True
+        logger.info("Enabled gradient checkpointing for memory efficiency")
+    
+    # Use model compilation if enabled (PyTorch 2.0+)
+    if rtx4050_settings['torch_compile'] and hasattr(torch, 'compile'):
+        try:
+            logger.info("Compiling model with torch.compile()...")
+            model = torch.compile(model)
+            logger.info("Model compilation successful")
+        except Exception as e:
+            logger.warning(f"Model compilation failed: {e}. Continuing with standard model.")
+    
     # Use mixed precision training
-    scaler = GradScaler() if USE_MIXED_PRECISION and torch.cuda.is_available() else None
+    scaler = GradScaler() if rtx4050_settings['mixed_precision'] and torch.cuda.is_available() else None
     
     # Compute class weights - FIX: Remove max_weight parameter that's causing the error
     class_weights = compute_class_weights(train_dataset, NUM_CLASSES).to(device)
