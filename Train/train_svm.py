@@ -224,9 +224,16 @@ def train_svm_with_real_data():
 
 def train_svm_classifier(unet_model_path, model_path=None, binary_mode=True):
     ic("Loading training, validation, and test datasets...")
-    train_dataset = UrineStripDataset(TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER)
+    train_dataset = UrineStripDataset(TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER, debug_level=1)
     valid_dataset = UrineStripDataset(VALID_IMAGE_FOLDER, VALID_MASK_FOLDER)
     test_dataset = UrineStripDataset(TEST_IMAGE_FOLDER, TEST_MASK_FOLDER)
+    
+    # Print raw annotation distribution to debug
+    ic("Raw annotation class distribution from dataset:")
+    if hasattr(train_dataset, 'raw_annotations_count'):
+        for cls_id, count in sorted(train_dataset.raw_annotations_count.items()):
+            if count > 0:
+                ic(f"Class {cls_id} ({CLASS_NAMES.get(cls_id, 'Unknown')}): {count} raw annotations")
     
     ic("Loading trained UNet model...")
     unet_model = UNetYOLO(3, NUM_CLASSES).to(device)
@@ -240,6 +247,14 @@ def train_svm_classifier(unet_model_path, model_path=None, binary_mode=True):
     ic(f"Classes in training set: {sorted(train_class_dist.keys())}")
     for cls_id, count in sorted(train_class_dist.items()):
         ic(f"Class {cls_id} ({CLASS_NAMES.get(cls_id, 'Unknown')}): {count} samples")
+    
+    # Add synthetic samples for missing classes if needed
+    missing_classes = [i for i in range(NUM_CLASSES) if i not in train_class_dist]
+    if missing_classes:
+        ic(f"WARNING: Missing classes: {missing_classes}")
+        if hasattr(train_dataset, 'generate_synthetic_samples'):
+            train_dataset.generate_synthetic_samples(missing_classes, num_samples=20)
+            ic("Added synthetic samples for missing classes")
     
     ic("Extracting features and labels...")
     train_features, train_labels = extract_features_and_labels_with_progress(train_dataset, unet_model)
