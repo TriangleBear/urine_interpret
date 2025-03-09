@@ -23,13 +23,14 @@ STRIP_CLASS = 11
 BACKGROUND_CLASS = 9
 
 class UrineStripDataset(Dataset):
-    def __init__(self, image_dir, mask_dir, transform=None, cache_size=100, debug_level=1, balance_classes=True):
+    def __init__(self, image_dir, mask_dir, transform=None, cache_size=100, debug_level=1, balance_classes=True, augment_intensity='normal'):
         self.image_dir = image_dir
         self.mask_dir = mask_dir
         self.images = sorted([f for f in os.listdir(image_dir) if f.endswith(('.png', '.jpg', '.jpeg'))])
         self.transform = transform
         self.debug_level = debug_level  # 0=none, 1=basic, 2=detailed
         self.balance_classes = balance_classes  # New parameter to control class balancing
+        self.augment_intensity = augment_intensity  # 'light', 'normal', or 'heavy'
         
         # Default transform if none provided
         self.class_distribution = {}
@@ -351,8 +352,19 @@ class UrineStripDataset(Dataset):
         # Resize mask to match image size
         mask = cv2.resize(mask, (512, 512), interpolation=cv2.INTER_NEAREST)
         
-        # Apply transform if provided
-        image_tensor = self.transform(image)
+        # Apply transform with appropriate intensity if provided
+        if self.transform is not None:
+            image_tensor = self.transform(image)
+        else:
+            # Apply default transform based on intensity setting
+            if self.augment_intensity == 'light':
+                transform = self._get_light_augmentation()
+            elif self.augment_intensity == 'heavy':
+                transform = self._get_heavy_augmentation()
+            else:  # 'normal' is default
+                transform = self._get_normal_augmentation()
+            
+            image_tensor = transform(image)
         
         # Convert mask to tensor
         mask_tensor = torch.from_numpy(mask).long()
@@ -521,6 +533,50 @@ class UrineStripDataset(Dataset):
                 validated_dist[class_id] = 20  # Default synthetic sample count
         
         return validated_dist
+
+    def _get_light_augmentation(self):
+        """Light augmentation for easier learning"""
+        return T.Compose([
+            T.Resize((512, 512)),
+            T.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05),
+            T.RandomRotation(degrees=10),
+            T.ToTensor(),
+        ])
+    
+    def _get_normal_augmentation(self):
+        """Standard augmentation pipeline"""
+        return T.Compose([
+            T.Resize((512, 512)),
+            T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
+            T.RandomRotation(degrees=15),
+            T.ToTensor(),
+        ])
+    
+    def _get_heavy_augmentation(self):
+        """Heavy augmentation for fighting overfitting"""
+        return T.Compose([
+            T.Resize((512, 512)),
+            T.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.2),
+            T.RandomRotation(degrees=30),
+            T.RandomHorizontalFlip(p=0.5),
+            T.RandomVerticalFlip(p=0.25),
+            T.GaussianBlur(kernel_size=5, sigma=(0.1, 2.0)),
+            T.RandomPerspective(distortion_scale=0.2, p=0.5),
+            T.ToTensor(),
+            T.RandomErasing(p=0.3, scale=(0.02, 0.1), ratio=(0.3, 3.3)),
+        ])
+    
+    # Add method to get training statistics
+    def get_training_stats(self):
+        """Generate training statistics for better understanding of the dataset"""
+        stats = {
+            "total_samples": len(self.images),
+            "class_distribution": self.class_distribution,
+            "files_per_class": {cls: len(files) for cls, files in self.files_by_class.items()},
+            "raw_annotations": self.raw_annotations_count,
+            "missing_classes": [i for i in range(NUM_CLASSES) if i not in self.class_distribution or self.class_distribution[i] == 0]
+        }
+        return stats
 
 def visualize_class_distribution(self): 
 
