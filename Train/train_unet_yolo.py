@@ -184,13 +184,38 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
     # Check the labels file in the dataset to ensure all classes have samples
     logger.info("Checking labels file in the dataset...")
     label_counts = {i: 0 for i in range(NUM_CLASSES)}
-    for i in tqdm(range(len(train_dataset)), desc="Counting labels"):
-        _, label, _ = train_dataset[i]
-        if isinstance(label, list):  # Handle polygon-shaped bounding boxes
-            for lbl in label:
-                label_counts[lbl] += 1
+    
+    # NEW: First, add synthetic samples for any missing classes
+    missing_raw_classes = [i for i in range(NUM_CLASSES) 
+                          if i not in train_dataset.raw_annotations_count or 
+                             train_dataset.raw_annotations_count[i] == 0]
+    
+    if missing_raw_classes:
+        logger.warning(f"Missing classes detected in raw annotations: {missing_raw_classes}. Adding synthetic samples.")
+        # Generate synthetic samples for missing classes
+        if hasattr(train_dataset, 'generate_synthetic_samples'):
+            train_dataset.generate_synthetic_samples(missing_raw_classes, num_samples=20)
+            logger.info("Added synthetic samples for missing classes. Training will continue.")
         else:
-            label_counts[label] += 1
+            logger.error("Dataset doesn't support synthetic samples. Training may fail.")
+    
+    # Get the distribution that includes synthetic samples
+    if hasattr(train_dataset, 'get_validated_class_distribution'):
+        class_dist = train_dataset.get_validated_class_distribution()
+        
+        # Use the validated distribution for label counts
+        for class_id, count in class_dist.items():
+            if 0 <= class_id < NUM_CLASSES:  # Valid class range
+                label_counts[class_id] = count
+    else:
+        # Fall back to regular counting if method not available
+        for i in tqdm(range(len(train_dataset)), desc="Counting labels"):
+            _, label, _ = train_dataset[i]
+            if isinstance(label, list):  # Handle polygon-shaped bounding boxes
+                for lbl in label:
+                    label_counts[lbl] += 1
+            else:
+                label_counts[label] += 1
     
     # Print detailed class distribution
     logger.info("Class distribution in training dataset:")
