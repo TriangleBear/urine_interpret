@@ -176,9 +176,10 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
     train_dataset = UrineStripDataset(
         TRAIN_IMAGE_FOLDER, 
         TRAIN_MASK_FOLDER,
-        transform=get_advanced_augmentation(mean, std)  # Pass the computed values
+        transform=get_advanced_augmentation(mean, std),  # Pass the computed values
+        debug_level=2  # Enable detailed debugging
     )
-    valid_dataset = UrineStripDataset(VALID_IMAGE_FOLDER, VALID_MASK_FOLDER)
+    valid_dataset = UrineStripDataset(VALID_IMAGE_FOLDER, VALID_MASK_FOLDER, debug_level=1)
     
     # Check the labels file in the dataset to ensure all classes have samples
     logger.info("Checking labels file in the dataset...")
@@ -202,10 +203,15 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
         else:
             logger.info(f"Class {class_id}: {count} samples")
     
-    # Check if any class is missing and exit if true
+    # NEW: Allow training to continue with synthetic data if classes are missing
     if missing_classes:
-        logger.error("Training aborted due to missing classes. Ensure all classes have samples before training.")
-        return None, None
+        logger.warning(f"Missing classes detected: {missing_classes}. Adding synthetic samples.")
+        # Generate synthetic samples for missing classes
+        if hasattr(train_dataset, 'generate_synthetic_samples'):
+            train_dataset.generate_synthetic_samples(missing_classes, num_samples=20)
+            logger.info("Added synthetic samples for missing classes. Training will continue.")
+        else:
+            logger.error("Dataset doesn't support synthetic samples. Training may fail.")
     
     # Now analyze class distribution after the dataset is loaded
     class_counts = {i: 0 for i in range(NUM_CLASSES)}
