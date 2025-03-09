@@ -133,6 +133,43 @@ def zip_dataset(model_dir):
     else:
         print(f"Dataset directory {dataset_dir} does not exist")
 
+# NEW: Add specialized loss function for better class balance
+def class_balanced_loss(outputs, targets, class_weights=None, gamma=2.0, beta=0.999):
+    """
+    Class-balanced focal loss that puts more emphasis on rare classes.
+    This helps ensure all classes are learned properly.
+    
+    Args:
+        outputs: Model predictions [B, C, H, W]
+        targets: Target labels [B]
+        class_weights: Optional tensor of class weights [C]
+        gamma: Focusing parameter for focal loss
+        beta: Class balancing parameter
+    """
+    # Get probabilities
+    probs = F.softmax(outputs, dim=1)
+    
+    # Get one-hot encoding of targets
+    batch_size = targets.size(0)
+    one_hot_targets = torch.zeros(batch_size, NUM_CLASSES, device=targets.device)
+    one_hot_targets.scatter_(1, targets.unsqueeze(1), 1)
+    
+    # Calculate focal weights
+    p_t = (one_hot_targets * probs).sum(1)
+    focal_weight = (1 - p_t) ** gamma
+    
+    # Apply class weights
+    if class_weights is not None:
+        # Get class weight for each sample based on its target class
+        sample_weights = class_weights[targets]
+        focal_weight = focal_weight * sample_weights
+    
+    # Calculate loss
+    loss = F.cross_entropy(outputs, targets, reduction='none')
+    balanced_loss = focal_weight * loss
+    
+    return balanced_loss.mean()
+
 def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_interval=None, 
                weight_decay=None, dropout_prob=0.5, mixup_alpha=0.2, 
                label_smoothing_factor=0.1, grad_clip_value=1.0, use_lite_model=False):
@@ -399,10 +436,38 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
     val_accuracies = []  # Add this line to track validation accuracies
     lr_history = []
     
+    # NEW: Add multi-stage training to focus on different classes
+    # Define class groups for targeted training
+    reagent_pad_classes = list(range(9)) + [10]  # 0-8, 10
+    strip_class = [11]  # Strip class
+    background_class = [9]  # Background class
+    
+    # Track class-specific metrics for better monitoring
+    class_accuracies = {i: [] for i in range(NUM_CLASSES)}
+    
     # Main training loop with improved monitoring
     logger.info("🚀 Starting training...")
     
     for epoch in range(num_epochs):
+        # Adjust focus based on epoch
+        # Early epochs: Focus on reagent pads
+        # Middle epochs: Equal focus on all classes
+        # Later epochs: More focus on underrepresented classes
+        epoch_stage = epoch / num_epochs
+        
+        if epoch_stage < 0.3:  # First 30% of epochs
+            logger.info(f"Epoch {epoch+1}: Focus on learning reagent pads")
+            focused_classes = reagent_pad_classes
+            class_focus_weight = 1.2  # Higher weight for reagent pads
+        elif epoch_stage < 0.6:  # Next 30% of epochs
+            logger.info(f"Epoch {epoch+1}: Equal focus on all classes")
+            focused_classes = list(range(NUM_CLASSES))
+            class_focus_weight = 1.0  # Equal weight for all
+        else:  # Last 40% of epochs
+            logger.info(f"Epoch {epoch+1}: Focus on strip and background classes")
+            focused_classes = strip_class + background_class
+            class_focus_weight = 1.5  # Higher weight for these classes
+        
         # Training phase
         model.train()
         epoch_loss = 0.0
@@ -438,24 +503,58 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
                         loss += lam * focal_loss(outputs, targets_a, class_weights=class_weights) + \
                                 (1 - lam) * focal_loss(outputs, targets_b, class_weights=class_weights)
                     else:
-                        # Forward pass with the model - note model might return aux output
+                        # Forward pass with the model - handle all return values
                         outputs = model(images)
                         
-                        # Handle auxiliary output if present
-                        if isinstance(outputs, tuple) and len(outputs) == 2:
-                            outputs, aux_output = outputs
-                            # Add auxiliary loss if available
-                            main_loss = 0.7 * dice_loss(outputs, targets, class_weights=class_weights) + \
-                                    0.7 * focal_loss(outputs, targets, class_weights=class_weights)
+                        # Handle different model output formats
+                        specialized_loss = 0
+                        if isinstance(outputs, tuple):
+                            if len(outputs) == 2:
+                                outputs, aux_output = outputs
+                                # Add auxiliary loss if available
+                                main_loss = 0.7 * dice_loss(outputs, targets, class_weights=class_weights) + \
+                                        0.7 * focal_loss(outputs, targets, class_weights=class_weights)
+                                
+                                # Convert targets for classification
+                                target_classes = targets.view(-1)
+                                aux_loss = F.cross_entropy(aux_output, target_classes, weight=class_weights)
+                                loss = main_loss + 0.3 * aux_loss
                             
-                            # Convert targets for classification
-                            target_classes = targets.view(-1)
-                            aux_loss = F.cross_entropy(aux_output, target_classes, weight=class_weights)
-                            loss = main_loss + 0.3 * aux_loss
+                            elif len(outputs) == 4:  # Handle specialized outputs
+                                outputs, aux_output, strip_output, bg_output = outputs
+                                
+                                # Main loss
+                                main_loss = 0.6 * dice_loss(outputs, targets, class_weights=class_weights) + \
+                                          0.6 * focal_loss(outputs, targets, class_weights=class_weights)
+                                
+                                # Auxiliary classification loss
+                                target_classes = targets.view(-1)
+                                aux_loss = F.cross_entropy(aux_output, target_classes, weight=class_weights)
+                                
+                                # Specialized losses for strip and background
+                                # Create binary masks for these specific classes
+                                strip_mask = (targets == 11).float().unsqueeze(1)
+                                bg_mask = (targets == 9).float().unsqueeze(1)
+                                
+                                # BCE loss for specialized heads
+                                strip_loss = F.binary_cross_entropy_with_logits(strip_output, strip_mask)
+                                bg_loss = F.binary_cross_entropy_with_logits(bg_output, bg_mask)
+                                
+                                # Add the class-balanced loss
+                                cb_loss = class_balanced_loss(outputs, targets, class_weights)
+                                
+                                # Combine all losses
+                                specialized_loss = 0.1 * strip_loss + 0.1 * bg_loss
+                                loss = main_loss + 0.2 * aux_loss + 0.1 * cb_loss + specialized_loss
+                                
+                                # Apply class focus weighting based on epoch stage
+                                if any(c in focused_classes for c in targets.cpu().numpy()):
+                                    loss = loss * class_focus_weight
                         else:
                             # Regular loss calculation
-                            loss = 0.8 * dice_loss(outputs, targets, class_weights=class_weights) + \
-                                0.8 * focal_loss(outputs, targets, class_weights=class_weights)
+                            loss = 0.7 * dice_loss(outputs, targets, class_weights=class_weights) + \
+                                0.7 * focal_loss(outputs, targets, class_weights=class_weights) + \
+                                0.3 * class_balanced_loss(outputs, targets, class_weights)
                             
                             # Add a supervised contrastive loss term to better separate classes
                             if epoch > 5:  # Add after a few epochs of basic training
@@ -582,6 +681,34 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
         if epoch % 5 == 0 or epoch == num_epochs - 1:
             plot_training_progress(train_losses, val_losses, val_accuracies, lr_history, 
                                   save_path=os.path.join(model_dir, "training_progress.png"))
+        
+        # NEW: Track per-class accuracies
+        with torch.no_grad():
+            class_correct = {i: 0 for i in range(NUM_CLASSES)}
+            class_total = {i: 0 for i in range(NUM_CLASSES)}
+            
+            for images, targets, _ in valid_loader:
+                images = images.to(device)
+                targets = targets.to(device)
+                
+                outputs = model(images)
+                if isinstance(outputs, tuple):
+                    outputs = outputs[0]  # Take main outputs
+                
+                _, predicted = torch.max(outputs, 1)
+                
+                # For each class, count correct predictions
+                for i in range(NUM_CLASSES):
+                    mask = (targets == i)
+                    class_correct[i] += (predicted[mask] == i).sum().item()
+                    class_total[i] += mask.sum().item()
+            
+            # Calculate and log per-class accuracy
+            logger.info("Per-class validation accuracy:")
+            for i in range(NUM_CLASSES):
+                accuracy = 100 * class_correct[i] / max(class_total[i], 1)
+                class_accuracies[i].append(accuracy)
+                logger.info(f"  Class {i} ({CLASS_NAMES.get(i, 'Unknown')}): {accuracy:.2f}%")
     
     # Save final model
     torch.save({
