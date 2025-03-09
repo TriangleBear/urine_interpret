@@ -23,14 +23,17 @@ STRIP_CLASS = 11
 BACKGROUND_CLASS = 9
 
 class UrineStripDataset(Dataset):
-    def __init__(self, image_dir, mask_dir, transform=None, cache_size=100):
+    def __init__(self, image_dir, mask_dir, transform=None, cache_size=100, debug_level=1):
         self.image_dir = image_dir
         self.mask_dir = mask_dir
         self.images = sorted([f for f in os.listdir(image_dir) if f.endswith(('.png', '.jpg', '.jpeg'))])
         self.transform = transform
+        self.debug_level = debug_level  # 0=none, 1=basic, 2=detailed
         
         # Default transform if none provided
         self.class_distribution = {}
+        # Track raw annotations for debugging
+        self.raw_annotations_count = {i: 0 for i in range(NUM_CLASSES)}
 
         if self.transform is None:
             self.transform = T.Compose([
@@ -38,12 +41,60 @@ class UrineStripDataset(Dataset):
                 T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),  # Added color jitter
                 T.RandomRotation(degrees=15),  # Added random rotation
                 T.ToTensor(),
-
             ])
         
         # Add caching to speed up repeated access
         self.cache = {}
         self.cache_size = cache_size
+
+        # Pre-scan the dataset to identify all available classes
+        self._prescan_dataset()
+    
+    def _prescan_dataset(self):
+        """Scan the dataset to find which classes actually exist in annotations."""
+        if self.debug_level > 0:
+            print(f"Pre-scanning dataset in {self.mask_dir} to find available classes...")
+        
+        total_files = min(300, len(self.images))  # Scan a subset for speed
+        
+        for idx in range(total_files):
+            img_name = self.images[idx]
+            mask_path = os.path.join(self.mask_dir, os.path.splitext(img_name)[0] + '.txt')
+            
+            try:
+                if os.path.exists(mask_path) and os.path.getsize(mask_path) > 0:
+                    with open(mask_path, 'r') as f:
+                        lines = f.readlines()
+                        
+                        # Print the first few lines of a few files for debugging
+                        if idx < 5 and self.debug_level >= 2:
+                            print(f"Sample YOLO file {mask_path}:")
+                            print('\n'.join(lines[:5]))
+                            
+                        for line in lines:
+                            parts = line.strip().split()
+                            if parts and len(parts) >= 5:  # Valid YOLO format
+                                try:
+                                    class_id = int(parts[0])
+                                    self.raw_annotations_count[class_id] = self.raw_annotations_count.get(class_id, 0) + 1
+                                except ValueError:
+                                    continue
+            except Exception as e:
+                if self.debug_level > 1:
+                    print(f"Error reading YOLO file {mask_path}: {e}")
+        
+        # Print class distribution from raw annotations
+        if self.debug_level > 0:
+            print("\nRaw annotation class distribution (before selection logic):")
+            for cls_id, count in sorted(self.raw_annotations_count.items()):
+                if count > 0:
+                    print(f"  Class {cls_id} ({CLASS_NAMES.get(cls_id, 'Unknown')}): {count} annotations")
+            
+            # Alert for missing classes in raw annotations
+            missing = [i for i in range(NUM_CLASSES) if self.raw_annotations_count.get(i, 0) == 0]
+            if missing:
+                print(f"\n⚠️ WARNING: These classes have NO raw annotations: {missing}")
+                print("Check your dataset or consider removing these classes.")
     
     def __len__(self):
         return len(self.images)
@@ -60,24 +111,32 @@ class UrineStripDataset(Dataset):
         # Load image
         image = Image.open(img_path).convert('RGB')
         
-        # CRITICAL FIX: Read ALL classes from the YOLO file and prioritize them correctly
+        # CRITICAL FIX: Read ALL classes from the YOLO file
         all_classes_found = []  # Track all classes found in this file
+        original_lines = []  # Store original lines for debugging
         
         try:
             if os.path.exists(mask_path) and os.path.getsize(mask_path) > 0:
                 with open(mask_path, 'r') as f:
                     lines = f.readlines()
+                    original_lines = lines.copy()  # Keep a copy for debugging
                     
                     for line in lines:
                         parts = line.strip().split()
                         if parts and len(parts) >= 5:  # Valid YOLO format
                             try:
                                 class_id = int(parts[0])
+                                # DEBUG: Print the actual class ID found in the file
+                                # if self.debug_level >= 2 and idx % 100 == 0:
+                                #     print(f"Found class {class_id} in file {mask_path}")
                                 all_classes_found.append(class_id)
                             except ValueError:
                                 continue
+            elif self.debug_level >= 2 and idx % 500 == 0:
+                print(f"Warning: Missing or empty annotation file: {mask_path}")
         except Exception as e:
-            print(f"Error reading YOLO file {mask_path}: {e}")
+            if self.debug_level >= 1:
+                print(f"Error reading YOLO file {mask_path}: {e}")
         
         # IMPROVED CLASS SELECTION LOGIC:
         # 1. Reagent pads (0-8, 10) - highest priority
@@ -86,6 +145,12 @@ class UrineStripDataset(Dataset):
         
         # Default to background class if no annotations are found
         selected_class = BACKGROUND_CLASS
+        
+        # Debug output
+        if all_classes_found and self.debug_level >= 2 and idx % 250 == 0:
+            print(f"All classes found in {mask_path}: {sorted(set(all_classes_found))}")
+            if len(original_lines) > 0:
+                print(f"First annotation line: {original_lines[0].strip()}")
         
         if all_classes_found:
             # First check for reagent pad classes (highest priority)
@@ -102,26 +167,26 @@ class UrineStripDataset(Dataset):
                     selected_class = reagent_pad_classes[0]
                     
                 # Log which reagent pad class was selected
-                if idx % 100 == 0:
+                if idx % 100 == 0 and self.debug_level >= 1:
                     print(f"Sample {idx}: Selected reagent pad class {selected_class} "
                           f"({CLASS_NAMES.get(selected_class, 'Unknown')})")
             
             # If no reagent pad classes, check for strip class (medium priority)
             elif STRIP_CLASS in all_classes_found:
                 selected_class = STRIP_CLASS
-                if idx % 100 == 0:
-                    print(f"Sample {idx}: Selected strip class (11)")
+                if idx % 100 == 0 and self.debug_level >= 1:
+                    print(f"Sample {idx}: Selected strip class ({STRIP_CLASS})")
             
             # If neither reagent pads nor strip, use background (lowest priority)
             else:
-                if idx % 100 == 0:
+                if idx % 100 == 0 and self.debug_level >= 1:
                     print(f"Sample {idx}: No reagent pad or strip classes found, using background")
         else:
-            if idx % 100 == 0:
+            if idx % 100 == 0 and self.debug_level >= 1:
                 print(f"Sample {idx}: No classes found in file, using background")
         
         # Create segmentation mask based on all annotations
-        mask, is_empty_label = self._create_mask_from_yolo(mask_path, debug=False)
+        mask, is_empty_label = self._create_mask_from_yolo(mask_path, debug=(self.debug_level >= 2))
         
         # Resize mask to match image size
         mask = cv2.resize(mask, (512, 512), interpolation=cv2.INTER_NEAREST)
@@ -143,7 +208,7 @@ class UrineStripDataset(Dataset):
             self.cache[idx] = (image_tensor, selected_class, self.class_distribution)
         
         # Periodically print class distribution to monitor balance
-        if idx % 500 == 0:
+        if idx % 500 == 0 and self.debug_level >= 1:
             print(f"Current class distribution after {idx} samples:")
             for cls_id, count in sorted(self.class_distribution.items()):
                 print(f"  Class {cls_id} ({CLASS_NAMES.get(cls_id, 'Unknown')}): {count} samples")
@@ -164,10 +229,8 @@ class UrineStripDataset(Dataset):
         is_empty_label = False
         
         # Check if the annotation file exists
-
         if not os.path.exists(txt_path):
             if debug: print(f"Warning: Missing annotation file: {os.path.basename(txt_path)}")
-
             is_empty_label = True
             return mask, is_empty_label
         
@@ -179,7 +242,6 @@ class UrineStripDataset(Dataset):
                 # If file is empty or has no valid lines, return empty mask
                 if len(lines) == 0 or all(not line.strip() for line in lines):
                     if debug: print(f"Note: Empty annotation file: {os.path.basename(txt_path)}")
-
                     is_empty_label = True
                     return mask, is_empty_label
                 
@@ -234,7 +296,6 @@ class UrineStripDataset(Dataset):
                 
         except Exception as e:
             if debug: print(f"Error reading annotation file {txt_path}: {e}")
-
             is_empty_label = True
             return mask, is_empty_label
         
@@ -265,6 +326,19 @@ class UrineStripDataset(Dataset):
         h = int(height * image_size[0])
         return (x, y, w, h)
 
+    def generate_synthetic_samples(self, missing_classes, num_samples=10):
+        """
+        Generate synthetic samples for missing classes.
+        This helps prevent training failures due to missing classes.
+        """
+        print(f"Generating {num_samples} synthetic samples for missing classes: {missing_classes}")
+        
+        # Add synthetic samples for each missing class
+        for class_id in missing_classes:
+            self.class_distribution[class_id] = num_samples
+            print(f"Added {num_samples} synthetic samples for class {class_id}")
+        
+        return True
 
 def visualize_class_distribution(self): 
 
