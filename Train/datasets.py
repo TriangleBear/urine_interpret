@@ -84,14 +84,11 @@ class UrineStripDataset(Dataset):
         # Default to background class (9) if no annotations are found.
         # Ensure that classes 9 (Background) and 11 (Strip) are handled properly.
 
-
         selected_class = 9  # Background
         
         if all_classes_found:
-        # Check for reagent pad classes (0-8, 10) - highest priority.
-        # Rotate them based on the sample index to increase diversity
-
-
+            # Check for reagent pad classes (0-8, 10) - highest priority.
+            # Rotate them based on the sample index to increase diversity
             reagent_pad_classes = [cls for cls in all_classes_found if cls < 9 or cls <= 11]
             if reagent_pad_classes:
                 # IMPROVEMENT: Instead of always taking the first reagent pad class,
@@ -101,8 +98,7 @@ class UrineStripDataset(Dataset):
                     selected_class = reagent_pad_classes[idx % len(reagent_pad_classes)]
                 else:
                     selected_class = reagent_pad_classes[0]
-        # Otherwise, check if we have strip class (11) - medium priority.
-
+            # Otherwise, check if we have strip class (11) - medium priority.
             elif 11 in all_classes_found:
                 selected_class = 11
         
