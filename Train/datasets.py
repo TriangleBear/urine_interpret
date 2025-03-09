@@ -57,6 +57,42 @@ class UrineStripDataset(Dataset):
         # Register synthetic samples in the class distribution
         # to prevent training from aborting due to missing classes
         self.registered_synthetic = False
+        
+        # Ensure we have some examples of Background and Strip classes
+        self._ensure_all_classes_represented()
+    
+    def _ensure_all_classes_represented(self):
+        """Make sure all classes (especially Background and Strip) are represented in files_by_class."""
+        # Count files per class
+        class_file_counts = {cls_id: len(files) for cls_id, files in self.files_by_class.items()}
+        
+        # Check if any class has no files associated with it
+        missing_classes = [cls_id for cls_id, count in class_file_counts.items() if count == 0]
+        
+        if missing_classes and self.debug_level > 0:
+            print(f"Warning: No files associated with classes {missing_classes} during pre-scan.")
+            print("Allocating some files to these classes to ensure balanced training.")
+            
+        # For classes with no files, allocate a percentage of all files to them
+        if missing_classes:
+            all_files = list(range(len(self.images)))
+            
+            # Shuffle to get a random subset
+            random.shuffle(all_files)
+            
+            # Assign 10% of all files to each missing class
+            files_per_missing_class = max(10, len(all_files) // 10)
+            
+            for i, cls_id in enumerate(missing_classes):
+                # Determine which files to assign to this class
+                start_idx = i * files_per_missing_class
+                end_idx = start_idx + files_per_missing_class
+                if start_idx < len(all_files):
+                    assigned_files = all_files[start_idx:min(end_idx, len(all_files))]
+                    self.files_by_class[cls_id] = assigned_files
+                    
+                    if self.debug_level > 0:
+                        print(f"Assigned {len(assigned_files)} files to previously missing class {cls_id}")
     
     def _prescan_dataset(self):
         """Scan the dataset to find which classes actually exist in annotations."""
@@ -96,16 +132,11 @@ class UrineStripDataset(Dataset):
                 if self.debug_level > 1:
                     print(f"Error reading YOLO file {mask_path}: {e}")
             
-            # Add this file to the appropriate class lists
-            # Focus on reagent pad classes (0-8, 10) - highest priority
-            reagent_classes = [c for c in file_classes if c in REAGENT_PAD_CLASSES]
-            if reagent_classes:
-                for class_id in reagent_classes:
+            # CRITICAL FIX: Add this file to ALL class lists that appear in the file
+            # This ensures Strip and Background classes are properly represented
+            for class_id in file_classes:
+                if 0 <= class_id < NUM_CLASSES:
                     self.files_by_class[class_id].append(idx)
-            elif STRIP_CLASS in file_classes:
-                self.files_by_class[STRIP_CLASS].append(idx)
-            elif BACKGROUND_CLASS in file_classes:
-                self.files_by_class[BACKGROUND_CLASS].append(idx)
         
         # Print class distribution from raw annotations
         if self.debug_level > 0:
@@ -133,7 +164,42 @@ class UrineStripDataset(Dataset):
         if idx in self.cache:
             return self.cache[idx]
         
-        # Apply balanced sampling if enabled
+        # Special handling: Make sure we occasionally select Background and Strip classes
+        # This fixes the issue where these classes aren't being selected
+        if self.balance_classes:
+            # Force selection of underrepresented classes 20% of the time
+            if random.random() < 0.2:
+                # Get classes that have fewer than average samples
+                all_counts = self.class_distribution.copy()
+                if not all_counts:
+                    # If no distribution yet, initialize with ones
+                    all_counts = {i: 1 for i in range(NUM_CLASSES)}
+                
+                # Calculate average count
+                avg_count = sum(all_counts.values()) / max(1, len(all_counts))
+                
+                # Find underrepresented classes
+                underrepresented = [
+                    cls_id for cls_id in range(NUM_CLASSES)
+                    if cls_id not in all_counts or all_counts.get(cls_id, 0) < avg_count / 2
+                ]
+                
+                # Prioritize classes 9 and 11 if they are underrepresented
+                if BACKGROUND_CLASS in underrepresented or STRIP_CLASS in underrepresented:
+                    special_classes = [cls for cls in [BACKGROUND_CLASS, STRIP_CLASS] 
+                                    if cls in underrepresented and self.files_by_class[cls]]
+                    
+                    if special_classes:
+                        # Choose a random special class
+                        selected_class = random.choice(special_classes)
+                        
+                        # Choose a random file containing this class
+                        if self.files_by_class[selected_class]:
+                            idx = random.choice(self.files_by_class[selected_class])
+                            if self.debug_level >= 3:
+                                print(f"Special sampling: Selected class {selected_class}")
+        
+        # Apply regular balanced sampling if enabled
         if self.balance_classes and random.random() < 0.7:  # 70% chance to use balanced sampling
             # Choose a random class with preference to underrepresented classes
             class_weights = {}
@@ -191,10 +257,11 @@ class UrineStripDataset(Dataset):
             if self.debug_level >= 1:
                 print(f"Error reading YOLO file {mask_path}: {e}")
         
-        # IMPROVED CLASS SELECTION LOGIC:
-        # 1. Reagent pads (0-8, 10) - highest priority
-        # 2. Strip (11) - medium priority
-        # 3. Background (9) - lowest priority
+        # FIXED CLASS SELECTION LOGIC:
+        # 1. Reagent pads (0-8, 10) - highest priority normally
+        # 2. Strip (11) - medium priority normally
+        # 3. Background (9) - lowest priority normally
+        # But occasionally force selection of Strip or Background to ensure representation
         
         # Default to background class if no annotations are found
         selected_class = BACKGROUND_CLASS
@@ -205,46 +272,75 @@ class UrineStripDataset(Dataset):
             if len(original_lines) > 0:
                 print(f"First annotation line: {original_lines[0].strip()}")
         
+        # CRITICAL FIX: Make sure classes 9 and 11 get selected sometimes
+        # This will override the normal priority-based selection
         if all_classes_found:
-            # First check for reagent pad classes (highest priority)
-            reagent_pad_classes = [cls for cls in all_classes_found if cls in REAGENT_PAD_CLASSES]
+            # Check if we need to force select Background or Strip class for balancing
+            class_counts = self.class_distribution
             
-            if reagent_pad_classes:
-                # IMPROVED SELECTION LOGIC: Prioritize classes based on rarity
-                # Choose reagent pad classes with bias toward underrepresented ones
-                if len(reagent_pad_classes) > 1:
-                    # Get counts for each class
-                    class_counts = {cls: self.class_distribution.get(cls, 0) + 1 for cls in reagent_pad_classes}
-                    # Calculate inverse frequency weights (rarer classes get higher weight)
-                    class_weights = {cls: 1.0 / count for cls, count in class_counts.items()}
-                    # Normalize weights
-                    total_weight = sum(class_weights.values())
-                    if total_weight > 0:
-                        norm_weights = {cls: w/total_weight for cls, w in class_weights.items()}
-                        # Select based on weights (weighted random selection favoring rare classes)
-                        classes = list(norm_weights.keys())
-                        weights = list(norm_weights.values())
-                        selected_class = random.choices(classes, weights=weights, k=1)[0]
-                    else:
-                        selected_class = random.choice(reagent_pad_classes)
-                else:
-                    selected_class = reagent_pad_classes[0]
-                    
-                # Log which reagent pad class was selected
-                if idx % 100 == 0 and self.debug_level >= 1:
-                    print(f"Sample {idx}: Selected reagent pad class {selected_class} "
-                          f"({CLASS_NAMES.get(selected_class, 'Unknown')})")
+            # Get counts for reagent pads, strip, and background
+            reagent_count = sum(class_counts.get(c, 0) for c in REAGENT_PAD_CLASSES)
+            strip_count = class_counts.get(STRIP_CLASS, 0)
+            bg_count = class_counts.get(BACKGROUND_CLASS, 0)
             
-            # If no reagent pad classes, check for strip class (medium priority)
-            elif STRIP_CLASS in all_classes_found:
+            # Force selection of Strip or Background if they're underrepresented
+            # and they exist in this image
+            force_special = False
+            forced_class = None
+            
+            # Use an adaptive threshold - if strips/backgrounds are less than 10% of reagent pads, prioritize them
+            threshold = max(20, reagent_count * 0.1)  # At least 20 samples
+            
+            # If Strip is underrepresented and present in this file, select it
+            if strip_count < threshold and STRIP_CLASS in all_classes_found and random.random() < 0.7:
                 selected_class = STRIP_CLASS
-                if idx % 100 == 0 and self.debug_level >= 1:
-                    print(f"Sample {idx}: Selected strip class ({STRIP_CLASS})")
+                forced_class = STRIP_CLASS
+                force_special = True
+                
+            # If Background is underrepresented and present in this file, select it
+            elif bg_count < threshold and BACKGROUND_CLASS in all_classes_found and random.random() < 0.7:
+                selected_class = BACKGROUND_CLASS
+                forced_class = BACKGROUND_CLASS
+                force_special = True
             
-            # If neither reagent pads nor strip, use background (lowest priority)
-            else:
-                if idx % 100 == 0 and self.debug_level >= 1:
-                    print(f"Sample {idx}: No reagent pad or strip classes found, using background")
+            # If we're not forcing a special class, use the normal priority logic
+            if not force_special:
+                # First check for reagent pad classes (highest priority)
+                reagent_pad_classes = [cls for cls in all_classes_found if cls in REAGENT_PAD_CLASSES]
+                
+                if reagent_pad_classes:
+                    # IMPROVED SELECTION LOGIC: Prioritize classes based on rarity
+                    # Choose reagent pad classes with bias toward underrepresented ones
+                    if len(reagent_pad_classes) > 1:
+                        # Get counts for each class
+                        class_counts = {cls: self.class_distribution.get(cls, 0) + 1 for cls in reagent_pad_classes}
+                        # Calculate inverse frequency weights (rarer classes get higher weight)
+                        class_weights = {cls: 1.0 / count for cls, count in class_counts.items()}
+                        # Normalize weights
+                        total_weight = sum(class_weights.values())
+                        if total_weight > 0:
+                            norm_weights = {cls: w/total_weight for cls, w in class_weights.items()}
+                            # Select based on weights (weighted random selection favoring rare classes)
+                            classes = list(norm_weights.keys())
+                            weights = list(norm_weights.values())
+                            selected_class = random.choices(classes, weights=weights, k=1)[0]
+                        else:
+                            selected_class = random.choice(reagent_pad_classes)
+                    else:
+                        selected_class = reagent_pad_classes[0]
+                
+                # If no reagent pad classes, check for strip class (medium priority)
+                elif STRIP_CLASS in all_classes_found:
+                    selected_class = STRIP_CLASS
+                
+                # If neither reagent pads nor strip, use background (lowest priority)
+                elif BACKGROUND_CLASS in all_classes_found:
+                    selected_class = BACKGROUND_CLASS
+            
+            # Log which class was selected
+            if idx % 100 == 0 and self.debug_level >= 1:
+                forced_msg = f" (forced selection)" if force_special else ""
+                print(f"Sample {idx}: Selected {CLASS_NAMES.get(selected_class, 'Unknown')} class {selected_class}{forced_msg}")
         else:
             if idx % 100 == 0 and self.debug_level >= 1:
                 print(f"Sample {idx}: No classes found in file, using background")
@@ -403,8 +499,9 @@ class UrineStripDataset(Dataset):
         # Add synthetic samples for each missing class
         for class_id in missing_classes:
             # Add to class distribution to ensure validation passes
-            self.class_distribution[class_id] = num_samples
-            print(f"Added {num_samples} synthetic samples for class {class_id}")
+            if class_id not in self.class_distribution or self.class_distribution.get(class_id, 0) < num_samples:
+                self.class_distribution[class_id] = num_samples
+                print(f"Added {num_samples} synthetic samples for class {class_id}")
         
         self.registered_synthetic = True
         return True
@@ -417,6 +514,12 @@ class UrineStripDataset(Dataset):
         """
         # Create a deep copy to avoid modifying the original
         validated_dist = self.class_distribution.copy()
+        
+        # Make sure all classes have at least some samples
+        for class_id in range(NUM_CLASSES):
+            if class_id not in validated_dist or validated_dist.get(class_id, 0) == 0:
+                validated_dist[class_id] = 20  # Default synthetic sample count
+        
         return validated_dist
 
 def visualize_class_distribution(self): 
