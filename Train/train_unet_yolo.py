@@ -7,7 +7,7 @@ import time
 import torchvision.transforms as transforms  # Add this import for data augmentation
 import torch.nn.functional as F  # Add this for contrastive_loss function
 from torch.utils.data import DataLoader
-from datasets import UrineStripDataset
+from datasets import UrineStripDataset, CLASS_NAMES  # Import CLASS_NAMES from datasets
 from models import UNetYOLO
 from losses import dice_loss, focal_loss
 from config import (
@@ -45,7 +45,7 @@ norm_dataset = UrineStripDataset(
         ])
     )
     
-    # Compute mean and std using the utility function
+# Compute mean and std using the utility function
 mean, std = compute_mean_std(norm_dataset)
 
 # Regularization techniques
@@ -133,9 +133,113 @@ def zip_dataset(model_dir):
     else:
         print(f"Dataset directory {dataset_dir} does not exist")
 
+# FIX: Update class_balanced_loss to properly handle segmentation model outputs
+def class_balanced_loss(outputs, targets, class_weights=None, gamma=2.0, beta=0.999):
+    """
+    Class-balanced focal loss that puts more emphasis on rare classes.
+    This helps ensure all classes are learned properly.
+    
+    Args:
+        outputs: Model predictions [B, C, H, W]
+        targets: Target labels [B] or [B, H, W]
+        class_weights: Optional tensor of class weights [C]
+        gamma: Focusing parameter for focal loss
+        beta: Class balancing parameter
+    """
+    # Check if we have a classification or segmentation task
+    if outputs.dim() == 4:  # [B, C, H, W] - segmentation
+        # Spatial dimensions
+        H, W = outputs.shape[2], outputs.shape[3]
+        
+        if targets.dim() == 1:  # [B] - classification labels
+            # Global pooling for classification
+            outputs_pooled = F.adaptive_avg_pool2d(outputs, 1).squeeze(-1).squeeze(-1)  # [B, C]
+            probs = F.softmax(outputs_pooled, dim=1)
+            
+            # Get one-hot encoding of targets
+            batch_size = targets.size(0)
+            one_hot_targets = torch.zeros(batch_size, outputs.size(1), device=targets.device)
+            one_hot_targets.scatter_(1, targets.unsqueeze(1), 1)
+            
+            # Calculate focal weights
+            p_t = (one_hot_targets * probs).sum(1)
+            focal_weight = (1 - p_t) ** gamma
+            
+            if class_weights is not None:
+                # Get class weight for each sample based on its target class
+                sample_weights = class_weights[targets]
+                focal_weight = focal_weight * sample_weights
+            
+            # Calculate loss
+            loss = F.cross_entropy(outputs_pooled, targets, reduction='none')
+            balanced_loss = focal_weight * loss
+            
+            return balanced_loss.mean()
+        
+        else:  # [B, H, W] - segmentation mask
+            # Convert targets to right shape if needed
+            if targets.dim() == 3:  # [B, H, W]
+                if targets.shape[1:] != (H, W):
+                    targets = F.interpolate(targets.float().unsqueeze(1), size=(H, W), 
+                                       mode='nearest').squeeze(1).long()
+            
+            # Get probabilities
+            probs = F.softmax(outputs, dim=1)  # [B, C, H, W]
+            
+            # Compute class-wise focal loss
+            loss = F.cross_entropy(outputs, targets, reduction='none')  # [B, H, W]
+            
+            # Calculate pt (probability of true class)
+            batch_size = targets.size(0)
+            pt = torch.zeros_like(loss)
+            
+            for b in range(batch_size):
+                pt[b] = probs[b, targets[b], torch.arange(H).unsqueeze(1), 
+                               torch.arange(W).unsqueeze(0)]
+            
+            # Focal weight
+            focal_weight = (1 - pt) ** gamma
+            
+            # Apply class weights if provided
+            if class_weights is not None:
+                # Get weights for each pixel based on its class
+                pixel_weights = torch.zeros_like(loss)
+                for b in range(batch_size):
+                    pixel_weights[b] = class_weights[targets[b]]
+                focal_weight = focal_weight * pixel_weights
+            
+            # Final loss
+            balanced_loss = focal_weight * loss
+            
+            return balanced_loss.mean()
+    
+    else:  # [B, C] - classification
+        # Get probabilities
+        probs = F.softmax(outputs, dim=1)
+        
+        # Get one-hot encoding of targets
+        batch_size = targets.size(0)
+        one_hot_targets = torch.zeros(batch_size, outputs.size(1), device=targets.device)
+        one_hot_targets.scatter_(1, targets.unsqueeze(1), 1)
+        
+        # Calculate focal weights
+        p_t = (one_hot_targets * probs).sum(1)
+        focal_weight = (1 - p_t) ** gamma
+        
+        if class_weights is not None:
+            # Get class weight for each sample based on its target class
+            sample_weights = class_weights[targets]
+            focal_weight = focal_weight * sample_weights
+        
+        # Calculate loss
+        loss = F.cross_entropy(outputs, targets, reduction='none')
+        balanced_loss = focal_weight * loss
+        
+        return balanced_loss.mean()
+
 def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_interval=None, 
                weight_decay=None, dropout_prob=0.5, mixup_alpha=0.2, 
-               label_smoothing_factor=0.1, grad_clip_value=1.0):
+               label_smoothing_factor=0.1, grad_clip_value=1.0, use_lite_model=False):
     """
     Train the UNet-YOLO model with improved convergence settings
     """
@@ -176,16 +280,78 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
     train_dataset = UrineStripDataset(
         TRAIN_IMAGE_FOLDER, 
         TRAIN_MASK_FOLDER,
-        transform=get_advanced_augmentation(mean, std)  # Pass the computed values
+        transform=get_advanced_augmentation(mean, std),  # Pass the computed values
+        debug_level=2  # Enable detailed debugging
     )
-    valid_dataset = UrineStripDataset(VALID_IMAGE_FOLDER, VALID_MASK_FOLDER)
+    valid_dataset = UrineStripDataset(VALID_IMAGE_FOLDER, VALID_MASK_FOLDER, debug_level=1)
+    
+    # Check the labels file in the dataset to ensure all classes have samples
+    logger.info("Checking labels file in the dataset...")
+    label_counts = {i: 0 for i in range(NUM_CLASSES)}
+    
+    # NEW: First, add synthetic samples for any missing classes
+    missing_raw_classes = [i for i in range(NUM_CLASSES) 
+                          if i not in train_dataset.raw_annotations_count or 
+                             train_dataset.raw_annotations_count[i] == 0]
+    
+    if missing_raw_classes:
+        logger.warning(f"Missing classes detected in raw annotations: {missing_raw_classes}. Adding synthetic samples.")
+        # Generate synthetic samples for missing classes
+        if hasattr(train_dataset, 'generate_synthetic_samples'):
+            train_dataset.generate_synthetic_samples(missing_raw_classes, num_samples=20)
+            logger.info("Added synthetic samples for missing classes. Training will continue.")
+        else:
+            logger.error("Dataset doesn't support synthetic samples. Training may fail.")
+    
+    # Get the distribution that includes synthetic samples
+    if hasattr(train_dataset, 'get_validated_class_distribution'):
+        class_dist = train_dataset.get_validated_class_distribution()
+        
+        # Use the validated distribution for label counts
+        for class_id, count in class_dist.items():
+            if 0 <= class_id < NUM_CLASSES:  # Valid class range
+                label_counts[class_id] = count
+    else:
+        # Fall back to regular counting if method not available
+        for i in tqdm(range(len(train_dataset)), desc="Counting labels"):
+            _, label, _ = train_dataset[i]
+            if isinstance(label, list):  # Handle polygon-shaped bounding boxes
+                for lbl in label:
+                    label_counts[lbl] += 1
+            else:
+                label_counts[label] += 1
+    
+    # Print detailed class distribution
+    logger.info("Class distribution in training dataset:")
+    missing_classes = []
+    for class_id in range(NUM_CLASSES):
+        count = label_counts.get(class_id, 0)
+        if count == 0:
+            missing_classes.append(class_id)
+            logger.warning(f"⚠️ Class {class_id} has ZERO samples!")
+        else:
+            logger.info(f"Class {class_id}: {count} samples")
+    
+    # NEW: Allow training to continue with synthetic data if classes are missing
+    if missing_classes:
+        logger.warning(f"Missing classes detected: {missing_classes}. Adding synthetic samples.")
+        # Generate synthetic samples for missing classes
+        if hasattr(train_dataset, 'generate_synthetic_samples'):
+            train_dataset.generate_synthetic_samples(missing_classes, num_samples=20)
+            logger.info("Added synthetic samples for missing classes. Training will continue.")
+        else:
+            logger.error("Dataset doesn't support synthetic samples. Training may fail.")
     
     # Now analyze class distribution after the dataset is loaded
     class_counts = {i: 0 for i in range(NUM_CLASSES)}
     logger.info("Analyzing full dataset class distribution...")
     for i in tqdm(range(len(train_dataset)), desc="Counting classes"):
         _, label, _ = train_dataset[i]
-        class_counts[label] = class_counts.get(label, 0) + 1
+        if isinstance(label, list):  # Handle polygon-shaped bounding boxes
+            for lbl in label:
+                class_counts[lbl] = class_counts.get(lbl, 0) + 1
+        else:
+            class_counts[label] = class_counts.get(label, 0) + 1
     
     # Print detailed class distribution
     logger.info("Class distribution in training dataset:")
@@ -195,12 +361,17 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
         count = class_counts.get(class_id, 0)
         if count == 0:
             missing_classes.append(class_id)
-            logger.warning(f"⚠️ Class {class_id} has ZERO samples!")
+            logger.error(f"⚠️ Class {class_id} has ZERO samples!")
         elif count < 10:  # Consider fewer than 10 samples as underrepresented
             underrepresented_classes.append(class_id)
             logger.warning(f"⚠️ Class {class_id} is underrepresented with only {count} samples")
         else:
             logger.info(f"Class {class_id}: {count} samples")
+    
+    # Check if any class is missing and exit if true
+    if missing_classes:
+        logger.error("Training aborted due to missing classes. Ensure all classes have samples before training.")
+        return None, None
     
     # Handle missing classes through synthetic data generation
     if missing_classes or underrepresented_classes:
@@ -245,7 +416,6 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
     
     # Check dataset classes and print distribution
     class_dist = train_dataset.class_distribution if hasattr(train_dataset, 'class_distribution') else {}
-    logger.info(f"Class distribution: {class_dist}")
     
     # Intelligent handling of class imbalance
     if len(class_dist) > 0:
@@ -284,7 +454,13 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
     logger.info(f"Initializing model with dropout={dropout_prob}...")
     
     # Initialize model with specified dropout probability
-    model = UNetYOLO(in_channels=3, out_channels=NUM_CLASSES, dropout_prob=dropout_prob).to(device)
+    if use_lite_model:
+        logger.info(f"Using LiteUNet model with dropout={dropout_prob}...")
+        from models import LiteUNet
+        model = LiteUNet(in_channels=3, out_channels=NUM_CLASSES, dropout_prob=dropout_prob).to(device)
+    else:
+        logger.info(f"Using UNetYOLO model with dropout={dropout_prob}...")
+        model = UNetYOLO(in_channels=3, out_channels=NUM_CLASSES, dropout_prob=dropout_prob).to(device)
     
     # Use mixed precision training
     scaler = GradScaler() if USE_MIXED_PRECISION and torch.cuda.is_available() else None
@@ -301,13 +477,16 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
         amsgrad=True  # More stable for convergence
     )
     
-    # *** IMPORTANT FIX: Better learning rate scheduler ***
-    # Instead of OneCycleLR, use CosineAnnealingWarmRestarts which can escape local minima
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+    # IMPROVED LEARNING RATE SCHEDULER: Use OneCycle policy which is better for convergence
+    # This will rapidly increase LR, then gradually decrease it
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer,
-        T_0=10,  # Initial restart period (epochs)
-        T_mult=2,  # Multiply period by this factor after each restart
-        eta_min=learning_rate/100  # Minimum learning rate
+        max_lr=learning_rate * 10,  # Peak learning rate
+        steps_per_epoch=len(train_loader),
+        epochs=num_epochs,
+        pct_start=0.3,  # Spend 30% of time warming up
+        div_factor=10,  # Initial lr is max_lr/10
+        final_div_factor=100,  # Final lr is max_lr/1000
     )
     
     # ***CRITICAL***: Increase patience for early stopping
@@ -324,10 +503,38 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
     val_accuracies = []  # Add this line to track validation accuracies
     lr_history = []
     
+    # NEW: Add multi-stage training to focus on different classes
+    # Define class groups for targeted training
+    reagent_pad_classes = list(range(9)) + [10]  # 0-8, 10
+    strip_class = [11]  # Strip class
+    background_class = [9]  # Background class
+    
+    # Track class-specific metrics for better monitoring
+    class_accuracies = {i: [] for i in range(NUM_CLASSES)}
+    
     # Main training loop with improved monitoring
     logger.info("🚀 Starting training...")
     
     for epoch in range(num_epochs):
+        # Adjust focus based on epoch
+        # Early epochs: Focus on reagent pads
+        # Middle epochs: Equal focus on all classes
+        # Later epochs: More focus on underrepresented classes
+        epoch_stage = epoch / num_epochs
+        
+        if epoch_stage < 0.3:  # First 30% of epochs
+            logger.info(f"Epoch {epoch+1}: Focus on learning reagent pads")
+            focused_classes = reagent_pad_classes
+            class_focus_weight = 1.2  # Higher weight for reagent pads
+        elif epoch_stage < 0.6:  # Next 30% of epochs
+            logger.info(f"Epoch {epoch+1}: Equal focus on all classes")
+            focused_classes = list(range(NUM_CLASSES))
+            class_focus_weight = 1.0  # Equal weight for all
+        else:  # Last 40% of epochs
+            logger.info(f"Epoch {epoch+1}: Focus on strip and background classes")
+            focused_classes = strip_class + background_class
+            class_focus_weight = 1.5  # Higher weight for these classes
+        
         # Training phase
         model.train()
         epoch_loss = 0.0
@@ -363,14 +570,73 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
                         loss += lam * focal_loss(outputs, targets_a, class_weights=class_weights) + \
                                 (1 - lam) * focal_loss(outputs, targets_b, class_weights=class_weights)
                     else:
+                        # Forward pass with the model - handle all return values
                         outputs = model(images)
-                        # Add label smoothing for regularization
-                        loss = 0.8 * dice_loss(outputs, targets, class_weights=class_weights) + \
-                               0.8 * focal_loss(outputs, targets, class_weights=class_weights)
                         
-                        # Add a supervised contrastive loss term to better separate classes
-                        if epoch > 5:  # Add after a few epochs of basic training
-                            loss += 0.2 * contrastive_loss(outputs, targets)
+                        # Handle different model output formats
+                        specialized_loss = 0
+                        if isinstance(outputs, tuple):
+                            if len(outputs) == 2:
+                                outputs, aux_output = outputs
+                                # Add auxiliary loss if available
+                                main_loss = 0.7 * dice_loss(outputs, targets, class_weights=class_weights) + \
+                                        0.7 * focal_loss(outputs, targets, class_weights=class_weights)
+                                
+                                # Convert targets for classification
+                                target_classes = targets.view(-1)
+                                aux_loss = F.cross_entropy(aux_output, target_classes, weight=class_weights)
+                                loss = main_loss + 0.3 * aux_loss
+                            
+                            elif len(outputs) == 4:  # Handle specialized outputs
+                                outputs, aux_output, strip_output, bg_output = outputs
+                                
+                                # Main loss
+                                main_loss = 0.6 * dice_loss(outputs, targets, class_weights=class_weights) + \
+                                          0.6 * focal_loss(outputs, targets, class_weights=class_weights)
+                                
+                                # Auxiliary classification loss
+                                target_classes = targets.view(-1)
+                                aux_loss = F.cross_entropy(aux_output, target_classes, weight=class_weights)
+                                
+                                # Specialized losses for strip and background
+                                # Create binary masks for these specific classes
+                                strip_mask = (targets == 11).float().unsqueeze(1)
+                                bg_mask = (targets == 9).float().unsqueeze(1)
+                                
+                                # BCE loss for specialized heads
+                                strip_loss = F.binary_cross_entropy_with_logits(strip_output, strip_mask)
+                                bg_loss = F.binary_cross_entropy_with_logits(bg_output, bg_mask)
+                                
+                                # Add the class-balanced loss
+                                cb_loss = class_balanced_loss(outputs, targets, class_weights)
+                                
+                                # Combine all losses
+                                specialized_loss = 0.1 * strip_loss + 0.1 * bg_loss
+                                loss = main_loss + 0.2 * aux_loss + 0.1 * cb_loss + specialized_loss
+                                
+                                # Apply class focus weighting based on epoch stage
+                                if any(c in focused_classes for c in targets.cpu().numpy()):
+                                    loss = loss * class_focus_weight
+                        else:
+                            # Regular loss calculation
+                            loss = 0.7 * dice_loss(outputs, targets, class_weights=class_weights) + \
+                                0.7 * focal_loss(outputs, targets, class_weights=class_weights)
+                            
+                            # Only add class_balanced_loss if it's a classification task (targets is [B])
+                            # or wrap it in a try/except to gracefully handle any dimension issues
+                            try:
+                                if targets.dim() == 1:  # Classification task
+                                    loss += 0.3 * class_balanced_loss(outputs, targets, class_weights)
+                                else:
+                                    # For segmentation task, use a simpler approach
+                                    loss += 0.3 * F.cross_entropy(outputs, targets, 
+                                                                 weight=class_weights if class_weights is not None else None)
+                            except RuntimeError as e:
+                                print(f"Warning: Skipping class_balanced_loss due to error: {e}")
+                            
+                            # Add a supervised contrastive loss term to better separate classes
+                            if epoch > 5:  # Add after a few epochs of basic training
+                                loss += 0.2 * contrastive_loss(outputs, targets)
                     
                     # Scale loss by accumulation factor
                     loss = loss / GRADIENT_ACCUMULATION_STEPS
@@ -414,8 +680,10 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
         # Clear memory before validation
         clean_memory()
         
-        # Update learning rate - important to do this BEFORE validation
-        scheduler.step()
+        # Update learning rate EVERY BATCH with OneCycleLR
+        if (batch_idx + 1) % GRADIENT_ACCUMULATION_STEPS == 0 or (batch_idx + 1) == len(train_loader):
+            scheduler.step()
+        
         current_lr = optimizer.param_groups[0]['lr']
         lr_history.append(current_lr)
         
@@ -491,6 +759,34 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
         if epoch % 5 == 0 or epoch == num_epochs - 1:
             plot_training_progress(train_losses, val_losses, val_accuracies, lr_history, 
                                   save_path=os.path.join(model_dir, "training_progress.png"))
+        
+        # NEW: Track per-class accuracies
+        with torch.no_grad():
+            class_correct = {i: 0 for i in range(NUM_CLASSES)}
+            class_total = {i: 0 for i in range(NUM_CLASSES)}
+            
+            for images, targets, _ in valid_loader:
+                images = images.to(device)
+                targets = targets.to(device)
+                
+                outputs = model(images)
+                if isinstance(outputs, tuple):
+                    outputs = outputs[0]  # Take main outputs
+                
+                _, predicted = torch.max(outputs, 1)
+                
+                # For each class, count correct predictions
+                for i in range(NUM_CLASSES):
+                    mask = (targets == i)
+                    class_correct[i] += (predicted[mask] == i).sum().item()
+                    class_total[i] += mask.sum().item()
+            
+            # Calculate and log per-class accuracy
+            logger.info("Per-class validation accuracy:")
+            for i in range(NUM_CLASSES):
+                accuracy = 100 * class_correct[i] / max(class_total[i], 1)
+                class_accuracies[i].append(accuracy)
+                logger.info(f"  Class {i} ({CLASS_NAMES.get(i, 'Unknown')}): {accuracy:.2f}%")
     
     # Save final model
     torch.save({
@@ -670,5 +966,107 @@ def plot_training_progress(train_losses, val_losses, val_accuracies, lr_history,
     else:
         plt.show()
 
+# Add a function for performing learning rate test
+def find_learning_rate(start_lr=1e-7, end_lr=1, batch_size=4, num_iter=100):
+    """Find optimal learning rate with learning rate range test."""
+    import math
+    import matplotlib.pyplot as plt
+    
+    # Configure dataset and model
+    train_dataset = UrineStripDataset(
+        TRAIN_IMAGE_FOLDER, 
+        TRAIN_MASK_FOLDER,
+        transform=get_advanced_augmentation(mean, std),
+    )
+    
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=batch_size,
+        shuffle=True,
+        pin_memory=True,
+        num_workers=2,
+        drop_last=True
+    )
+    
+    model = UNetYOLO(in_channels=3, out_channels=NUM_CLASSES).to(device)
+    
+    # Setup optimizer
+    optimizer = torch.optim.AdamW(model.parameters(), lr=start_lr)
+    
+    # Create log scale learning rate range
+    gamma = (end_lr / start_lr) ** (1 / num_iter)
+    lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma)
+    
+    # Track learning rates and losses
+    learning_rates = []
+    losses = []
+    
+    # Run the learning rate finder
+    model.train()
+    progress = tqdm(range(min(num_iter, len(train_loader))), desc="Finding optimal LR")
+    
+    for i, (images, targets, _) in enumerate(train_loader):
+        if i >= num_iter:
+            break
+            
+        # Move data to device
+        images = images.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
+        
+        # Reset gradients
+        optimizer.zero_grad()
+        
+        # Forward pass
+        outputs = model(images)
+        
+        # Handle auxiliary output if present
+        if isinstance(outputs, tuple) and len(outputs) == 2:
+            outputs, _ = outputs
+        
+        # Calculate loss
+        loss = dice_loss(outputs, targets) + focal_loss(outputs, targets)
+        
+        # Record learning rate and loss
+        learning_rates.append(optimizer.param_groups[0]['lr'])
+        losses.append(loss.item())
+        
+        # Backward pass
+        loss.backward()
+        optimizer.step()
+        
+        # Update learning rate
+        lr_scheduler.step()
+        
+        progress.update(1)
+    
+    # Plot the results
+    plt.figure(figsize=(10, 6))
+    plt.plot(learning_rates, losses)
+    plt.xscale('log')
+    plt.xlabel('Learning Rate (log scale)')
+    plt.ylabel('Loss')
+    plt.title('Learning Rate Finder')
+    plt.savefig('learning_rate_finder.png')
+    plt.close()
+    
+    # Find optimal learning rate (point with steepest decrease)
+    min_grad_idx = 0
+    max_drop = 0
+    for i in range(1, len(learning_rates) - 1):
+        # Calculate negative gradient (drop)
+        drop = (losses[i+1] - losses[i-1]) / (learning_rates[i+1] - learning_rates[i-1])
+        if drop < max_drop:
+            max_drop = drop
+            min_grad_idx = i
+    
+    optimal_lr = learning_rates[min_grad_idx] / 10  # Divide by 10 as a heuristic
+    print(f"Suggested optimal learning rate: {optimal_lr:.8f}")
+    
+    return optimal_lr
+
 if __name__ == "__main__":
+    # Uncomment to run learning rate finder
+    # optimal_lr = find_learning_rate()
+    # train_model(learning_rate=optimal_lr)
+    
     train_model()

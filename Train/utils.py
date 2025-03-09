@@ -8,6 +8,22 @@ import pickle
 from tqdm import tqdm
 from config import device, NUM_CLASSES
 
+# Define class names dictionary consistent with other files
+CLASS_NAMES = {
+    0: 'Bilirubin',
+    1: 'Blood',
+    2: 'Glucose',
+    3: 'Ketone',
+    4: 'Leukocytes',
+    5: 'Nitrite',
+    6: 'Protein',
+    7: 'SpGravity',
+    8: 'Urobilinogen',
+    9: 'Background',
+    10: 'pH',
+    11: 'Strip'
+}
+
 # Standard utility functions
 def compute_mean_std(dataset, batch_size=16):
     """Compute the mean and standard deviation of a dataset."""
@@ -234,26 +250,48 @@ def explain_tensor_dimensions(tensor):
 def compute_class_weights(dataset, num_classes, max_weight=100.0, min_weight=0.5):
     """Compute class weights to handle class imbalance with min/max constraints."""
     class_counts = [0] * num_classes
-    for _, label, _ in dataset:
+    total_samples = 0
+    
+    print("\nAnalyzing dataset class distribution...")
+    for i, (_, label, _) in enumerate(dataset):
         # Handle tensor labels
         label_val = label.item() if isinstance(label, torch.Tensor) else label
         if 0 <= label_val < num_classes:  # Ensure label is within valid range
             class_counts[label_val] += 1
+            total_samples += 1
+        
+        # Print progress periodically
+        if i % 500 == 0 and i > 0:
+            print(f"Processed {i} samples so far")
     
-    total_samples = sum(class_counts)
+    # Print class distribution
+    print("\nClass distribution in dataset:")
+    for i, count in enumerate(class_counts):
+        if count > 0:
+            percentage = (count / total_samples) * 100 if total_samples > 0 else 0
+            print(f"Class {i} ({CLASS_NAMES.get(i, 'Unknown')}): {count} samples ({percentage:.2f}%)")
     
-    # Initial weights calculation with safeguards against division by zero
-    class_weights = []
+    # Find missing classes
+    missing_classes = [i for i, count in enumerate(class_counts) if count == 0]
+    if missing_classes:
+        print(f"Warning: Missing classes: {missing_classes}")
+    
+    # Calculate weights with better handling of class imbalance
+    weights = []
     for count in class_counts:
         if count > 0:
-            weight = total_samples / (num_classes * count)
+            # Inverse frequency weighting (more samples = lower weight)
+            weight = total_samples / (count * num_classes)
+            # Apply additional scaling for very rare classes
+            if count < 20:
+                weight *= 2.0  # Double weight for rare classes
         else:
-            # For missing classes, use average weight or default
-            weight = 1.0
-        class_weights.append(weight)
+            # For missing classes, use a high weight
+            weight = max_weight
+        weights.append(weight)
     
     # Convert to tensor
-    weights_tensor = torch.tensor(class_weights, dtype=torch.float32)
+    weights_tensor = torch.tensor(weights, dtype=torch.float32)
     
     # Normalize weights relative to their mean
     if weights_tensor.sum() > 0:
@@ -262,5 +300,10 @@ def compute_class_weights(dataset, num_classes, max_weight=100.0, min_weight=0.5
     
     # Apply min/max constraints
     weights_tensor = torch.clamp(weights_tensor, min_weight, max_weight)
+    
+    # Print the final weights
+    print("\nComputed class weights:")
+    for i, weight in enumerate(weights_tensor):
+        print(f"Class {i}: {weight:.4f}")
     
     return weights_tensor

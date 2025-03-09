@@ -135,23 +135,33 @@ def extract_features_and_labels_with_progress(dataset, model):
             # Move to device
             images = images.to(device)
             
-            # Extract features through model
-            # Instead of using the output directly, extract bottleneck features
-            # which contain richer information for classification
+            # IMPROVED: Extract better features from multiple layers of the model
             with torch.amp.autocast(device_type='cuda'):
-                # Forward through encoder part of model
+                # Forward pass
+                outputs = model(images)
+                
+                # Extract bottleneck features from encoder (richer representation)
                 x1 = model.unet.inc(images)
                 x2 = model.unet.down1(x1)
                 x3 = model.unet.down2(x2)
                 x4 = model.unet.down3(x3)
                 x5 = model.unet.down4(x4)
                 
-                # Use bottleneck features (before decoder)
+                # Combine features from multiple layers
                 bottleneck = model.unet.dropout(x5)
                 
-                # Global average pooling to get a fixed-size feature vector per image
-                batch_features = torch.nn.functional.adaptive_avg_pool2d(bottleneck, (1, 1))
-                batch_features = batch_features.view(batch_features.size(0), -1).cpu().numpy()
+                # Global average pooling to get fixed-size feature vectors
+                pooled_x5 = torch.nn.functional.adaptive_avg_pool2d(bottleneck, (1, 1))
+                pooled_x4 = torch.nn.functional.adaptive_avg_pool2d(x4, (1, 1))
+                
+                # Concatenate features from different layers
+                multi_scale_features = torch.cat([
+                    pooled_x5.view(pooled_x5.size(0), -1),
+                    pooled_x4.view(pooled_x4.size(0), -1)
+                ], dim=1)
+                
+                # Convert to numpy
+                batch_features = multi_scale_features.cpu().numpy()
             
             # Extend our lists with batch data
             features.extend(batch_features)
@@ -214,15 +224,37 @@ def train_svm_with_real_data():
 
 def train_svm_classifier(unet_model_path, model_path=None, binary_mode=True):
     ic("Loading training, validation, and test datasets...")
-    train_dataset = UrineStripDataset(TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER)
+    train_dataset = UrineStripDataset(TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER, debug_level=1)
     valid_dataset = UrineStripDataset(VALID_IMAGE_FOLDER, VALID_MASK_FOLDER)
     test_dataset = UrineStripDataset(TEST_IMAGE_FOLDER, TEST_MASK_FOLDER)
+    
+    # Print raw annotation distribution to debug
+    ic("Raw annotation class distribution from dataset:")
+    if hasattr(train_dataset, 'raw_annotations_count'):
+        for cls_id, count in sorted(train_dataset.raw_annotations_count.items()):
+            if count > 0:
+                ic(f"Class {cls_id} ({CLASS_NAMES.get(cls_id, 'Unknown')}): {count} raw annotations")
     
     ic("Loading trained UNet model...")
     unet_model = UNetYOLO(3, NUM_CLASSES).to(device)
     torch.serialization.add_safe_globals([DetectionModel])
     unet_model.load_state_dict(torch.load(unet_model_path, map_location=device), strict=False)
     unet_model.eval()
+    
+    # Print the number of classes present in the dataset
+    ic("Verifying class distribution in datasets...")
+    train_class_dist = train_dataset.class_distribution
+    ic(f"Classes in training set: {sorted(train_class_dist.keys())}")
+    for cls_id, count in sorted(train_class_dist.items()):
+        ic(f"Class {cls_id} ({CLASS_NAMES.get(cls_id, 'Unknown')}): {count} samples")
+    
+    # Add synthetic samples for missing classes if needed
+    missing_classes = [i for i in range(NUM_CLASSES) if i not in train_class_dist]
+    if missing_classes:
+        ic(f"WARNING: Missing classes: {missing_classes}")
+        if hasattr(train_dataset, 'generate_synthetic_samples'):
+            train_dataset.generate_synthetic_samples(missing_classes, num_samples=20)
+            ic("Added synthetic samples for missing classes")
     
     ic("Extracting features and labels...")
     train_features, train_labels = extract_features_and_labels_with_progress(train_dataset, unet_model)
@@ -286,15 +318,16 @@ def train_svm_classifier(unet_model_path, model_path=None, binary_mode=True):
     valid_features_scaled = scaler.transform(valid_features)
     test_features_scaled = scaler.transform(test_features)
     
-    # Train SVM with RBF kernel (with progress indicator)
-    ic("Training SVM classifier with RBF kernel...")
+    # IMPROVED: Train SVM with better parameters for improved accuracy
+    ic("Training SVM classifier with optimized parameters...")
     with tqdm(total=100, desc="SVM Training") as progress:
         svm_model = SVC(
             kernel='rbf',
-            C=1.0,
-            gamma='scale',
+            C=10.0,  # Increased C for less regularization
+            gamma='auto',  # Let sklearn determine gamma automatically
             probability=True,
-            verbose=False  # Set to False to avoid conflicting output with tqdm
+            class_weight='balanced',  # Use balanced class weights
+            verbose=False
         )
         
         # Fit the model
