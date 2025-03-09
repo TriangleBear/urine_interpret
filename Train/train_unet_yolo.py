@@ -135,7 +135,7 @@ def zip_dataset(model_dir):
 
 def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_interval=None, 
                weight_decay=None, dropout_prob=0.5, mixup_alpha=0.2, 
-               label_smoothing_factor=0.1, grad_clip_value=1.0):
+               label_smoothing_factor=0.1, grad_clip_value=1.0, use_lite_model=False):
     """
     Train the UNet-YOLO model with improved convergence settings
     """
@@ -350,7 +350,13 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
     logger.info(f"Initializing model with dropout={dropout_prob}...")
     
     # Initialize model with specified dropout probability
-    model = UNetYOLO(in_channels=3, out_channels=NUM_CLASSES, dropout_prob=dropout_prob).to(device)
+    if use_lite_model:
+        logger.info(f"Using LiteUNet model with dropout={dropout_prob}...")
+        from models import LiteUNet
+        model = LiteUNet(in_channels=3, out_channels=NUM_CLASSES, dropout_prob=dropout_prob).to(device)
+    else:
+        logger.info(f"Using UNetYOLO model with dropout={dropout_prob}...")
+        model = UNetYOLO(in_channels=3, out_channels=NUM_CLASSES, dropout_prob=dropout_prob).to(device)
     
     # Use mixed precision training
     scaler = GradScaler() if USE_MIXED_PRECISION and torch.cuda.is_available() else None
@@ -367,13 +373,16 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
         amsgrad=True  # More stable for convergence
     )
     
-    # *** IMPORTANT FIX: Better learning rate scheduler ***
-    # Instead of OneCycleLR, use CosineAnnealingWarmRestarts which can escape local minima
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+    # IMPROVED LEARNING RATE SCHEDULER: Use OneCycle policy which is better for convergence
+    # This will rapidly increase LR, then gradually decrease it
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
         optimizer,
-        T_0=10,  # Initial restart period (epochs)
-        T_mult=2,  # Multiply period by this factor after each restart
-        eta_min=learning_rate/100  # Minimum learning rate
+        max_lr=learning_rate * 10,  # Peak learning rate
+        steps_per_epoch=len(train_loader),
+        epochs=num_epochs,
+        pct_start=0.3,  # Spend 30% of time warming up
+        div_factor=10,  # Initial lr is max_lr/10
+        final_div_factor=100,  # Final lr is max_lr/1000
     )
     
     # ***CRITICAL***: Increase patience for early stopping
@@ -429,14 +438,28 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
                         loss += lam * focal_loss(outputs, targets_a, class_weights=class_weights) + \
                                 (1 - lam) * focal_loss(outputs, targets_b, class_weights=class_weights)
                     else:
+                        # Forward pass with the model - note model might return aux output
                         outputs = model(images)
-                        # Add label smoothing for regularization
-                        loss = 0.8 * dice_loss(outputs, targets, class_weights=class_weights) + \
-                               0.8 * focal_loss(outputs, targets, class_weights=class_weights)
                         
-                        # Add a supervised contrastive loss term to better separate classes
-                        if epoch > 5:  # Add after a few epochs of basic training
-                            loss += 0.2 * contrastive_loss(outputs, targets)
+                        # Handle auxiliary output if present
+                        if isinstance(outputs, tuple) and len(outputs) == 2:
+                            outputs, aux_output = outputs
+                            # Add auxiliary loss if available
+                            main_loss = 0.7 * dice_loss(outputs, targets, class_weights=class_weights) + \
+                                    0.7 * focal_loss(outputs, targets, class_weights=class_weights)
+                            
+                            # Convert targets for classification
+                            target_classes = targets.view(-1)
+                            aux_loss = F.cross_entropy(aux_output, target_classes, weight=class_weights)
+                            loss = main_loss + 0.3 * aux_loss
+                        else:
+                            # Regular loss calculation
+                            loss = 0.8 * dice_loss(outputs, targets, class_weights=class_weights) + \
+                                0.8 * focal_loss(outputs, targets, class_weights=class_weights)
+                            
+                            # Add a supervised contrastive loss term to better separate classes
+                            if epoch > 5:  # Add after a few epochs of basic training
+                                loss += 0.2 * contrastive_loss(outputs, targets)
                     
                     # Scale loss by accumulation factor
                     loss = loss / GRADIENT_ACCUMULATION_STEPS
@@ -480,8 +503,10 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
         # Clear memory before validation
         clean_memory()
         
-        # Update learning rate - important to do this BEFORE validation
-        scheduler.step()
+        # Update learning rate EVERY BATCH with OneCycleLR
+        if (batch_idx + 1) % GRADIENT_ACCUMULATION_STEPS == 0 or (batch_idx + 1) == len(train_loader):
+            scheduler.step()
+        
         current_lr = optimizer.param_groups[0]['lr']
         lr_history.append(current_lr)
         
@@ -736,5 +761,107 @@ def plot_training_progress(train_losses, val_losses, val_accuracies, lr_history,
     else:
         plt.show()
 
+# Add a function for performing learning rate test
+def find_learning_rate(start_lr=1e-7, end_lr=1, batch_size=4, num_iter=100):
+    """Find optimal learning rate with learning rate range test."""
+    import math
+    import matplotlib.pyplot as plt
+    
+    # Configure dataset and model
+    train_dataset = UrineStripDataset(
+        TRAIN_IMAGE_FOLDER, 
+        TRAIN_MASK_FOLDER,
+        transform=get_advanced_augmentation(mean, std),
+    )
+    
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=batch_size,
+        shuffle=True,
+        pin_memory=True,
+        num_workers=2,
+        drop_last=True
+    )
+    
+    model = UNetYOLO(in_channels=3, out_channels=NUM_CLASSES).to(device)
+    
+    # Setup optimizer
+    optimizer = torch.optim.AdamW(model.parameters(), lr=start_lr)
+    
+    # Create log scale learning rate range
+    gamma = (end_lr / start_lr) ** (1 / num_iter)
+    lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma)
+    
+    # Track learning rates and losses
+    learning_rates = []
+    losses = []
+    
+    # Run the learning rate finder
+    model.train()
+    progress = tqdm(range(min(num_iter, len(train_loader))), desc="Finding optimal LR")
+    
+    for i, (images, targets, _) in enumerate(train_loader):
+        if i >= num_iter:
+            break
+            
+        # Move data to device
+        images = images.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
+        
+        # Reset gradients
+        optimizer.zero_grad()
+        
+        # Forward pass
+        outputs = model(images)
+        
+        # Handle auxiliary output if present
+        if isinstance(outputs, tuple) and len(outputs) == 2:
+            outputs, _ = outputs
+        
+        # Calculate loss
+        loss = dice_loss(outputs, targets) + focal_loss(outputs, targets)
+        
+        # Record learning rate and loss
+        learning_rates.append(optimizer.param_groups[0]['lr'])
+        losses.append(loss.item())
+        
+        # Backward pass
+        loss.backward()
+        optimizer.step()
+        
+        # Update learning rate
+        lr_scheduler.step()
+        
+        progress.update(1)
+    
+    # Plot the results
+    plt.figure(figsize=(10, 6))
+    plt.plot(learning_rates, losses)
+    plt.xscale('log')
+    plt.xlabel('Learning Rate (log scale)')
+    plt.ylabel('Loss')
+    plt.title('Learning Rate Finder')
+    plt.savefig('learning_rate_finder.png')
+    plt.close()
+    
+    # Find optimal learning rate (point with steepest decrease)
+    min_grad_idx = 0
+    max_drop = 0
+    for i in range(1, len(learning_rates) - 1):
+        # Calculate negative gradient (drop)
+        drop = (losses[i+1] - losses[i-1]) / (learning_rates[i+1] - learning_rates[i-1])
+        if drop < max_drop:
+            max_drop = drop
+            min_grad_idx = i
+    
+    optimal_lr = learning_rates[min_grad_idx] / 10  # Divide by 10 as a heuristic
+    print(f"Suggested optimal learning rate: {optimal_lr:.8f}")
+    
+    return optimal_lr
+
 if __name__ == "__main__":
+    # Uncomment to run learning rate finder
+    # optimal_lr = find_learning_rate()
+    # train_model(learning_rate=optimal_lr)
+    
     train_model()
