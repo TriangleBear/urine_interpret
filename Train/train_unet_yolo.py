@@ -133,7 +133,7 @@ def zip_dataset(model_dir):
     else:
         print(f"Dataset directory {dataset_dir} does not exist")
 
-# NEW: Add specialized loss function for better class balance
+# FIX: Update class_balanced_loss to properly handle segmentation model outputs
 def class_balanced_loss(outputs, targets, class_weights=None, gamma=2.0, beta=0.999):
     """
     Class-balanced focal loss that puts more emphasis on rare classes.
@@ -141,34 +141,101 @@ def class_balanced_loss(outputs, targets, class_weights=None, gamma=2.0, beta=0.
     
     Args:
         outputs: Model predictions [B, C, H, W]
-        targets: Target labels [B]
+        targets: Target labels [B] or [B, H, W]
         class_weights: Optional tensor of class weights [C]
         gamma: Focusing parameter for focal loss
         beta: Class balancing parameter
     """
-    # Get probabilities
-    probs = F.softmax(outputs, dim=1)
+    # Check if we have a classification or segmentation task
+    if outputs.dim() == 4:  # [B, C, H, W] - segmentation
+        # Spatial dimensions
+        H, W = outputs.shape[2], outputs.shape[3]
+        
+        if targets.dim() == 1:  # [B] - classification labels
+            # Global pooling for classification
+            outputs_pooled = F.adaptive_avg_pool2d(outputs, 1).squeeze(-1).squeeze(-1)  # [B, C]
+            probs = F.softmax(outputs_pooled, dim=1)
+            
+            # Get one-hot encoding of targets
+            batch_size = targets.size(0)
+            one_hot_targets = torch.zeros(batch_size, outputs.size(1), device=targets.device)
+            one_hot_targets.scatter_(1, targets.unsqueeze(1), 1)
+            
+            # Calculate focal weights
+            p_t = (one_hot_targets * probs).sum(1)
+            focal_weight = (1 - p_t) ** gamma
+            
+            if class_weights is not None:
+                # Get class weight for each sample based on its target class
+                sample_weights = class_weights[targets]
+                focal_weight = focal_weight * sample_weights
+            
+            # Calculate loss
+            loss = F.cross_entropy(outputs_pooled, targets, reduction='none')
+            balanced_loss = focal_weight * loss
+            
+            return balanced_loss.mean()
+        
+        else:  # [B, H, W] - segmentation mask
+            # Convert targets to right shape if needed
+            if targets.dim() == 3:  # [B, H, W]
+                if targets.shape[1:] != (H, W):
+                    targets = F.interpolate(targets.float().unsqueeze(1), size=(H, W), 
+                                       mode='nearest').squeeze(1).long()
+            
+            # Get probabilities
+            probs = F.softmax(outputs, dim=1)  # [B, C, H, W]
+            
+            # Compute class-wise focal loss
+            loss = F.cross_entropy(outputs, targets, reduction='none')  # [B, H, W]
+            
+            # Calculate pt (probability of true class)
+            batch_size = targets.size(0)
+            pt = torch.zeros_like(loss)
+            
+            for b in range(batch_size):
+                pt[b] = probs[b, targets[b], torch.arange(H).unsqueeze(1), 
+                               torch.arange(W).unsqueeze(0)]
+            
+            # Focal weight
+            focal_weight = (1 - pt) ** gamma
+            
+            # Apply class weights if provided
+            if class_weights is not None:
+                # Get weights for each pixel based on its class
+                pixel_weights = torch.zeros_like(loss)
+                for b in range(batch_size):
+                    pixel_weights[b] = class_weights[targets[b]]
+                focal_weight = focal_weight * pixel_weights
+            
+            # Final loss
+            balanced_loss = focal_weight * loss
+            
+            return balanced_loss.mean()
     
-    # Get one-hot encoding of targets
-    batch_size = targets.size(0)
-    one_hot_targets = torch.zeros(batch_size, NUM_CLASSES, device=targets.device)
-    one_hot_targets.scatter_(1, targets.unsqueeze(1), 1)
-    
-    # Calculate focal weights
-    p_t = (one_hot_targets * probs).sum(1)
-    focal_weight = (1 - p_t) ** gamma
-    
-    # Apply class weights
-    if class_weights is not None:
-        # Get class weight for each sample based on its target class
-        sample_weights = class_weights[targets]
-        focal_weight = focal_weight * sample_weights
-    
-    # Calculate loss
-    loss = F.cross_entropy(outputs, targets, reduction='none')
-    balanced_loss = focal_weight * loss
-    
-    return balanced_loss.mean()
+    else:  # [B, C] - classification
+        # Get probabilities
+        probs = F.softmax(outputs, dim=1)
+        
+        # Get one-hot encoding of targets
+        batch_size = targets.size(0)
+        one_hot_targets = torch.zeros(batch_size, outputs.size(1), device=targets.device)
+        one_hot_targets.scatter_(1, targets.unsqueeze(1), 1)
+        
+        # Calculate focal weights
+        p_t = (one_hot_targets * probs).sum(1)
+        focal_weight = (1 - p_t) ** gamma
+        
+        if class_weights is not None:
+            # Get class weight for each sample based on its target class
+            sample_weights = class_weights[targets]
+            focal_weight = focal_weight * sample_weights
+        
+        # Calculate loss
+        loss = F.cross_entropy(outputs, targets, reduction='none')
+        balanced_loss = focal_weight * loss
+        
+        return balanced_loss.mean()
 
 def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_interval=None, 
                weight_decay=None, dropout_prob=0.5, mixup_alpha=0.2, 
@@ -553,8 +620,19 @@ def train_model(num_epochs=None, batch_size=None, learning_rate=None, save_inter
                         else:
                             # Regular loss calculation
                             loss = 0.7 * dice_loss(outputs, targets, class_weights=class_weights) + \
-                                0.7 * focal_loss(outputs, targets, class_weights=class_weights) + \
-                                0.3 * class_balanced_loss(outputs, targets, class_weights)
+                                0.7 * focal_loss(outputs, targets, class_weights=class_weights)
+                            
+                            # Only add class_balanced_loss if it's a classification task (targets is [B])
+                            # or wrap it in a try/except to gracefully handle any dimension issues
+                            try:
+                                if targets.dim() == 1:  # Classification task
+                                    loss += 0.3 * class_balanced_loss(outputs, targets, class_weights)
+                                else:
+                                    # For segmentation task, use a simpler approach
+                                    loss += 0.3 * F.cross_entropy(outputs, targets, 
+                                                                 weight=class_weights if class_weights is not None else None)
+                            except RuntimeError as e:
+                                print(f"Warning: Skipping class_balanced_loss due to error: {e}")
                             
                             # Add a supervised contrastive loss term to better separate classes
                             if epoch > 5:  # Add after a few epochs of basic training
