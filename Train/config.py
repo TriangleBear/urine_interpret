@@ -20,17 +20,20 @@ def get_device_info():
             print(f"CUDA Memory Allocated: {torch.cuda.memory_allocated(0) / 1024**2:.2f} MB")
             print(f"CUDA Memory Reserved: {torch.cuda.memory_reserved(0) / 1024**2:.2f} MB")
             
-            # T4-optimized CUDA settings
+            # RTX 4050-optimized CUDA settings
             torch.backends.cudnn.benchmark = True
             torch.backends.cudnn.enabled = True
             
-            # Enable TF32 for T4 - supported on newer CUDA versions
+            # Enable TF32 for RTX GPUs
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
             
-            # Set memory fraction to avoid OOM errors in Colab
-            # T4 typically has ~16GB memory in Colab
-            torch.cuda.set_per_process_memory_fraction(0.9)  # Use 90% of available memory
+            # Set memory fraction to avoid OOM errors
+            # RTX 4050 mobile typically has 6GB memory
+            torch.cuda.set_per_process_memory_fraction(0.85)  # Use 85% of available memory
+            
+            # Set environment variables for better memory management
+            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:64,garbage_collection_threshold:0.6'
             
         else:
             print("CUDA is not available. Using CPU.")
@@ -44,7 +47,7 @@ device = get_device_info()
 
 DEVICE = device
 
-BASE_PATH = "/content/urine_interpret"
+BASE_PATH = "D:/Programming/urine_interpret"
 DATA_ROOT = os.path.join(BASE_PATH, r"Datasets/Split_70_20_10")
 TRAIN_IMAGE_FOLDER = os.path.join(DATA_ROOT, "train/images")
 TRAIN_MASK_FOLDER = os.path.join(DATA_ROOT, "train/labels")
@@ -59,20 +62,20 @@ for dir_path in [TRAIN_IMAGE_FOLDER, TRAIN_MASK_FOLDER,
                 TEST_IMAGE_FOLDER, TEST_MASK_FOLDER]:
     os.makedirs(dir_path, exist_ok=True)
 
-# T4-optimized Training Hyperparameters with adjustments for better convergence
-BATCH_SIZE = 6  # Increased for more stable gradients
-GRADIENT_ACCUMULATION_STEPS = 4  # Reduced to match increased batch size
+# RTX 4050-optimized Training Hyperparameters
+BATCH_SIZE = 2  # Reduced for 6GB VRAM
+GRADIENT_ACCUMULATION_STEPS = 8  # Increased for effective batch size of 16
 NUM_CLASSES = 12
-NUM_EPOCHS = 200  # Increased to allow longer training
-PATIENCE = 30  # Higher patience for early stopping to allow learning rate resets
-IMAGE_SIZE = (512, 512)
+NUM_EPOCHS = 200
+PATIENCE = 30
+IMAGE_SIZE = (384, 384)  # Reduced for memory efficiency
 
 # Data loading settings
-NUM_WORKERS = 2  # Number of worker processes for data loading
+NUM_WORKERS = 1  # Reduced for memory efficiency
 
-# Optimization settings with better learning dynamics
-LEARNING_RATE = 3e-4  # Slightly higher starting LR for cosine schedule
-WEIGHT_DECAY = 1e-4   # Better regularization value
+# Optimization settings
+LEARNING_RATE = 2e-4  # Slightly higher for faster convergence with smaller batches
+WEIGHT_DECAY = 1e-4
 USE_MIXED_PRECISION = True
 USE_GRADIENT_CHECKPOINTING = True
 
@@ -80,20 +83,23 @@ USE_GRADIENT_CHECKPOINTING = True
 LR_SCHEDULER_STEP_SIZE = 8
 LR_SCHEDULER_GAMMA = 0.2  # Stronger decay
 
-# Memory Management - T4 optimized
+# Memory Management for RTX 4050 Mobile
 def clean_memory():
-    """Aggressive memory cleanup for Colab T4"""
+    """Aggressive memory cleanup for RTX 4050 Mobile"""
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        
         # Force garbage collection of CUDA memory
-        torch.cuda.ipc_collect()
+        if hasattr(torch.cuda, 'ipc_collect'):
+            torch.cuda.ipc_collect()
 
 # Run memory cleanup on module import
 clean_memory()
 
-# T4-optimized CUDA memory allocation
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128,garbage_collection_threshold:0.8'
+# RTX 4050-optimized CUDA memory allocation
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:64,garbage_collection_threshold:0.6'
 
 # Checkpointing strategy - save less frequently to reduce overhead
 SAVE_INTERVAL = 5  # Save checkpoints every 5 epochs
