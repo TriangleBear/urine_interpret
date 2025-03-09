@@ -214,3 +214,6 @@ train_labels.npy
 valid_features.npy
 valid_labels.npy
 test_labels.npy
+Train/plan.txt
+Training_class_distribution.png
+Validation_class_distribution.png
