@@ -7,7 +7,7 @@ import time
 import torchvision.transforms as transforms  # Add this import for data augmentation
 import torch.nn.functional as F  # Add this for contrastive_loss function
 from torch.utils.data import DataLoader
-from datasets import UrineStripDataset
+from datasets import UrineStripDataset, CLASS_NAMES  # Import CLASS_NAMES from datasets
 from models import UNetYOLO
 from losses import dice_loss, focal_loss
 from config import (
