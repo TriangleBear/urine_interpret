@@ -8,6 +8,22 @@ import pickle
 from tqdm import tqdm
 from config import device, NUM_CLASSES
 
+# Define class names dictionary consistent with other files
+CLASS_NAMES = {
+    0: 'Bilirubin',
+    1: 'Blood',
+    2: 'Glucose',
+    3: 'Ketone',
+    4: 'Leukocytes',
+    5: 'Nitrite',
+    6: 'Protein',
+    7: 'SpGravity',
+    8: 'Urobilinogen',
+    9: 'Background',
+    10: 'pH',
+    11: 'Strip'
+}
+
 # Standard utility functions
 def compute_mean_std(dataset, batch_size=16):
     """Compute the mean and standard deviation of a dataset."""
