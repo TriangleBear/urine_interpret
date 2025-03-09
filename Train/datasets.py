@@ -17,6 +17,11 @@ CLASS_NAMES = {
     8: 'Urobilinogen', 9: 'Background', 10: 'pH', 11: 'Strip'
 }
 
+# Define constants for class types
+REAGENT_PAD_CLASSES = set(list(range(9)) + [10])  # Classes 0-8, 10
+STRIP_CLASS = 11
+BACKGROUND_CLASS = 9
+
 class UrineStripDataset(Dataset):
     def __init__(self, image_dir, mask_dir, transform=None, cache_size=100):
         self.image_dir = image_dir
@@ -55,10 +60,8 @@ class UrineStripDataset(Dataset):
         # Load image
         image = Image.open(img_path).convert('RGB')
         
-        # CRITICAL FIX: Read ALL classes from the YOLO file and prioritize them correctly.
-        # Ensure that classes 9 (Background) and 11 (Strip) are handled properly.
-
-        all_classes_found = []  # Keep track of all classes found in this file
+        # CRITICAL FIX: Read ALL classes from the YOLO file and prioritize them correctly
+        all_classes_found = []  # Track all classes found in this file
         
         try:
             if os.path.exists(mask_path) and os.path.getsize(mask_path) > 0:
@@ -76,34 +79,48 @@ class UrineStripDataset(Dataset):
         except Exception as e:
             print(f"Error reading YOLO file {mask_path}: {e}")
         
-        # FIX: Use correct class prioritization:
+        # IMPROVED CLASS SELECTION LOGIC:
         # 1. Reagent pads (0-8, 10) - highest priority
         # 2. Strip (11) - medium priority
         # 3. Background (9) - lowest priority
         
-        # Default to background class (9) if no annotations are found.
-        # Ensure that classes 9 (Background) and 11 (Strip) are handled properly.
-
-        selected_class = 9  # Background
+        # Default to background class if no annotations are found
+        selected_class = BACKGROUND_CLASS
         
         if all_classes_found:
-            # Check for reagent pad classes (0-8, 10) - highest priority.
-            # Rotate them based on the sample index to increase diversity
-            reagent_pad_classes = [cls for cls in all_classes_found if cls < 9 or cls <= 11]
+            # First check for reagent pad classes (highest priority)
+            reagent_pad_classes = [cls for cls in all_classes_found if cls in REAGENT_PAD_CLASSES]
+            
             if reagent_pad_classes:
-                # IMPROVEMENT: Instead of always taking the first reagent pad class,
-                # rotate them based on the sample index to increase diversity
+                # If we found reagent pad classes, use them
                 if len(reagent_pad_classes) > 1:
-                    # Use sample index to select different classes for different samples
-                    selected_class = reagent_pad_classes[idx % len(reagent_pad_classes)]
+                    # Select the most frequent reagent pad class
+                    from collections import Counter
+                    class_counter = Counter(reagent_pad_classes)
+                    selected_class = class_counter.most_common(1)[0][0]
                 else:
                     selected_class = reagent_pad_classes[0]
-            # Otherwise, check if we have strip class (11) - medium priority.
-            elif 11 in all_classes_found:
-                selected_class = 11
+                    
+                # Log which reagent pad class was selected
+                if idx % 100 == 0:
+                    print(f"Sample {idx}: Selected reagent pad class {selected_class} "
+                          f"({CLASS_NAMES.get(selected_class, 'Unknown')})")
+            
+            # If no reagent pad classes, check for strip class (medium priority)
+            elif STRIP_CLASS in all_classes_found:
+                selected_class = STRIP_CLASS
+                if idx % 100 == 0:
+                    print(f"Sample {idx}: Selected strip class (11)")
+            
+            # If neither reagent pads nor strip, use background (lowest priority)
+            else:
+                if idx % 100 == 0:
+                    print(f"Sample {idx}: No reagent pad or strip classes found, using background")
+        else:
+            if idx % 100 == 0:
+                print(f"Sample {idx}: No classes found in file, using background")
         
-        # Create segmentation mask based on all annotations and log class distribution
-
+        # Create segmentation mask based on all annotations
         mask, is_empty_label = self._create_mask_from_yolo(mask_path, debug=False)
         
         # Resize mask to match image size
@@ -115,24 +132,23 @@ class UrineStripDataset(Dataset):
         # Convert mask to tensor
         mask_tensor = torch.from_numpy(mask).long()
         
-        # Use our properly selected class as the label
-        label = selected_class
-        
-        if label in self.class_distribution:
-            self.class_distribution[label] += 1
+        # Update class distribution statistics
+        if selected_class in self.class_distribution:
+            self.class_distribution[selected_class] += 1
         else:
-            self.class_distribution[label] = 1
+            self.class_distribution[selected_class] = 1
         
         # Add to cache if not full
         if len(self.cache) < self.cache_size:
-            self.cache[idx] = (image_tensor, label, self.class_distribution)
+            self.cache[idx] = (image_tensor, selected_class, self.class_distribution)
         
-        # Log class distribution for debugging
-        print(f"Class distribution: {self.class_distribution}")
+        # Periodically print class distribution to monitor balance
+        if idx % 500 == 0:
+            print(f"Current class distribution after {idx} samples:")
+            for cls_id, count in sorted(self.class_distribution.items()):
+                print(f"  Class {cls_id} ({CLASS_NAMES.get(cls_id, 'Unknown')}): {count} samples")
         
-        return image_tensor, label, self.class_distribution
-
-
+        return image_tensor, selected_class, self.class_distribution
 
     def _create_mask_from_yolo(self, txt_path, image_size=(512, 512), target_classes=None, debug=False):
         """
@@ -144,7 +160,7 @@ class UrineStripDataset(Dataset):
         """
         # Start with zeros (background/class 9)
         mask = np.zeros(image_size, dtype=np.uint8)
-        mask.fill(9)  # Fill with background class explicitly
+        mask.fill(BACKGROUND_CLASS)  # Fill with background class explicitly
         is_empty_label = False
         
         # Check if the annotation file exists
@@ -186,22 +202,22 @@ class UrineStripDataset(Dataset):
                 # First: Background class (9) is already filled as default
                 
                 # Second: Draw strip (class 11) - overwrites background
-                if class_annotations[11]:
-                    for parts in class_annotations[11]:
+                if class_annotations[STRIP_CLASS]:
+                    for parts in class_annotations[STRIP_CLASS]:
                         try:
                             # Handle different annotation formats
                             if len(parts) > 5:  # Polygon format
                                 polygon_points = self._parse_polygon(parts, image_size)
                                 if len(polygon_points) >= 3:  # Need at least 3 points for a polygon
-                                    cv2.fillPoly(mask, [polygon_points], 11)  # Strip class
+                                    cv2.fillPoly(mask, [polygon_points], STRIP_CLASS)  # Strip class
                             elif len(parts) == 5:  # Bounding box format
                                 x, y, w, h = self._parse_bbox(parts, image_size)
-                                cv2.rectangle(mask, (x, y), (x+w, y+h), 11, -1)  # Strip class
+                                cv2.rectangle(mask, (x, y), (x+w, y+h), STRIP_CLASS, -1)  # Strip class
                         except Exception as e:
                             if debug: print(f"Error processing strip annotation: {e}")
                 
                 # Last: Draw reagent pads (classes 0-8, 10) - highest priority, overwrites strip and background
-                for class_id in list(range(9)) + [10]:  # 0-8, 10 = reagent pads
+                for class_id in REAGENT_PAD_CLASSES:  # 0-8, 10 = reagent pads
                     if class_annotations[class_id]:
                         for parts in class_annotations[class_id]:
                             try:
