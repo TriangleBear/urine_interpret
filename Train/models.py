@@ -170,7 +170,7 @@ class UNetYOLO(nn.Module):
     def __init__(self, in_channels, out_channels, dropout_prob=0.5):  
         """Memory-optimized model for RTX 4050 mobile.""" 
         super(UNetYOLO, self).__init__()
-        self.unet = UNet(in_channels, 32, bilinear=False, dropout_prob=dropout_prob)  # Reduced to 32 features
+        self.unet = UNet(in_channels, 12, bilinear=False, dropout_prob=dropout_prob)  # Reduced to 32 features
         
         # Expose decoder layers
         self.decoder = nn.ModuleList([self.unet.up1, self.unet.up2, self.unet.up3, self.unet.up4])
