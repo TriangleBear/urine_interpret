@@ -182,7 +182,7 @@ class UNetYOLO(nn.Module):
         self.yolo_head = YOLOHead(32, out_channels)
         
         # Memory-efficient attention module
-        self.class_attention = ClassAttentionModule(32, out_classes=min(4, out_channels))  # Reduce attention classes
+        self.class_attention = ClassAttentionModule(32, out_classes=out_channels)  # Reduce attention classes
 
         # Streamlined auxiliary classifier
         self.aux_classifier = nn.Sequential(
