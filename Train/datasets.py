@@ -14,7 +14,7 @@ import random  # Add this missing import at the top
 CLASS_NAMES = {
     0: 'Bilirubin', 1: 'Blood', 2: 'Glucose', 3: 'Ketone',
     4: 'Leukocytes', 5: 'Nitrite', 6: 'Protein', 7: 'SpGravity',
-    8: 'Urobilinogen', 9: 'Background', 10: 'pH', 11: 'Strip'
+    8: 'Urobilinogen', 9: 'background', 10: 'pH', 11: 'strip'
 }
 
 # Define constants for class types
