@@ -170,7 +170,7 @@ class UNetYOLO(nn.Module):
     def __init__(self, in_channels, out_channels, dropout_prob=0.5):  
         """Memory-optimized model for RTX 4050 mobile.""" 
         super(UNetYOLO, self).__init__()
-        self.unet = UNet(in_channels, 12, bilinear=False, dropout_prob=dropout_prob)  # Reduced to 32 features
+        self.unet = UNet(in_channels, 32, bilinear=False, dropout_prob=dropout_prob)  # Reduced to 32 features
         
         # Expose decoder layers
         self.decoder = nn.ModuleList([self.unet.up1, self.unet.up2, self.unet.up3, self.unet.up4])
@@ -181,8 +181,8 @@ class UNetYOLO(nn.Module):
         # YOLO head with memory optimization
         self.yolo_head = YOLOHead(32, out_channels)
         
-        # Memory-efficient attention module
-        self.class_attention = ClassAttentionModule(32, out_classes=out_channels)  # Reduce attention classes
+        # Memory-efficient attention module - FIX: Change out_classes to num_classes
+        self.class_attention = ClassAttentionModule(32, num_classes=out_channels)  # Reduce attention classes
 
         # Streamlined auxiliary classifier
         self.aux_classifier = nn.Sequential(
