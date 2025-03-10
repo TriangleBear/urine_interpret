@@ -33,7 +33,6 @@ from utils import compute_class_weights, compute_mean_std  # Import the correct 
 from torch.amp import GradScaler, autocast  # Import mixed precision training tools
 import tracemalloc  # Import for memory profiling
 import subprocess  # Add this import for running shell commands
-import torch.amp as amp
 import torch.utils.checkpoint as checkpoint
 from torch.amp import autocast
 
